@@ -1,0 +1,25 @@
+---
+description: >-
+  Keep task artifacts (verification.md, findings, plan) updated during work.
+  Use when working in tasks/* after smoke tests, research, or child-agent delegation.
+globs: tasks/**/*
+alwaysApply: false
+---
+
+# Task artifact updates
+
+When working in `tasks/<id>/`, follow `skills/task-artifacts/SKILL.md`.
+
+Minimum before finishing:
+
+- `verification.md` covers each live smoke or `task_contract.json` `required_live_evidence` item
+- `findings.md` or `findings-*.md` records non-obvious findings
+- `task.md` has status `done` and checked acceptance criteria
+
+Immediately after a smoke check:
+
+```bash
+skills/task-artifacts/scripts/record_verification.sh tasks/TASK_DIR "gate_id" "short result without secrets"
+```
+
+Chat does not replace files in the task directory.

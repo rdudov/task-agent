@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+.venv/
+.state/
+__pycache__/
+*.pyc
+.pytest_cache/
+.codex/
+llm_logs/
+memory_logs/
+
+# Track only skeleton files from durable local artifact trees.
+tasks/*
+!tasks/.gitkeep
+!tasks/INDEX.md
+data/*
+!data/.gitkeep
+!data/projects/
+data/projects/*
+!data/projects/.gitkeep
