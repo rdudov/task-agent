@@ -28,7 +28,7 @@ Optional task artifacts:
 - `findings.md` and `sources.md` for research tasks
 - `multi-agent/` for explicit multi-agent pipeline artifacts
 
-The canonical task list is [tasks/INDEX.md](../tasks/INDEX.md).
+The canonical task list is `tasks/INDEX.md`. It is local generated state and is not tracked by the template. Use [tasks/INDEX.example.md](../tasks/INDEX.example.md) as the format template.
 
 ## Durable Projects
 
@@ -44,6 +44,10 @@ Recommended project files:
 - `artifacts/`
 
 Tasks should link related projects from both `task.md` and `tasks/INDEX.md`.
+
+## Local Lookup Indexes
+
+Use local files under `data/` for durable lookup context that should survive across tasks, such as repository paths, important artifacts, recurring commands, and where to find prior work. Start from [data/local-projects.example.md](../data/local-projects.example.md) when you need a compact repository/path index.
 
 ## Skills
 
@@ -67,7 +71,7 @@ Project-level docs may describe where skills live and how they interact with tas
 4. A child CLI agent may perform substantial work and write progress artifacts into the task directory.
 5. If the user explicitly requests a team-of-agents execution style, the parent may launch the task-runner multi-agent workflow.
 6. When present, `task_contract.json` is propagated by the orchestrator into role prompts and used by review/completion gates.
-7. If source files change, the finished source change is committed and pushed unless the task explicitly keeps it local or publication is blocked.
+7. If source files change, the finished source change is committed and pushed unless the task explicitly keeps it local or publication is blocked; remote-backed repositories should be synced before branch/push and checked with the pre-push leak check before publication.
 8. If engine behavior changes, project documentation is updated in the same change.
 
 Implementation work should match the semantics of the requested target, not only an approximate effect. When a task names a reference artifact, provider, model, protocol feature, or runtime branch, repository artifacts and verification should show that the named path was used directly or should explicitly record why that was not possible.

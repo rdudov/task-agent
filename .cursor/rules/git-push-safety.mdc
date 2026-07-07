@@ -1,0 +1,20 @@
+---
+description: Run a generic leak check and review outgoing changes before push.
+alwaysApply: true
+---
+
+# Git Push Safety
+
+Before any `git push` from a repository with task-agent tooling available:
+
+1. Identify the target remote with `git remote -v`.
+2. Run:
+
+   ```bash
+   .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote <remote>
+   ```
+
+3. Review outgoing commits and diff for local artifacts, secrets, private paths, or unintended generated files.
+4. Do not push if the check fails; fix the diff or record the blocker in the task artifacts.
+
+The pre-push check is a guardrail, not a substitute for reviewing the actual outgoing change.

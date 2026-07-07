@@ -1,0 +1,27 @@
+---
+description: Create task artifacts before substantive work begins.
+alwaysApply: true
+---
+
+# Task Bootstrap
+
+For any substantial user request, create or update a task directory under `tasks/` before substantive work begins.
+
+Substantial includes:
+
+- more than one meaningful step
+- research, implementation, verification, or documentation work
+- file, script, config, service, or durable artifact changes
+- live checks against APIs, browsers, SSH, external systems, or runtime services
+- work in another repository or absolute path outside this workspace
+- follow-up work that continues the same non-trivial goal
+
+Skip task creation only when the user explicitly opts out of task artifacts or the request is clearly trivial.
+
+Use:
+
+```bash
+skills/task-creator/scripts/create_task.sh "Task title" "Short task description"
+```
+
+Chat does not replace `task.md`, `plan.md`, `findings.md`, or `verification.md`.

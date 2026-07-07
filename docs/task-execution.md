@@ -4,13 +4,15 @@ This document describes the parent-child execution model for non-trivial tasks.
 
 ## Recommended Model
 
-1. Decide whether the request is clearly trivial.
-2. If it is not clearly trivial, create or update the task directory before substantive work begins.
-3. Ensure `task.md` and `plan.md` preserve enough context for independent execution.
-4. Add `task_contract.json` for non-negotiable constraints, forbidden substitutions, or mandatory live verification gates.
-5. Launch a child CLI agent when substantial work should stay out of the parent conversation.
-6. Require the child to write progress and outputs back into the same task directory.
-7. Monitor task artifacts instead of waiting silently.
+1. Apply the substantial-request check from `AGENTS.md`. Default to a task directory unless the request is clearly trivial or the user explicitly opts out.
+2. Before broad search or live checks, inspect existing durable context: `tasks/INDEX.md`, related task artifacts, and local project/path indexes based on `data/local-projects.example.md`.
+3. Before file edits, shell-driven implementation, delegation, or live verification, create or update the task directory via `skills/task-creator/`.
+4. Ensure `task.md` and `plan.md` preserve enough context for independent execution.
+5. Add `task_contract.json` for non-negotiable constraints, forbidden substitutions, or mandatory live verification gates.
+6. Launch a child CLI agent when substantial work should stay out of the parent conversation.
+7. Require the child to write progress and outputs back into the same task directory.
+8. Monitor task artifacts instead of waiting silently.
+9. Before completion, promote reusable lookup knowledge, commands, limits, or workflow details to an index, skill, or rule; keep one-off results in the task directory.
 
 ## Multi-Agent Workflow
 
@@ -73,6 +75,8 @@ Recommended artifacts:
 - `findings.md`
 - `sources.md`
 
+Reusable local lookup context, such as repositories, important paths, recurring commands, or where prior artifacts live, should be recorded under `data/`. This template includes `data/local-projects.example.md` as a generic starting point.
+
 Suggested `status.json`:
 
 ```json
@@ -86,6 +90,8 @@ Suggested `status.json`:
 ## Source Publication
 
 When a child changes git-tracked source in a repository with a remote, it should commit and push after verification unless the task explicitly requires local-only work or push is blocked. Any unpushed source changes should be recorded with the reason and current repository state.
+
+Before creating a branch from a remote-tracked base, fetch the remote and fast-forward the base branch. Before pushing, fetch again, rebase or merge onto the latest target branch according to the repository policy, run relevant tests, run the pre-push leak check, and review the outgoing diff. Use force push only when the task explicitly requires rewriting a branch and prefer `--force-with-lease`.
 
 When the wrong change exists only in local, unpushed git history, prefer removing it from history instead of adding a compensating revert commit. Use `git reset` or another explicit history-rewrite operation after checking that no user-owned or dependent commits would be lost. Record the previous HEAD, target HEAD, and working-tree status in the task trace. Use a revert commit for pushed/shared history, ambiguous ownership, or when the user explicitly asks for audit-preserving history.
 

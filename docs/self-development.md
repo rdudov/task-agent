@@ -25,6 +25,8 @@ Update project documentation in the same source change when engine behavior chan
 
 Do not duplicate detailed skill instructions in project-level docs.
 
+When self-development work produces reusable lookup knowledge such as paths, commands, limits, or integration entrypoints, update the relevant local index, skill, or rule in the same change. One-off conclusions belong in the active task's findings.
+
 ## Verification
 
 Before completion, run the narrow tests for changed scripts and the repository health check:
@@ -55,4 +57,4 @@ Record restore gaps in a task artifact before continuing dependent work.
 
 ## Publication
 
-When self-development changes modify git-tracked source in a repository with a remote, commit and push after verification unless the task explicitly requires a local-only state or publication is blocked. If publication is blocked, record the reason and current repository state in the task artifacts.
+When self-development changes modify git-tracked source in a repository with a remote, commit and push after verification unless the task explicitly requires a local-only state or publication is blocked. Before branching or pushing, fetch and sync with the target remote. Before push, run `skills/repo-health/scripts/check_pre_push.py` and review the outgoing diff. If publication is blocked, record the reason and current repository state in the task artifacts.

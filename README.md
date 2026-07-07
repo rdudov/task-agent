@@ -8,6 +8,7 @@ It is intentionally generic: no private task history, no local data, and no bund
 
 - `tasks/` skeleton for durable task artifacts
 - `data/projects/` skeleton for multi-task project records
+- `data/local-projects.example.md` as a starting point for local repository/path indexes
 - `skills/task-creator/` for creating task directories and updating the index
 - `skills/task-runner/` for parent-child CLI agent execution and optional multi-agent workflows (Cursor Agent or Codex)
 - `skills/project-organizer/` for durable project records
@@ -37,6 +38,12 @@ Run health checks:
 PYTHONPATH=skills/task-runner/scripts .venv/bin/python -m pytest skills/task-runner/tests
 ```
 
+Before pushing a source change from this workspace, run:
+
+```bash
+.venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote origin
+```
+
 ## Multi-Agent Workflow
 
 `skills/task-runner/scripts/task_runner.py` supports `--workflow multi-agent-dev` for explicit team-of-agents development runs. By default use `--runner agent` (Cursor Agent CLI); pass `--runner codex` to run each role through Codex instead.
@@ -61,4 +68,4 @@ Task Agent is released under the [MIT License](./LICENSE).
 
 ## Local State
 
-`tasks/` and `data/` are durable local artifacts. This template tracks only skeleton files; real task history and reusable data should be backed up by your own local backup flow.
+`tasks/` and `data/` are durable local artifacts. This template tracks only skeleton and example files; real task history, `tasks/INDEX.md`, and reusable data should be backed up by your own local backup flow.

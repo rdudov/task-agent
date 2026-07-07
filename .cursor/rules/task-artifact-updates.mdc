@@ -15,6 +15,7 @@ Minimum before finishing:
 - `verification.md` covers each live smoke or `task_contract.json` `required_live_evidence` item
 - `findings.md` or `findings-*.md` records non-obvious findings
 - `task.md` has status `done` and checked acceptance criteria
+- reusable lookup knowledge has been promoted to an index, skill, or rule, or the task explains why it stays task-local
 
 Immediately after a smoke check:
 

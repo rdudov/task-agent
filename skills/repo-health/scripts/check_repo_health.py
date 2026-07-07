@@ -57,7 +57,11 @@ def check_tasks(root: Path, allow_empty_tasks: bool) -> list[str]:
         return ["tasks/: missing task artifact directory"]
 
     index = tasks_dir / "INDEX.md"
+    example_index = tasks_dir / "INDEX.example.md"
     if not index.exists():
+        task_dirs = sorted(path for path in tasks_dir.iterdir() if path.is_dir())
+        if allow_empty_tasks and not task_dirs and example_index.exists():
+            return errors
         errors.append("tasks/INDEX.md: missing canonical task index")
     elif not index.read_text(encoding="utf-8", errors="replace").strip():
         errors.append("tasks/INDEX.md: empty canonical task index")

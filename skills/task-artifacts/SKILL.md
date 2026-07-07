@@ -54,12 +54,23 @@ After research, write:
 
 Do not rely on the user re-reading chat for task-specific contract nuances.
 
+## Context Discovery
+
+Before broad search or live checks, prefer existing durable context:
+
+1. `tasks/INDEX.md` and related `task.md`, `findings.md`, `verification.md`, and `sources.md`
+2. local lookup indexes under `data/`, such as files based on `data/local-projects.example.md`
+3. repository documentation and source search
+
+Record new stable paths or recurring lookup details in the task artifacts while working.
+
 ## Checkpoint triggers (do not skip)
 
 1. Finished a plan step with external dependency → update `plan.md` + one line in `trace.md` or `verification.md`
 2. Ran any smoke script → append `verification.md` immediately
 3. Discovered scope change → update `task.md` Open Questions / Acceptance Criteria
 4. Parent delegated to child → child must return with updated artifacts; parent verifies files exist before closing
+5. Discovered reusable lookup knowledge → promote it to an index, skill, or rule before completion
 
 ## Helper script
 
@@ -71,6 +82,19 @@ skills/task-artifacts/scripts/record_verification.sh tasks/002-example \
   "Full CLI run OK; trace: Grep turn 1; no secrets in log."
 ```
 
+## Promotion
+
+Before marking a task done, ask whether a future agent would otherwise rediscover the same fact from scratch.
+
+| Knowledge type | Durable home |
+| --- | --- |
+| Local repository path, important artifact, recurring lookup fact | `data/` index |
+| Repeatable workflow or CLI recipe | `skills/<name>/SKILL.md` or a skill reference file |
+| Always-on agent behavior | project rule, such as `.cursor/rules/*.mdc` |
+| One-off result tied only to this task | `findings.md` in the task directory |
+
+If promotion is intentionally skipped, note why in `findings.md`.
+
 ## Completion checklist
 
 Before `task.md` → `done`:
@@ -80,6 +104,7 @@ Before `task.md` → `done`:
 - [ ] `findings.md` or `findings-*.md` for non-obvious discoveries
 - [ ] `sources.md` if external sources or code references were used
 - [ ] `plan.md` steps match what was actually done
+- [ ] Reusable lookup knowledge promoted to an index, skill, or rule, or explicitly kept task-local
 
 ## Child agents
 

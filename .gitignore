@@ -13,9 +13,10 @@ memory_logs/
 # Track only skeleton files from durable local artifact trees.
 tasks/*
 !tasks/.gitkeep
-!tasks/INDEX.md
+!tasks/INDEX.example.md
 data/*
 !data/.gitkeep
+!data/local-projects.example.md
 !data/projects/
 data/projects/*
 !data/projects/.gitkeep

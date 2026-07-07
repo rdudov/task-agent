@@ -40,6 +40,16 @@ For a sanitized template that intentionally omits local task history:
 .venv/bin/python skills/repo-health/scripts/check_repo_health.py --allow-empty-tasks
 ```
 
+## Pre-Push Leak Check
+
+Run before pushing source changes to a configured remote:
+
+```bash
+.venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote origin
+```
+
+The check scans outgoing files for local task/data/state artifacts, environment files, private keys, and common token formats. It is a guardrail, not a complete security scanner; still review the outgoing diff before pushing.
+
 ## Notes
 
 - This is a structural check, not a full security scanner.

@@ -25,9 +25,19 @@ Do not duplicate skill-specific instructions in project-level docs.
 
 ## Task Conventions
 
-- Every substantial user task gets its own directory under `tasks/`.
-- The only default exception is a clearly trivial request that can be answered immediately without research, file edits, durable artifacts, or multi-step execution.
-- `tasks/INDEX.md` is the canonical ordered task index.
+Every substantial user task gets its own directory under `tasks/` before substantive work begins. The default is to create a task; skipping is only appropriate when the request is clearly trivial or the user explicitly opts out of task artifacts.
+
+A request is substantial when any of these apply:
+
+- it has more than one meaningful step, such as research, implementation, verification, or documentation
+- it creates or changes scripts, configuration, services, documentation, or durable artifacts
+- it needs live checks against external systems, APIs, browsers, SSH, or other runtime services
+- it performs work in another repository or absolute path outside this workspace
+- it is a follow-up that continues the same non-trivial goal
+
+Before broad codebase search or live checks, use existing durable context first: `tasks/INDEX.md`, related task artifacts, and the local project/path index described by `data/local-projects.example.md`. Promote repeated lookup knowledge to an index, skill, or rule before closing the task.
+
+`tasks/INDEX.md` is the canonical ordered task index for a local workspace. It is local generated state and is not tracked by the template; use `tasks/INDEX.example.md` as the format template.
 - Each task directory must contain `task.md` and `plan.md`.
 - Multi-agent or review-sensitive tasks may also include `task_contract.json` for structured non-negotiable constraints, forbidden substitutions, required live evidence, and completion policy.
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.
@@ -37,6 +47,7 @@ Do not duplicate skill-specific instructions in project-level docs.
 ## Durable Data
 
 - Reusable data that should survive across tasks belongs under `data/`.
+- Durable repository/path lookup indexes should live under `data/`; `data/local-projects.example.md` provides a generic starting format.
 - Multi-task project records belong under `data/projects/`.
 - Active durable projects should maintain a rolling status snapshot, typically `status.md`, when that context matters across tasks.
 - Local task and data artifacts are not a substitute for committing and pushing source changes.
@@ -71,7 +82,7 @@ If a task contract marks a live/no-mock verification path as required, environme
 
 Tests around helpers, fixtures, mocks, fake models, or test-only harnesses do not count as production validation for a branch that can realistically run in production.
 
-When a task modifies git-tracked source in a repository with a configured remote, completion should include committing and pushing the finished change unless the user explicitly asks not to, the work is intentionally left uncommitted for review, or credentials/network/policy block the push. If push is deferred or blocked, the final response and task artifacts must say so explicitly.
+When a task modifies git-tracked source in a repository with a configured remote, completion should include committing and pushing the finished change unless the user explicitly asks not to, the work is intentionally left uncommitted for review, or credentials/network/policy block the push. Before creating a branch or pushing, fetch the remote and make sure the base branch is current. Before pushing, run the repository pre-push leak check and review the outgoing diff. If push is deferred or blocked, the final response and task artifacts must say so explicitly.
 
 If a local, unpushed commit is discovered to be wrong and there are no clear contraindications such as dependent work, shared review state, or user-owned changes on top, prefer rewriting local history with `git reset` or another explicit history repair over adding a revert commit that preserves noise. Before resetting, inspect the affected repository status and commit graph; after resetting, record the old and new HEADs in the task trace. Use a revert commit when the bad commit was already pushed/shared or when preserving an auditable public history is explicitly required.
 

@@ -1,0 +1,32 @@
+---
+description: Sync remote-backed repositories before branching or pushing.
+alwaysApply: true
+---
+
+# Git Remote Sync
+
+For any git repository with a configured remote:
+
+## Before Creating a Branch
+
+1. Run `git fetch <remote>`.
+2. Check whether the base branch is behind its remote tracking branch.
+3. Fast-forward the base branch before creating a feature branch.
+
+Do not start new feature work from a stale local base branch when the remote is reachable.
+
+## Before Push
+
+1. Run relevant tests or verification for the task.
+2. Run the pre-push leak check:
+
+   ```bash
+   .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote <remote>
+   ```
+
+3. Review the outgoing diff.
+4. Fetch the remote again.
+5. Rebase or merge onto the latest target branch according to repository policy.
+6. Push the branch.
+
+Use `--force-with-lease` instead of `--force` when rewriting a branch is explicitly required. Do not force-push shared base branches unless the task explicitly calls for history repair.
