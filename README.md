@@ -12,7 +12,7 @@ It is intentionally generic: no private task history, no local data, and no bund
 - `data/local-projects.example.md` as a starting point for local repository/path indexes
 - `AGENTS.md`, `.cursor/rules/`, and `CLAUDE.md` as one shared rule set for Codex, Cursor, and Claude Code
 - `skills/task-creator/` for creating task directories and updating the index
-- `skills/task-runner/` for parent-child CLI agent execution and optional multi-agent workflows
+- `skills/task-runner/` for parent-child CLI agent execution, detached-run supervision, and the dev-pipeline workflow
 - `skills/task-artifacts/` for keeping task artifacts current during work
 - `skills/project-organizer/` for durable project records
 - `skills/repo-health/` for restore, publication, deliverables, and pre-push checks
@@ -65,7 +65,7 @@ Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace
 
 ## Dev-Pipeline Workflow
 
-`--workflow dev-pipeline` runs a task through the standalone [dev-pipeline](https://github.com/) CLI, which drives an evidence-gated Codex or Claude owner session:
+`--workflow dev-pipeline` runs a task through the standalone `dev-pipeline` CLI, which drives an evidence-gated Codex or Claude owner session:
 
 ```bash
 .venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
@@ -79,18 +79,6 @@ This workflow needs the `dev-pipeline` package, which is a separate project and 
 ```
 
 The adapter is transport-neutral. It builds the owner instruction, calls the public CLI, validates the neutral lifecycle events it emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. It binds no recipient and delivers no messages; `skills/task-runner/scripts/pipeline_notify.py` is the documented, deliberately inert seam where an application with a real transport attaches its own delivery and replay rules.
-
-## Multi-Agent Workflow
-
-`skills/task-runner/scripts/task_runner.py` supports `--workflow multi-agent-dev` for explicit team-of-agents development runs. By default use `--runner agent` (Cursor Agent CLI); pass `--runner codex` to run each role through Codex instead. This workflow does not support the Claude runner.
-
-The workflow uses role prompts from `<workspace root>/agents` by default. If that checkout is missing, startup fails unless an agents repository URL is configured. Override with:
-
-- `--agents-dir`
-- `--agents-repo-url`
-- `CODEX_MULTI_AGENT_PROMPTS_REPO`
-
-Use `--model <model>` to pass a Codex model override through to every nested role run. Without an override, the workflow uses the current supported Codex default configured in the runner. If Codex rejects a stale model slug as unsupported, the workflow retries with its supported fallback sequence instead of treating that as a task blocker.
 
 ## Documentation
 

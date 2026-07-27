@@ -122,11 +122,7 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
             workflow="standard",
             model=None,
             sandbox_mode=None,
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
             dry_run=False,
-            resume=False,
         )
 
         class FakeProcess:
@@ -163,11 +159,7 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
             workflow="standard",
             model=None,
             sandbox_mode=None,
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
             dry_run=False,
-            resume=False,
         )
 
         with mock.patch.object(
@@ -202,11 +194,7 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
             workflow="standard",
             model=None,
             sandbox_mode=None,
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
             dry_run=False,
-            resume=False,
         )
 
         with mock.patch.object(
@@ -236,11 +224,7 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
             workflow="standard",
             model=None,
             sandbox_mode=None,
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
             dry_run=False,
-            resume=False,
         )
 
         def keep_completed(*call_args, **call_kwargs):

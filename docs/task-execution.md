@@ -39,25 +39,7 @@ The adapter carries no transport: no destination, no recipient binding, no deliv
 
 This workflow requires the separate `dev-pipeline` package; see `skills/task-runner/SKILL.md` for the install step and the per-artifact projection rules.
 
-## Multi-Agent Workflow
-
-When the user explicitly asks to solve a task with a team of agents, the parent may use:
-
-```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner agent --workflow multi-agent-dev
-```
-
-Each pipeline role runs through the Cursor Agent CLI (`agent`). Use `--runner codex` when every role should run through Codex instead.
-
-The workflow uses an external role-prompt repository. By default it expects `<workspace root>/agents`, where the workspace root is the parent of this checkout unless `TASK_AGENT_WORKSPACE_ROOT` says otherwise. If that checkout is missing, configure an agents repository URL with `--agents-repo-url` or `CODEX_MULTI_AGENT_PROMPTS_REPO`. Use `--agents-dir` for a different local checkout.
-
-The multi-agent workflow rejects `--runner claude`; its role prompts and model defaults are Codex- and Cursor-Agent-bound. The standard single-child workflow supports all three runners.
-
-Startup verifies that all required role prompt files exist before the first pipeline stage proceeds.
-
-If the parent starts the multi-agent workflow with `--model <model>`, that model override should be passed to every nested Codex role run. Without an explicit override, the orchestrator should use current supported Codex model defaults. Stale role defaults are an orchestration defect, not a blocker for the user task: when Codex reports that a model is unsupported, the runner should retry with the current recommended model or a documented supported fallback and continue from existing artifacts.
-
-When `task_contract.json` is present, the multi-agent orchestrator should inject it into every role prompt as a task execution contract overlay instead of trusting stage documents alone to preserve hard constraints. Review and final completion should validate against that contract, not only against free-text stage summaries.
+When `task_contract.json` is present, an orchestrated workflow should carry it into the work as a task execution contract overlay instead of trusting stage documents alone to preserve hard constraints. Review and final completion should validate against that contract, not only against free-text summaries.
 
 Analysis should stop on unresolved task semantics before architecture begins. If the task still has explicit open questions about fallback behavior, backward compatibility, migration scope, runtime failure mode, or rollout source of truth, the analyst should surface them as blocking questions and the pipeline should wait for clarification.
 
@@ -104,7 +86,7 @@ Recommended artifacts:
 - `status.json`
 - `.runner/runner.json`
 - `.runner/runner.log`
-- `multi-agent/`
+- `dev-pipeline/` — lifecycle state and projected events for a dev-pipeline run
 - `task_contract.json`
 - `verification.md` — live smokes and contract gates (redacted)
 - `findings.md`

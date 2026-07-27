@@ -578,12 +578,16 @@ def resolve_sandbox_mode(
     workflow: str,
     sandbox_mode: str | None,
 ) -> str | None:
-    """Resolve the effective sandbox mode for a child run."""
+    """Resolve the effective sandbox mode for a child run.
+
+    The dev-pipeline workflow defaults to full access because its owner has to
+    maintain the task directory alongside the target repository, and those are
+    rarely the same tree. The standard workflow leaves the runner's own default
+    alone.
+    """
     if sandbox_mode:
         return sandbox_mode
-    if workflow not in {"multi-agent-dev", "dev-pipeline"}:
-        return None
-    if runner in {"codex", "claude", "agent"}:
+    if workflow == "dev-pipeline" and runner in {"codex", "claude"}:
         return "danger-full-access"
     return None
 
@@ -647,11 +651,7 @@ def build_workflow_command(
     workflow: str,
     runner: str,
     task_dir: Path,
-    agents_dir: str | None,
-    agents_repo_url: str | None,
-    artifacts_subdir: str | None,
     sandbox_mode: str | None,
-    resume: bool,
     model: str | None = None,
     *,
     repo: str | None = None,
@@ -661,6 +661,10 @@ def build_workflow_command(
     previous_state_dir: str | None = None,
     retry_reason: str | None = None,
 ) -> list[str] | None:
+    """Return the command for a workflow that runs through a dedicated script.
+
+    The standard workflow has none: it launches the CLI runner directly.
+    """
     if workflow == "standard":
         return None
     if workflow == "dev-pipeline":
@@ -676,33 +680,7 @@ def build_workflow_command(
             previous_state_dir,
             retry_reason,
         )
-    if workflow != "multi-agent-dev":
-        raise SystemExit(f"Unsupported workflow: {workflow}")
-    if runner not in {"codex", "agent"}:
-        raise SystemExit(
-            "The multi-agent development workflow supports only the Codex (`codex`) or Cursor Agent (`agent`) runners."
-        )
-
-    command = [
-        sys.executable,
-        str(Path(__file__).with_name("codex_multi_agent.py")),
-        str(task_dir),
-        "--runner",
-        runner,
-    ]
-    if agents_dir:
-        command.extend(["--agents-dir", agents_dir])
-    if agents_repo_url:
-        command.extend(["--agents-repo-url", agents_repo_url])
-    if artifacts_subdir:
-        command.extend(["--artifacts-subdir", artifacts_subdir])
-    if sandbox_mode:
-        command.extend(["--sandbox-mode", sandbox_mode])
-    if model:
-        command.extend(["--model", model])
-    if resume:
-        command.append("--resume")
-    return command
+    raise SystemExit(f"Unsupported workflow: {workflow}")
 
 
 DEV_PIPELINE_OPTIONS = (
@@ -942,11 +920,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         args.workflow,
         args.runner,
         task_dir,
-        getattr(args, "agents_dir", None),
-        getattr(args, "agents_repo_url", None),
-        getattr(args, "artifacts_subdir", None),
         resolved_sandbox_mode,
-        getattr(args, "resume", False),
         getattr(args, "model", None),
         **dev_pipeline_options(args),
     )
@@ -960,9 +934,6 @@ def cmd_start(args: argparse.Namespace) -> None:
         )
         workflow_meta = {
             "workflow": args.workflow,
-            "agents_dir": getattr(args, "agents_dir", None),
-            "agents_repo_url": getattr(args, "agents_repo_url", None),
-            "artifacts_subdir": getattr(args, "artifacts_subdir", None),
             "sandbox_mode": resolved_sandbox_mode,
             **dev_pipeline_options(args),
         }
@@ -1030,14 +1001,6 @@ def cmd_start(args: argparse.Namespace) -> None:
         watcher_command.extend(["--model", args.model])
     if resolved_sandbox_mode:
         watcher_command.extend(["--sandbox-mode", resolved_sandbox_mode])
-    if getattr(args, "agents_dir", None):
-        watcher_command.extend(["--agents-dir", args.agents_dir])
-    if getattr(args, "agents_repo_url", None):
-        watcher_command.extend(["--agents-repo-url", args.agents_repo_url])
-    if getattr(args, "artifacts_subdir", None):
-        watcher_command.extend(["--artifacts-subdir", args.artifacts_subdir])
-    if getattr(args, "resume", False):
-        watcher_command.append("--resume")
     for name, value in dev_pipeline_options(args).items():
         watcher_command.extend([f"--{name.replace('_', '-')}", str(value)])
 
@@ -1207,11 +1170,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             args.workflow,
             args.runner,
             task_dir,
-            getattr(args, "agents_dir", None),
-            getattr(args, "agents_repo_url", None),
-            getattr(args, "artifacts_subdir", None),
             resolved_sandbox_mode,
-            getattr(args, "resume", False),
             getattr(args, "model", None),
             **dev_pipeline_options(args),
         )
@@ -1534,7 +1493,7 @@ def parse_args() -> argparse.Namespace:
     )
     start_parser.add_argument(
         "--workflow",
-        choices=["standard", "multi-agent-dev", "dev-pipeline"],
+        choices=["standard", "dev-pipeline"],
         default="standard",
     )
     start_parser.add_argument("--model", help="Optional model override for the resolved runner.")
@@ -1542,18 +1501,6 @@ def parse_args() -> argparse.Namespace:
         "--sandbox-mode",
         choices=["read-only", "workspace-write", "danger-full-access"],
         help="Access level for the child run, mapped per runner.",
-    )
-    start_parser.add_argument(
-        "--agents-dir",
-        help="Prompt library directory for the multi-agent workflow.",
-    )
-    start_parser.add_argument(
-        "--agents-repo-url",
-        help="Git repository to clone if the multi-agent prompt library directory is missing.",
-    )
-    start_parser.add_argument(
-        "--artifacts-subdir",
-        help="Task-local artifacts subdirectory for the multi-agent workflow.",
     )
     start_parser.add_argument(
         "--repo",
@@ -1583,11 +1530,6 @@ def parse_args() -> argparse.Namespace:
         help="Why a dev-pipeline retry replaces the previous attempt.",
     )
     start_parser.add_argument("--dry-run", action="store_true", help="Prepare artifacts without launching the child process.")
-    start_parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume an existing multi-agent workflow from its latest unfinished stage.",
-    )
     start_parser.set_defaults(func=cmd_start)
 
     run_child_parser = subparsers.add_parser("_run-child", help=argparse.SUPPRESS)
@@ -1596,7 +1538,7 @@ def parse_args() -> argparse.Namespace:
     run_child_parser.add_argument("--runner-resolution", help=argparse.SUPPRESS)
     run_child_parser.add_argument(
         "--workflow",
-        choices=["standard", "multi-agent-dev", "dev-pipeline"],
+        choices=["standard", "dev-pipeline"],
         default="standard",
     )
     run_child_parser.add_argument("--model", help="Optional model override.")
@@ -1605,10 +1547,6 @@ def parse_args() -> argparse.Namespace:
         choices=["read-only", "workspace-write", "danger-full-access"],
         help=argparse.SUPPRESS,
     )
-    run_child_parser.add_argument("--agents-dir", help=argparse.SUPPRESS)
-    run_child_parser.add_argument("--agents-repo-url", help=argparse.SUPPRESS)
-    run_child_parser.add_argument("--artifacts-subdir", help=argparse.SUPPRESS)
-    run_child_parser.add_argument("--resume", action="store_true", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--repo", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--dev-pipeline-bin", help=argparse.SUPPRESS)
     run_child_parser.add_argument(

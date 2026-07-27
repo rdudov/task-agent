@@ -9,7 +9,7 @@ A change is self-development work when it affects:
 - task lifecycle or task artifact structure
 - skill discovery, skill invocation, or skill validation
 - parent-child runner behavior
-- multi-agent orchestration
+- child-run supervision or workflow orchestration
 - backup restore, health checks, or resume behavior
 - documentation rules that affect future agents
 

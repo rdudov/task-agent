@@ -56,6 +56,6 @@ change, or verify this wiring.
 - A Claude session governs its own access through permission modes and
   `.claude/settings.json`. Use `--add-dir` when a task legitimately needs a
   sibling repository outside this checkout.
-- The `multi-agent-dev` workflow runs its roles through Codex or Cursor Agent.
-  Do not substitute Claude subagents for a launched child CLI process without an
-  explicit task that changes that architecture.
+- Do not substitute Claude subagents for a launched child CLI process without an
+  explicit task that changes that architecture. That applies to the standard
+  workflow and to `--workflow dev-pipeline`, whose owner is a real CLI session.

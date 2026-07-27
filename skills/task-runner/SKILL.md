@@ -1,13 +1,13 @@
 ---
 name: task-runner
-description: Use this skill when a substantial task should be delegated to a child CLI agent. It launches Codex, Claude Code, or Cursor Agent against a task directory, resolving the child runner from the parent CLI agent, writes progress scaffolding, provides status polling, and can run an explicit multi-agent development workflow.
+description: Use this skill when a substantial task should be delegated to a child CLI agent. It launches Codex, Claude Code, or Cursor Agent against a task directory, resolving the child runner from the parent CLI agent, writes progress scaffolding, supervises the detached run, provides status polling, and can run a task through the dev-pipeline workflow.
 ---
 
 # Task Runner
 
 This skill launches a child CLI agent to execute a task from its task directory.
 
-Use the standard single-child workflow by default. Use the multi-agent development workflow only when the user explicitly asks for a team-of-agents execution style.
+Use the standard single-child workflow by default. Use the dev-pipeline workflow when a task should run through the evidence-gated dev-pipeline lifecycle instead.
 
 ## Artifacts
 
@@ -26,7 +26,7 @@ It creates or updates:
 
 The child is asked to publish `progress.json` for long runs, and to place explicitly requested output files in `deliverables/` with `deliverables/manifest.json`.
 
-The multi-agent workflow also creates `multi-agent/` by default, and the dev-pipeline workflow creates `dev-pipeline/`.
+The dev-pipeline workflow also creates `dev-pipeline/`.
 
 ## Runner Selection
 
@@ -86,31 +86,14 @@ Start a standard Claude child:
 .venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner claude
 ```
 
-Start the explicit multi-agent workflow (Cursor Agent CLI for each role):
+Run a task through the dev-pipeline workflow:
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner agent --workflow multi-agent-dev
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
+  --workflow dev-pipeline --repo /path/to/target-repo
 ```
 
-Use Codex for each pipeline role instead:
-
-```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner codex --workflow multi-agent-dev
-```
-
-Resume an interrupted multi-agent run:
-
-```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner agent --workflow multi-agent-dev --resume
-```
-
-Override the Codex model for every nested multi-agent role run:
-
-```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner codex --workflow multi-agent-dev --model gpt-5.5
-```
-
-If Codex rejects a model as unsupported for the current account, treat that as recoverable runner configuration drift. Use the current supported model or let the runner fallback sequence choose one; do not report an unsupported stale model slug as a user-task blocker.
+If a runner rejects a model as unsupported for the current account, treat that as recoverable runner configuration drift rather than a user-task blocker: use a currently supported model.
 
 Check progress:
 
@@ -198,18 +181,6 @@ The adapter carries no transport. It has no destination option, binds no recipie
 
 `skills/task-runner/scripts/pipeline_notify.py` is where such an owner attaches. It formats messages and reports `no notification transport configured`, so in this template every offer is inert and nothing is recorded. An application that implements it starts receiving the notable lifecycle events the adapter already offers.
 
-## Multi-Agent Prompt Repository
-
-The multi-agent workflow uses role prompts from `<workspace root>/agents` by default, where the workspace root is the parent of this checkout unless `TASK_AGENT_WORKSPACE_ROOT` says otherwise.
-
-If that prompt directory is missing, configure a clone source with `--agents-repo-url` or `CODEX_MULTI_AGENT_PROMPTS_REPO`. Use `--agents-dir` for a different checkout.
-
-The workflow rejects `--runner claude`. Its role prompts and model defaults are Codex- and Cursor-Agent-bound; running Claude roles is a code change, not a flag.
-
-Startup verifies that the required role prompt files exist before running the first pipeline stage.
-
-`--model <model>` is passed through to every nested Codex role run in the multi-agent workflow. Omit it to use the workflow's current Codex defaults and supported-model fallback.
-
 ## Completion Rules
 
 - Keep task progress in `trace.md` and `status.json`, and publish substantive `progress.json` for a long run.
@@ -223,7 +194,7 @@ Startup verifies that the required role prompt files exist before running the fi
 - Stub-first work is allowed only for new seams or genuinely unavailable external systems. Do not stub over an existing exercisable production path, and do not credit a stub-only run with live evidence.
 - Read the target repository's own operating context before raising language, syntax, build, or convention findings, and judge them against its declared runtime.
 - When changed source is loaded by active local services or units, restart or reload them, verify they came up cleanly, and record that evidence before reporting done.
-- When `task_contract.json` is present, treat it as the execution contract for role prompts, review, and completion gates.
+- When `task_contract.json` is present, treat it as the execution contract for delegated work, review, and completion gates.
 - Preserve the semantic target of the request. If the task names a reference behavior, artifact, provider, model, protocol feature, or runtime branch, implement and verify that named path directly instead of substituting a nearby effect unless the user or task contract explicitly accepts the substitution.
 - Do not assume backward compatibility or a legacy fallback path unless the user request or project contract explicitly requires it.
 - Mocked providers, fake models, and test-only harnesses are useful for unit coverage but are not sufficient acceptance evidence for production-reachable runtime branches by themselves.

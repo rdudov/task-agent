@@ -20,26 +20,6 @@ task_runner = _load_task_runner_module()
 
 
 class TaskRunnerSandboxModeTests(unittest.TestCase):
-    def test_resolve_sandbox_mode_defaults_multi_agent_codex_to_danger_full_access(self) -> None:
-        self.assertEqual(
-            task_runner.resolve_sandbox_mode(
-                runner="codex",
-                workflow="multi-agent-dev",
-                sandbox_mode=None,
-            ),
-            "danger-full-access",
-        )
-
-    def test_resolve_sandbox_mode_defaults_multi_agent_agent_to_danger_full_access(self) -> None:
-        self.assertEqual(
-            task_runner.resolve_sandbox_mode(
-                runner="agent",
-                workflow="multi-agent-dev",
-                sandbox_mode=None,
-            ),
-            "danger-full-access",
-        )
-
     def test_resolve_sandbox_mode_keeps_standard_codex_default_implicit(self) -> None:
         self.assertIsNone(
             task_runner.resolve_sandbox_mode(
@@ -53,81 +33,34 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         self.assertEqual(
             task_runner.resolve_sandbox_mode(
                 runner="codex",
-                workflow="multi-agent-dev",
+                workflow="dev-pipeline",
                 sandbox_mode="workspace-write",
             ),
             "workspace-write",
         )
 
-    def test_build_workflow_command_passes_resolved_sandbox_mode(self) -> None:
-        command = task_runner.build_workflow_command(
-            workflow="multi-agent-dev",
-            runner="codex",
-            task_dir=Path("/tmp/example-task"),
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
-            sandbox_mode="danger-full-access",
-            resume=True,
-            model=None,
+    def test_build_workflow_command_has_no_command_for_the_standard_workflow(self) -> None:
+        self.assertIsNone(
+            task_runner.build_workflow_command(
+                workflow="standard",
+                runner="codex",
+                task_dir=Path("/tmp/example-task"),
+                sandbox_mode=None,
+            )
         )
 
-        self.assertIsNotNone(command)
-        self.assertIn("--sandbox-mode", command)
-        self.assertIn("danger-full-access", command)
-        self.assertIn("--resume", command)
+    def test_build_workflow_command_rejects_an_unknown_workflow(self) -> None:
+        with self.assertRaises(SystemExit):
+            task_runner.build_workflow_command(
+                workflow="team-of-agents",
+                runner="codex",
+                task_dir=Path("/tmp/example-task"),
+                sandbox_mode=None,
+            )
 
-    def test_build_workflow_command_passes_model_override(self) -> None:
-        command = task_runner.build_workflow_command(
-            workflow="multi-agent-dev",
-            runner="codex",
-            task_dir=Path("/tmp/example-task"),
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
-            sandbox_mode="danger-full-access",
-            resume=True,
-            model="gpt-5.4",
-        )
-
-        self.assertIsNotNone(command)
-        self.assertIn("--model", command)
-        self.assertIn("gpt-5.4", command)
-
-    def test_build_workflow_command_passes_agents_repo_url(self) -> None:
-        command = task_runner.build_workflow_command(
-            workflow="multi-agent-dev",
-            runner="codex",
-            task_dir=Path("/tmp/example-task"),
-            agents_dir="/tmp/agents",
-            agents_repo_url="https://example.test/agents.git",
-            artifacts_subdir=None,
-            sandbox_mode=None,
-            resume=False,
-            model=None,
-        )
-
-        self.assertIsNotNone(command)
-        self.assertIn("--agents-dir", command)
-        self.assertIn("/tmp/agents", command)
-        self.assertIn("--agents-repo-url", command)
-        self.assertIn("https://example.test/agents.git", command)
-
-    def test_build_workflow_command_passes_agent_runner(self) -> None:
-        command = task_runner.build_workflow_command(
-            workflow="multi-agent-dev",
-            runner="agent",
-            task_dir=Path("/tmp/example-task"),
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
-            sandbox_mode="danger-full-access",
-            resume=False,
-        )
-
-        self.assertIsNotNone(command)
-        self.assertIn("--runner", command)
-        self.assertIn("agent", command)
+    def test_dev_pipeline_command_passes_the_model_override(self) -> None:
+        command = self._dev_pipeline_command(model="gpt-5.4")
+        self.assertEqual(command[command.index("--model") + 1], "gpt-5.4")
 
     def test_resolve_sandbox_mode_defaults_dev_pipeline_to_danger_full_access(self) -> None:
         for runner in ("codex", "claude"):
@@ -146,11 +79,7 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             workflow="dev-pipeline",
             runner="codex",
             task_dir=Path("/tmp/example-task"),
-            agents_dir=None,
-            agents_repo_url=None,
-            artifacts_subdir=None,
             sandbox_mode="workspace-write",
-            resume=False,
             model=None,
             repo="/tmp/target-repo",
         )

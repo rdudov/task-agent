@@ -46,7 +46,7 @@ Before broad codebase search or live checks, use existing durable context first:
 
 `tasks/INDEX.md` is the canonical ordered task index for a local workspace. It is local generated state and is not tracked by the template; use `tasks/INDEX.example.md` as the format template.
 - Each task directory must contain `task.md` and `plan.md`.
-- Multi-agent or review-sensitive tasks may also include `task_contract.json` for structured non-negotiable constraints, forbidden substitutions, required live evidence, and completion policy.
+- Delegated or review-sensitive tasks may also include `task_contract.json` for structured non-negotiable constraints, forbidden substitutions, required live evidence, and completion policy.
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.
 - Keep tasks flat in `tasks/`; express hierarchy through `Parent Task` and `Related Tasks` in `task.md`.
 - Task-specific findings and sources belong in the task directory.
@@ -75,7 +75,7 @@ Files the user explicitly requested are a separate, user-facing class of output.
 
 - Skills live under `skills/`.
 - Use `skills/task-creator/` to create task artifacts.
-- Use `skills/task-runner/` to delegate substantial work to child agents or run the explicit multi-agent workflow. The child runner follows the parent CLI agent unless a caller selects one explicitly, so a Codex parent delegates to a Codex child and a Claude parent to a Claude child. That resolution belongs to the task runner, not to prompt text, so callers that never read a skill get the same behavior. Every run records the resolved runner and the rule that resolved it. `multi-agent-dev` stays Codex- and Cursor-Agent-bound.
+- Use `skills/task-runner/` to delegate substantial work to child agents or run a task through the dev-pipeline workflow. The child runner follows the parent CLI agent unless a caller selects one explicitly, so a Codex parent delegates to a Codex child and a Claude parent to a Claude child. That resolution belongs to the task runner, not to prompt text, so callers that never read a skill get the same behavior. Every run records the resolved runner and the rule that resolved it. A launched run is supervised by kernel process identity so a recycled pid is never mistaken for the child.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.
 - Use `skills/skill-maintainer/` when adding, restoring, or changing skills.

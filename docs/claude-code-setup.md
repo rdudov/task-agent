@@ -109,8 +109,8 @@ Launching Claude as a *child* agent is a separate mechanism, documented in
 - `task_runner.py` accepts `--runner codex`, `--runner claude`, and
   `--runner agent`. With no explicit flag it resolves the child from the parent
   CLI agent, so a Claude session launches a Claude child.
-- `--workflow multi-agent-dev` rejects the Claude runner. Its role prompts and
-  model defaults are Codex- and Cursor-Agent-bound.
+- `--workflow dev-pipeline` accepts `--runner codex` and `--runner claude`,
+  because those are the owner runtimes the dev-pipeline core drives.
 - Access level is expressed once through `--sandbox-mode` and mapped per runner.
   The Claude mapping needs a Linux host with `bubblewrap` and `socat` for its
   restricted modes and fails closed without them.

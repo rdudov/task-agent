@@ -28,7 +28,7 @@ Optional task artifacts:
 - `.runner/runner.json` and `.runner/runner.log` for child-agent launch diagnostics
 - `findings.md` and `sources.md` for research tasks
 - `deliverables/` and `deliverables/manifest.json` for explicitly requested output files
-- `multi-agent/` for explicit multi-agent pipeline artifacts
+- `dev-pipeline/` for dev-pipeline lifecycle state and projected events
 
 The canonical task list is `tasks/INDEX.md`. It is local generated state and is not tracked by the template. Use [tasks/INDEX.example.md](../tasks/INDEX.example.md) as the format template.
 
@@ -103,8 +103,8 @@ The one absolute path the runner needs is the workspace root that full access re
 2. The task is added to `tasks/INDEX.md`.
 3. The parent agent prepares the task directory as the execution handoff.
 4. A child CLI agent may perform substantial work and write progress artifacts into the task directory.
-5. If the user explicitly requests a team-of-agents execution style, the parent may launch the task-runner multi-agent workflow.
-6. When present, `task_contract.json` is propagated by the orchestrator into role prompts and used by review/completion gates.
+5. A task may instead run through the task-runner dev-pipeline workflow, which drives an evidence-gated owner session and projects its lifecycle events back into the task artifacts.
+6. When present, `task_contract.json` is carried into the work by the orchestrator and used by review/completion gates.
 7. If source files change, the finished source change is committed and pushed unless the task explicitly keeps it local or publication is blocked; remote-backed repositories should be synced before branch/push and checked with the pre-push leak check before publication.
 8. If engine behavior changes, project documentation is updated in the same change.
 
