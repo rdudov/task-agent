@@ -22,6 +22,23 @@ Because the run outlives its initiator, a pid alone is not enough to identify it
 
 A watcher that is recovered rather than original cannot read the child's exit code. It observes liveness and then reads the terminal state the child recorded; a child that disappears without one is recorded as failed, never as done.
 
+## Dev-Pipeline Workflow
+
+`--workflow dev-pipeline` delegates a task to the standalone `dev-pipeline` CLI, which drives an evidence-gated Codex or Claude owner session against a target repository:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
+  --workflow dev-pipeline --repo /path/to/target-repo
+```
+
+The runner decides nothing about the pipeline itself. `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration: it renders the owner instruction from `task.md`, calls the public CLI, validates the neutral lifecycle events the core emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. The core interprets owner-runtime behavior; the adapter only projects what the core reports.
+
+The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed, and a reported completion is still refused while the task's own artifacts contradict it — an unfinished status, an unchecked acceptance criterion, or a `required_live_evidence` gate missing from `verification.md`.
+
+The adapter carries no transport: no destination, no recipient binding, no delivery deduplication. Those belong to an application that owns a transport, and `skills/task-runner/scripts/pipeline_notify.py` is the documented seam where it attaches. In this template that seam is inert by design.
+
+This workflow requires the separate `dev-pipeline` package; see `skills/task-runner/SKILL.md` for the install step and the per-artifact projection rules.
+
 ## Multi-Agent Workflow
 
 When the user explicitly asks to solve a task with a team of agents, the parent may use:

@@ -129,6 +129,62 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         self.assertIn("--runner", command)
         self.assertIn("agent", command)
 
+    def test_resolve_sandbox_mode_defaults_dev_pipeline_to_danger_full_access(self) -> None:
+        for runner in ("codex", "claude"):
+            with self.subTest(runner=runner):
+                self.assertEqual(
+                    task_runner.resolve_sandbox_mode(
+                        runner=runner,
+                        workflow="dev-pipeline",
+                        sandbox_mode=None,
+                    ),
+                    "danger-full-access",
+                )
+
+    def _dev_pipeline_command(self, **overrides) -> list[str]:
+        arguments = dict(
+            workflow="dev-pipeline",
+            runner="codex",
+            task_dir=Path("/tmp/example-task"),
+            agents_dir=None,
+            agents_repo_url=None,
+            artifacts_subdir=None,
+            sandbox_mode="workspace-write",
+            resume=False,
+            model=None,
+            repo="/tmp/target-repo",
+        )
+        arguments.update(overrides)
+        return task_runner.build_workflow_command(**arguments)
+
+    def test_dev_pipeline_command_targets_the_adapter_with_the_owner_runtime(self) -> None:
+        command = self._dev_pipeline_command(runner="claude")
+        self.assertIn("dev_pipeline_adapter.py", command[1])
+        self.assertIn("--repo", command)
+        self.assertIn("/tmp/target-repo", command)
+        self.assertEqual(command[command.index("--owner-runtime") + 1], "claude")
+        self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")
+        self.assertEqual(command[command.index("--operation") + 1], "start")
+
+    def test_dev_pipeline_command_passes_retry_state(self) -> None:
+        command = self._dev_pipeline_command(
+            operation="retry",
+            state_dir="/tmp/example-task/dev-pipeline/core-2",
+            previous_state_dir="/tmp/example-task/dev-pipeline/core",
+            retry_reason="intentional_replacement",
+        )
+        self.assertEqual(command[command.index("--operation") + 1], "retry")
+        self.assertIn("--previous-state-dir", command)
+        self.assertEqual(command[command.index("--retry-reason") + 1], "intentional_replacement")
+
+    def test_dev_pipeline_refuses_a_runner_the_core_cannot_drive(self) -> None:
+        with self.assertRaises(SystemExit):
+            self._dev_pipeline_command(runner="agent")
+
+    def test_dev_pipeline_refuses_to_run_without_a_target_repository(self) -> None:
+        with self.assertRaises(SystemExit):
+            self._dev_pipeline_command(repo=None)
+
     def test_build_codex_command_uses_current_approval_flag_without_full_auto(self) -> None:
         prompt_path = Path("/tmp/task-runner-prompt.txt")
         prompt_path.write_text("test prompt", encoding="utf-8")

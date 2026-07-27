@@ -1,0 +1,581 @@
+#!/usr/bin/env python3
+"""Run a task through the standalone `dev-pipeline` CLI and project its events.
+
+This adapter is deliberately transport-neutral. It turns a task directory into
+an owner instruction, runs the public `dev-pipeline owner` command, validates
+the neutral lifecycle events it emits, and projects them into the task's own
+`status.json`, `trace.md`, and `progress.json`.
+
+It carries no delivery concern at all: no destination, no recipient binding, no
+message deduplication, no at-most-once claim. Those belong to whichever
+application owns a transport, because only that owner knows whether its
+transport can be replayed safely. `pipeline_notify.py` is the seam where such an
+owner attaches; in this template it is intentionally inert.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable
+
+from dev_pipeline.events import validate_event
+
+from pipeline_notify import try_send_pipeline_status_message
+
+
+# Lifecycle kinds worth telling a human about. The template has no transport, so
+# this only decides what reaches the (inert) notification seam.
+NOTIFIABLE = frozenset(
+    {
+        "attempt_started",
+        "checkpoint_completed",
+        "increment_ready_for_review",
+        "increment_completed",
+        "blocked_on_user_decision",
+        "attempt_failed",
+        "attempt_completed",
+    }
+)
+
+# Startup bookkeeping. These say the machinery began, not that anything was
+# achieved, so they never become a `recent_outcome`.
+BOOKKEEPING = frozenset(
+    {"attempt_started", "run_started", "process_started", "native_session_discovered"}
+)
+
+TERMINAL_TASK_STATES = frozenset({"completed", "failed", "blocked"})
+
+PROGRESS_SOURCE = "dev-pipeline-adapter"
+
+STATE_DIR_NAME = "dev-pipeline"
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, payload: dict) -> None:
+    """Replace a file atomically and durably.
+
+    A watcher may be killed at any moment. A half-written cursor would make the
+    next run either replay work or skip it, so the rename is the commit point.
+    """
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def write_text(path: Path, value: str) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(value)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def append_jsonl(path: Path, payload: dict) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def state_dir(task_dir: Path) -> Path:
+    return task_dir / STATE_DIR_NAME
+
+
+def core_state_dir(task_dir: Path, value: Path | None, default: str = "core") -> Path:
+    """Keep the core's own lifecycle state inside the task that owns the run."""
+    resolved = (value or state_dir(task_dir) / default).resolve()
+    root = state_dir(task_dir).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(
+            "Core lifecycle state must stay inside the task's dev-pipeline state directory"
+        )
+    return resolved
+
+
+def prepare_owner_instruction(task_dir: Path) -> Path:
+    """Build the exact instruction artifact handed to the dev-pipeline owner."""
+    task_text = (task_dir / "task.md").read_text(encoding="utf-8")
+    instruction_path = state_dir(task_dir) / "owner-instruction.md"
+    instruction_path.parent.mkdir(parents=True, exist_ok=True)
+    write_text(
+        instruction_path,
+        "# Dev-pipeline owner contract\n\n"
+        "Treat the canonical task request below and every continuation as one ordered "
+        "semantic contract. Keep the canonical task artifacts current while working.\n\n"
+        f"Publish substantive live progress to `{task_dir / 'progress.json'}` using this "
+        "version 1 contract:\n\n"
+        "- Write `schema_version: 1`, a concrete `activity`, and `updated_at`.\n"
+        "- Add `recent_outcome` after a meaningful checkpoint.\n"
+        "- When measurable bounds are actually known, write non-negative `completed`, "
+        "positive `total`, and a plural-capable `unit` together.\n"
+        "- Never infer or invent a total. When no total is known, omit `completed`, "
+        "`total`, and `unit` together and describe the concrete current operation and "
+        "meaningful completed work instead.\n"
+        "- Keep `status.json` and `trace.md` current as required by the task, but do not "
+        "use runner startup bookkeeping as a meaningful outcome.\n\n"
+        f"Follow `{task_dir / 'task_contract.json'}` when present and "
+        f"`{task_dir / 'plan.md'}` for the execution plan.\n\n"
+        "## Canonical task request\n\n"
+        f"{task_text.rstrip()}\n",
+    )
+    return instruction_path
+
+
+def contract_completion_ready(task_dir: Path) -> tuple[bool, str]:
+    """Reject a completion the task's own durable artifacts contradict.
+
+    The owner process exiting cleanly says the process ended, not that the task
+    was finished. Where the task states its own completion conditions, those
+    decide.
+    """
+    task_file = task_dir / "task.md"
+    if not task_file.exists():
+        return False, "task.md is missing"
+    task_text = task_file.read_text(encoding="utf-8")
+    status_section = task_status_value(task_text)
+    if status_section not in {"done", "completed"}:
+        return False, "task.md status is not done"
+    if "- [ ]" in task_text:
+        return False, "task.md still has unchecked acceptance criteria"
+
+    contract_path = task_dir / "task_contract.json"
+    if not contract_path.exists():
+        return True, ""
+    contract = read_json(contract_path)
+    required = [
+        item.get("id")
+        for item in contract.get("required_live_evidence", [])
+        if isinstance(item, dict)
+    ]
+    verification_path = task_dir / "verification.md"
+    verification = (
+        verification_path.read_text(encoding="utf-8") if verification_path.exists() else ""
+    )
+    missing = [gate for gate in required if gate and gate not in verification]
+    if missing:
+        return False, f"verification.md is missing required gates: {', '.join(missing)}"
+    return True, ""
+
+
+def task_status_value(task_text: str) -> str:
+    """Read the value under the task's `## Status` heading."""
+    lines = task_text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().lower() != "## status":
+            continue
+        for candidate in lines[index + 1:]:
+            if candidate.strip():
+                return candidate.strip().lower()
+        return ""
+    return ""
+
+
+def status_projection(event: dict, task_dir: Path) -> tuple[str, str]:
+    """Map a lifecycle event to the task's own status vocabulary."""
+    kind = event["kind"]
+    payload = event["payload"]
+    if kind == "attempt_started":
+        return "running", "Dev-pipeline owner attempt started"
+    if kind == "checkpoint_completed":
+        return (
+            "running",
+            f"Checkpoint completed: {payload['checkpoint']}; next: {payload['next_step']}",
+        )
+    if kind == "increment_ready_for_review":
+        return "running", f"Increment ready for review: {payload['increment']}"
+    if kind == "increment_completed":
+        return (
+            "running",
+            f"Increment completed: {payload['increment']}; next: {payload['next_step']}",
+        )
+    if kind == "blocked_on_user_decision":
+        return "blocked", f"Waiting for user decision: {payload['question']}"
+    if kind == "run_failed":
+        return "running", f"Dev-pipeline run failed: {payload['reason']}"
+    if kind == "attempt_failed":
+        return "failed", f"Dev-pipeline failed: {payload['reason']}"
+    if kind == "attempt_completed":
+        ready, reason = contract_completion_ready(task_dir)
+        if ready:
+            return "completed", "Dev-pipeline owner attempt completed"
+        return "blocked", f"Rejected premature completion: {reason}"
+    return "running", f"Dev-pipeline event: {kind}"
+
+
+def progress_projection(event: dict, current_step: str) -> tuple[str, str | None]:
+    """Describe the concrete current operation, and any real outcome behind it.
+
+    Counts are never derived here. The lifecycle vocabulary carries no notion of
+    how many checkpoints or increments a task has, and a total nobody knows is
+    worse than no total because it reads as a measurement.
+    """
+    kind = event["kind"]
+    payload = event["payload"]
+    activities = {
+        "attempt_started": "Dev-pipeline owner attempt starting",
+        "process_started": "Owner runtime process running",
+        "native_session_discovered": (
+            "Owner runtime session established; owner work is active"
+        ),
+        "run_completed": "Owner run finished",
+    }
+    if kind == "run_started":
+        activity = f"Owner run starting ({payload['run_operation']})"
+    elif kind == "native_resume_unavailable":
+        activity = f"Owner session cannot be resumed: {payload['reason']}"
+    elif kind == "checkpoint_completed":
+        activity = f"Working past checkpoint {payload['checkpoint']}; next: {payload['next_step']}"
+    elif kind == "increment_ready_for_review":
+        activity = f"Increment {payload['increment']} is waiting for review"
+    elif kind == "increment_completed":
+        activity = f"Working past increment {payload['increment']}; next: {payload['next_step']}"
+    elif kind == "blocked_on_user_decision":
+        activity = f"Waiting for a user decision: {payload['question']}"
+    elif kind in {"run_failed", "attempt_failed"}:
+        activity = f"Owner work stopped: {payload['reason']}"
+    elif kind == "attempt_completed":
+        activity = current_step
+    else:
+        activity = activities.get(kind, f"Dev-pipeline event: {kind}")
+
+    if kind in BOOKKEEPING:
+        return activity, None
+    outcomes = {
+        "checkpoint_completed": lambda: f"Checkpoint {payload['checkpoint']} completed",
+        "increment_ready_for_review": lambda: (
+            f"Increment {payload['increment']} reached review"
+        ),
+        "increment_completed": lambda: f"Increment {payload['increment']} completed",
+        "blocked_on_user_decision": lambda: f"Blocked on: {payload['question']}",
+        "run_failed": lambda: f"Run failed: {payload['reason']}",
+        "attempt_failed": lambda: f"Attempt failed: {payload['reason']}",
+        "run_completed": lambda: f"Owner run exited with code {payload['exit_code']}",
+        "attempt_completed": lambda: current_step,
+        "native_resume_unavailable": lambda: (
+            f"Native session unavailable: {payload['reason']}"
+        ),
+    }
+    outcome = outcomes.get(kind)
+    return activity, outcome() if outcome else None
+
+
+class TaskArtifactProjector:
+    """Project validated lifecycle events into one task's durable artifacts.
+
+    Ordering is enforced rather than assumed: an event that skips a sequence
+    number, belongs to a different task, or belongs to a run this projector is
+    not following is a refusal, not a gap to paper over.
+    """
+
+    def __init__(self, task_dir: Path) -> None:
+        self.task_dir = task_dir.resolve()
+        self.task_ref = self.task_dir.name
+        self.state_dir = state_dir(self.task_dir)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.cursor_path = self.state_dir / "adapter-cursor.json"
+        self.event_path = self.state_dir / "projected-events.jsonl"
+        self.projection_cursor_path = self.state_dir / "projection-cursor.json"
+        self.recover_projection()
+
+    def recover_projection(self) -> None:
+        """Replay any event that was durably recorded but not yet projected."""
+        projection = read_json(self.projection_cursor_path)
+        projected = set(projection.get("projected_event_ids", []))
+        if not self.event_path.exists():
+            return
+        with self.event_path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    event = validate_event(
+                        json.loads(line), allow_legacy_unclassified_resume=True
+                    )
+                except (json.JSONDecodeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Projected lifecycle event log is invalid at line {line_number}"
+                    ) from exc
+                if event["event_id"] in projected:
+                    continue
+                self.project(event)
+                projected.add(event["event_id"])
+                write_json(
+                    self.projection_cursor_path,
+                    {
+                        "schema_version": 1,
+                        "last_event_id": event["event_id"],
+                        "last_sequence": event["sequence"],
+                        "attempt_id": event["attempt_id"],
+                        "run_id": event["run_id"],
+                        "projected_event_ids": sorted(projected),
+                        "updated_at": utc_now(),
+                    },
+                )
+
+    def consume(self, raw_event: dict) -> bool:
+        """Record and project one event. Returns False for a repeat."""
+        event = validate_event(raw_event)
+        if event["task_ref"] != self.task_ref:
+            raise ValueError(
+                "Lifecycle event task_ref does not match the canonical task directory"
+            )
+        cursor = read_json(self.cursor_path)
+        starts_new_attempt = bool(
+            cursor
+            and event["kind"] == "attempt_started"
+            and event["sequence"] == 1
+            and (
+                cursor.get("attempt_id") != event["attempt_id"]
+                or cursor.get("run_id") != event["run_id"]
+            )
+        )
+        starts_new_run = bool(
+            cursor
+            and event["kind"] == "run_started"
+            and event["attempt_id"] == cursor.get("attempt_id")
+            and event["run_id"] != cursor.get("run_id")
+            and event["sequence"] == cursor.get("last_sequence", 0) + 1
+        )
+        consumed = set() if starts_new_attempt else set(cursor.get("consumed_event_ids", []))
+        if cursor and not starts_new_attempt and not starts_new_run:
+            if (
+                cursor.get("attempt_id") != event["attempt_id"]
+                or cursor.get("run_id") != event["run_id"]
+            ):
+                raise ValueError(
+                    "Lifecycle event identity differs from the active adapter cursor"
+                )
+            if event["event_id"] in consumed:
+                return False
+            if event["sequence"] != cursor["last_sequence"] + 1:
+                raise ValueError("Lifecycle event sequence is stale or out of order")
+
+        consumed.add(event["event_id"])
+        append_jsonl(self.event_path, event)
+        write_json(
+            self.cursor_path,
+            {
+                "schema_version": 1,
+                "attempt_id": event["attempt_id"],
+                "run_id": event["run_id"],
+                "last_sequence": event["sequence"],
+                "consumed_event_ids": sorted(consumed),
+                "updated_at": utc_now(),
+            },
+        )
+        self.recover_projection()
+        self.offer_to_delivery(event)
+        return True
+
+    def offer_to_delivery(self, event: dict) -> None:
+        """Hand a notable event to the delivery seam.
+
+        `pipeline_notify.py` reports that no transport is configured, so in this
+        template nothing is delivered and nothing is recorded. An application
+        that owns a transport implements the seam there — along with the
+        recipient binding and replay rules that only it can define.
+        """
+        if event["kind"] not in NOTIFIABLE:
+            return
+        status = read_json(self.task_dir / "status.json").get("current_step", event["kind"])
+        sent, detail = try_send_pipeline_status_message(
+            task_dir=self.task_dir,
+            status=str(status),
+            artifact_paths=[self.task_dir / "status.json", self.task_dir / "trace.md"],
+        )
+        if sent:
+            self.append_trace(f"Delivered dev-pipeline `{event['kind']}` notification: {detail}")
+
+    def project(self, event: dict) -> None:
+        state, step = status_projection(event, self.task_dir)
+        self.project_status(event, state, step)
+        self.project_trace(event, step)
+        self.project_progress(event, step)
+
+    def project_status(self, event: dict, state: str, step: str) -> None:
+        status_path = self.task_dir / "status.json"
+        status = read_json(status_path)
+        status.update(
+            {
+                "state": state,
+                "current_step": step,
+                "updated_at": event["timestamp"],
+                "dev_pipeline": {
+                    "attempt_id": event["attempt_id"],
+                    "run_id": event["run_id"],
+                    "last_event_id": event["event_id"],
+                    "last_sequence": event["sequence"],
+                },
+            }
+        )
+        write_json(status_path, status)
+
+    def project_trace(self, event: dict, step: str) -> None:
+        trace_path = self.task_dir / "trace.md"
+        marker = f"<!-- dev-pipeline-event:{event['event_id']} -->"
+        trace = trace_path.read_text(encoding="utf-8") if trace_path.exists() else ""
+        if marker in trace:
+            return
+        if not trace:
+            trace_path.write_text("# Trace\n\n", encoding="utf-8")
+        with trace_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                f"- {event['timestamp']} dev-pipeline `{event['kind']}`: {step} {marker}\n"
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def project_progress(self, event: dict, step: str) -> None:
+        """Publish progress from lifecycle events without overwriting the owner.
+
+        The owner agent knows far more about its own work than the lifecycle
+        vocabulary does, so anything it publishes wins. This fills the gap
+        before and between those publications, and marks its own writes so it
+        can tell them apart later.
+        """
+        progress_path = self.task_dir / "progress.json"
+        existing: dict = {}
+        if progress_path.exists():
+            try:
+                candidate = json.loads(progress_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                candidate = None
+            if isinstance(candidate, dict):
+                if (
+                    candidate.get("schema_version") == 1
+                    and candidate.get("source") != PROGRESS_SOURCE
+                ):
+                    return
+                existing = candidate
+
+        activity, outcome = progress_projection(event, step)
+        progress = {
+            "schema_version": 1,
+            "source": PROGRESS_SOURCE,
+            "activity": activity,
+            "updated_at": event["timestamp"],
+        }
+        # Carry the last real outcome forward: bookkeeping events must not erase
+        # the most recent thing that was actually achieved.
+        carried = outcome or existing.get("recent_outcome")
+        if isinstance(carried, str) and carried.strip():
+            progress["recent_outcome"] = carried.strip()
+        write_json(progress_path, progress)
+
+    def append_trace(self, message: str) -> None:
+        trace_path = self.task_dir / "trace.md"
+        if not trace_path.exists():
+            trace_path.write_text("# Trace\n\n", encoding="utf-8")
+        with trace_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"- {utc_now()} {message}\n")
+
+
+def consume_lines(projector: TaskArtifactProjector, lines: Iterable[str]) -> None:
+    for line in lines:
+        if line.strip():
+            projector.consume(json.loads(line))
+
+
+def build_core_command(args: argparse.Namespace, task_dir: Path, instruction: Path) -> list[str]:
+    core_state = core_state_dir(task_dir, args.state_dir)
+    command = [
+        args.dev_pipeline_bin,
+        "owner",
+        args.operation,
+        "--task-ref",
+        task_dir.name,
+        "--instruction-file",
+        str(instruction),
+        "--repo",
+        str(args.repo.resolve()),
+        "--state-dir",
+        str(core_state),
+        "--owner-runtime",
+        args.owner_runtime,
+        "--sandbox",
+        args.sandbox,
+    ]
+    if args.operation in {"start", "retry"} and (task_dir / "task_contract.json").exists():
+        command.extend(["--artifact", str(task_dir / "task_contract.json")])
+    if args.operation == "retry":
+        command.extend(
+            ["--previous-state-dir", str(core_state_dir(task_dir, args.previous_state_dir))]
+        )
+        if args.retry_reason:
+            command.extend(["--retry-reason", args.retry_reason])
+    if args.model:
+        command.extend(["--model", args.model])
+    return command
+
+
+def run(args: argparse.Namespace) -> int:
+    task_dir = args.task_dir.resolve()
+    instruction = prepare_owner_instruction(task_dir)
+    command = build_core_command(args, task_dir, instruction)
+    projector = TaskArtifactProjector(task_dir)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+    assert process.stdout is not None
+    consume_lines(projector, process.stdout)
+    return process.wait()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("task_dir", type=Path)
+    parser.add_argument("--repo", required=True, type=Path, help="Target repository for the run.")
+    parser.add_argument("--dev-pipeline-bin", default="dev-pipeline")
+    parser.add_argument("--operation", choices=("start", "resume", "retry"), default="start")
+    parser.add_argument(
+        "--state-dir", type=Path, help="Task-local core lifecycle state directory."
+    )
+    parser.add_argument(
+        "--previous-state-dir", type=Path, help="Prior task-local lifecycle state for a retry."
+    )
+    parser.add_argument(
+        "--retry-reason", choices=("native_unavailable", "intentional_replacement")
+    )
+    parser.add_argument("--model")
+    parser.add_argument(
+        "--owner-runtime",
+        choices=("codex", "claude"),
+        default="codex",
+        help="CLI runtime that owns the pipeline session.",
+    )
+    parser.add_argument(
+        "--sandbox",
+        choices=("read-only", "workspace-write", "danger-full-access"),
+        default="workspace-write",
+    )
+    args = parser.parse_args(argv)
+    if args.operation == "retry" and args.state_dir is None:
+        parser.error("Retry requires an explicit new --state-dir")
+    if args.operation != "retry" and (args.previous_state_dir or args.retry_reason):
+        parser.error("Retry state and reason options require --operation retry")
+    return run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

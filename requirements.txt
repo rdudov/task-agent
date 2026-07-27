@@ -1,1 +1,11 @@
 pytest==9.0.3
+
+# Required only by `--workflow dev-pipeline`, which runs a task through the
+# standalone dev-pipeline CLI. That project is not published on PyPI, so it is
+# not listed as a resolvable requirement here; install it from its own checkout:
+#
+#   .venv/bin/pip install /path/to/dev-pipeline
+#
+# `dev-pipeline` must be importable and its CLI reachable, either on PATH or
+# through `--dev-pipeline-bin`. Without it, the standard workflow is unaffected
+# and the dev-pipeline adapter tests skip themselves.

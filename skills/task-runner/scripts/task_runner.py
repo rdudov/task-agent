@@ -581,7 +581,7 @@ def resolve_sandbox_mode(
     """Resolve the effective sandbox mode for a child run."""
     if sandbox_mode:
         return sandbox_mode
-    if workflow != "multi-agent-dev":
+    if workflow not in {"multi-agent-dev", "dev-pipeline"}:
         return None
     if runner in {"codex", "claude", "agent"}:
         return "danger-full-access"
@@ -653,9 +653,29 @@ def build_workflow_command(
     sandbox_mode: str | None,
     resume: bool,
     model: str | None = None,
+    *,
+    repo: str | None = None,
+    dev_pipeline_bin: str | None = None,
+    operation: str = "start",
+    state_dir: str | None = None,
+    previous_state_dir: str | None = None,
+    retry_reason: str | None = None,
 ) -> list[str] | None:
     if workflow == "standard":
         return None
+    if workflow == "dev-pipeline":
+        return build_dev_pipeline_command(
+            runner,
+            task_dir,
+            sandbox_mode,
+            model,
+            repo,
+            dev_pipeline_bin,
+            operation,
+            state_dir,
+            previous_state_dir,
+            retry_reason,
+        )
     if workflow != "multi-agent-dev":
         raise SystemExit(f"Unsupported workflow: {workflow}")
     if runner not in {"codex", "agent"}:
@@ -682,6 +702,79 @@ def build_workflow_command(
         command.extend(["--model", model])
     if resume:
         command.append("--resume")
+    return command
+
+
+DEV_PIPELINE_OPTIONS = (
+    "repo",
+    "dev_pipeline_bin",
+    "operation",
+    "state_dir",
+    "previous_state_dir",
+    "retry_reason",
+)
+
+
+def dev_pipeline_options(args: argparse.Namespace) -> dict:
+    """Collect the dev-pipeline options a namespace actually carries.
+
+    `start` and `_run-child` must agree on these without each restating the
+    list, so the parent hands the watcher exactly what it resolved itself.
+    """
+    if getattr(args, "workflow", None) != "dev-pipeline":
+        return {}
+    options = {name: getattr(args, name, None) for name in DEV_PIPELINE_OPTIONS}
+    return {name: value for name, value in options.items() if value is not None}
+
+
+def build_dev_pipeline_command(
+    runner: str,
+    task_dir: Path,
+    sandbox_mode: str | None,
+    model: str | None,
+    repo: str | None,
+    dev_pipeline_bin: str | None,
+    operation: str,
+    state_dir: str | None,
+    previous_state_dir: str | None,
+    retry_reason: str | None,
+) -> list[str]:
+    """Build the adapter invocation for the dev-pipeline workflow.
+
+    The runner decides nothing about the pipeline itself. It hands the task
+    directory to the adapter, which owns the public CLI contract and the
+    projection of its events.
+    """
+    if runner not in {"codex", "claude"}:
+        raise SystemExit(
+            "The dev-pipeline workflow supports the codex and claude runners, "
+            "because those are the owner runtimes the dev-pipeline core drives."
+        )
+    if not repo:
+        raise SystemExit("The dev-pipeline workflow requires --repo.")
+    command = [
+        sys.executable,
+        str(Path(__file__).with_name("dev_pipeline_adapter.py")),
+        str(task_dir),
+        "--repo",
+        repo,
+        "--dev-pipeline-bin",
+        dev_pipeline_bin or "dev-pipeline",
+        "--operation",
+        operation,
+        "--owner-runtime",
+        runner,
+    ]
+    if state_dir:
+        command.extend(["--state-dir", state_dir])
+    if previous_state_dir:
+        command.extend(["--previous-state-dir", previous_state_dir])
+    if retry_reason:
+        command.extend(["--retry-reason", retry_reason])
+    if sandbox_mode:
+        command.extend(["--sandbox", sandbox_mode])
+    if model:
+        command.extend(["--model", model])
     return command
 
 
@@ -855,6 +948,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         resolved_sandbox_mode,
         getattr(args, "resume", False),
         getattr(args, "model", None),
+        **dev_pipeline_options(args),
     )
     if args.workflow == "standard":
         prompt = build_child_prompt(task_dir)
@@ -870,6 +964,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             "agents_repo_url": getattr(args, "agents_repo_url", None),
             "artifacts_subdir": getattr(args, "artifacts_subdir", None),
             "sandbox_mode": resolved_sandbox_mode,
+            **dev_pipeline_options(args),
         }
         write_json(runner_workflow_path(task_dir), workflow_meta)
 
@@ -943,6 +1038,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         watcher_command.extend(["--artifacts-subdir", args.artifacts_subdir])
     if getattr(args, "resume", False):
         watcher_command.append("--resume")
+    for name, value in dev_pipeline_options(args).items():
+        watcher_command.extend([f"--{name.replace('_', '-')}", str(value)])
 
     def abort_start(detail: str, meta_extra: dict | None = None) -> None:
         """Fail the start without leaving the task claiming to be running.
@@ -1038,19 +1135,31 @@ def finalize_child_lifecycle(
     task_state = read_json(status_path(task_dir)).get("state")
     if task_state in {"completed", "failed", "blocked"}:
         return
-    if return_code == 0:
+    if return_code == 0 and workflow != "dev-pipeline":
         return
+    if workflow == "dev-pipeline":
+        # The dev-pipeline workflow states its own outcome through lifecycle
+        # events. A clean subprocess exit only means the adapter stopped
+        # reading, so treating it as success would invent an outcome nobody
+        # reported.
+        detail = "Dev-pipeline process exited without a terminal lifecycle event"
+        trace_detail = (
+            "Rejected the dev-pipeline process exit as completion because no terminal "
+            "lifecycle event was projected."
+        )
+    else:
+        detail = f"Child process exited unsuccessfully with code {return_code}"
+        trace_detail = (
+            f"Recorded terminal failed status after the {workflow} child exited with code "
+            f"{return_code} before finalizing task artifacts."
+        )
     write_status(
         task_dir,
         "failed",
-        f"Child process exited unsuccessfully with code {return_code}",
+        detail,
         {"runner": runner, "workflow": workflow, "exit_code": return_code},
     )
-    append_trace(
-        task_dir,
-        f"Recorded terminal failed status after the {workflow} child exited with code "
-        f"{return_code} before finalizing task artifacts.",
-    )
+    append_trace(task_dir, trace_detail)
 
 
 def report_launch_failure(task_dir: Path, args: argparse.Namespace, exc: Exception) -> None:
@@ -1104,6 +1213,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             resolved_sandbox_mode,
             getattr(args, "resume", False),
             getattr(args, "model", None),
+            **dev_pipeline_options(args),
         )
         command = workflow_command or build_command(
             args.runner,
@@ -1422,7 +1532,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Child CLI agent. Omit to follow the parent CLI agent.",
     )
-    start_parser.add_argument("--workflow", choices=["standard", "multi-agent-dev"], default="standard")
+    start_parser.add_argument(
+        "--workflow",
+        choices=["standard", "multi-agent-dev", "dev-pipeline"],
+        default="standard",
+    )
     start_parser.add_argument("--model", help="Optional model override for the resolved runner.")
     start_parser.add_argument(
         "--sandbox-mode",
@@ -1441,6 +1555,33 @@ def parse_args() -> argparse.Namespace:
         "--artifacts-subdir",
         help="Task-local artifacts subdirectory for the multi-agent workflow.",
     )
+    start_parser.add_argument(
+        "--repo",
+        help="Target repository the dev-pipeline owner works in.",
+    )
+    start_parser.add_argument(
+        "--dev-pipeline-bin",
+        help="Executable for the dev-pipeline CLI. Defaults to `dev-pipeline` on PATH.",
+    )
+    start_parser.add_argument(
+        "--operation",
+        choices=["start", "resume", "retry"],
+        default="start",
+        help="Dev-pipeline lifecycle operation.",
+    )
+    start_parser.add_argument(
+        "--state-dir",
+        help="Task-local dev-pipeline core state directory.",
+    )
+    start_parser.add_argument(
+        "--previous-state-dir",
+        help="Prior dev-pipeline core state directory, for `--operation retry`.",
+    )
+    start_parser.add_argument(
+        "--retry-reason",
+        choices=["native_unavailable", "intentional_replacement"],
+        help="Why a dev-pipeline retry replaces the previous attempt.",
+    )
     start_parser.add_argument("--dry-run", action="store_true", help="Prepare artifacts without launching the child process.")
     start_parser.add_argument(
         "--resume",
@@ -1453,7 +1594,11 @@ def parse_args() -> argparse.Namespace:
     run_child_parser.add_argument("task_dir", help="Task directory path.")
     run_child_parser.add_argument("--runner", choices=list(CLI_RUNNERS), default=DEFAULT_RUNNER)
     run_child_parser.add_argument("--runner-resolution", help=argparse.SUPPRESS)
-    run_child_parser.add_argument("--workflow", choices=["standard", "multi-agent-dev"], default="standard")
+    run_child_parser.add_argument(
+        "--workflow",
+        choices=["standard", "multi-agent-dev", "dev-pipeline"],
+        default="standard",
+    )
     run_child_parser.add_argument("--model", help="Optional model override.")
     run_child_parser.add_argument(
         "--sandbox-mode",
@@ -1464,6 +1609,18 @@ def parse_args() -> argparse.Namespace:
     run_child_parser.add_argument("--agents-repo-url", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--artifacts-subdir", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--resume", action="store_true", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--repo", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--dev-pipeline-bin", help=argparse.SUPPRESS)
+    run_child_parser.add_argument(
+        "--operation", choices=["start", "resume", "retry"], default="start", help=argparse.SUPPRESS
+    )
+    run_child_parser.add_argument("--state-dir", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--previous-state-dir", help=argparse.SUPPRESS)
+    run_child_parser.add_argument(
+        "--retry-reason",
+        choices=["native_unavailable", "intentional_replacement"],
+        help=argparse.SUPPRESS,
+    )
     run_child_parser.set_defaults(func=cmd_run_child)
 
     monitor_parser = subparsers.add_parser("_monitor-existing", help=argparse.SUPPRESS)

@@ -63,6 +63,23 @@ Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace
 
 `start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. Both processes are recorded by kernel start-time identity rather than by pid alone, so a recycled pid is never mistaken for the child. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
 
+## Dev-Pipeline Workflow
+
+`--workflow dev-pipeline` runs a task through the standalone [dev-pipeline](https://github.com/) CLI, which drives an evidence-gated Codex or Claude owner session:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
+  --workflow dev-pipeline --repo /path/to/target-repo
+```
+
+This workflow needs the `dev-pipeline` package, which is a separate project and is not on PyPI:
+
+```bash
+.venv/bin/pip install /path/to/dev-pipeline
+```
+
+The adapter is transport-neutral. It builds the owner instruction, calls the public CLI, validates the neutral lifecycle events it emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. It binds no recipient and delivers no messages; `skills/task-runner/scripts/pipeline_notify.py` is the documented, deliberately inert seam where an application with a real transport attaches its own delivery and replay rules.
+
 ## Multi-Agent Workflow
 
 `skills/task-runner/scripts/task_runner.py` supports `--workflow multi-agent-dev` for explicit team-of-agents development runs. By default use `--runner agent` (Cursor Agent CLI); pass `--runner codex` to run each role through Codex instead. This workflow does not support the Claude runner.

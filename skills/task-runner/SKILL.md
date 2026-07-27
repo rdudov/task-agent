@@ -26,7 +26,7 @@ It creates or updates:
 
 The child is asked to publish `progress.json` for long runs, and to place explicitly requested output files in `deliverables/` with `deliverables/manifest.json`.
 
-The multi-agent workflow also creates `multi-agent/` by default.
+The multi-agent workflow also creates `multi-agent/` by default, and the dev-pipeline workflow creates `dev-pipeline/`.
 
 ## Runner Selection
 
@@ -166,6 +166,37 @@ A long-running child should publish `progress.json` in its task directory:
 The reader enforces that contract rather than trusting it. A wrong `schema_version`, a blank `activity`, a missing `updated_at`, or a file that does not parse all make the progress unusable and yield nothing rather than a partial reading. A partial or incoherent count triple is reported as `counts_rejected` instead of being shown as half a measurement, and a boolean is never accepted as a count. This is deliberate: an inferred or fake total is worse than no total, because it reads as a real estimate.
 
 Startup and bookkeeping are not progress. "Preparing the task directory" tells a watching human nothing about the work.
+
+## Dev-Pipeline Workflow
+
+`--workflow dev-pipeline` hands a task to the standalone `dev-pipeline` CLI, which drives an evidence-gated owner session in a target repository:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
+  --workflow dev-pipeline --repo /path/to/target-repo
+```
+
+It supports `--runner codex` and `--runner claude`, because those are the owner runtimes the dev-pipeline core drives. `--operation start|resume|retry` chooses the lifecycle operation; a retry needs a new `--state-dir` and the previous one, so the earlier attempt stays immutable.
+
+This workflow depends on the separate `dev-pipeline` project, which is not on PyPI. Install it into this checkout's virtualenv (`.venv/bin/pip install /path/to/dev-pipeline`) and either put its CLI on PATH or pass `--dev-pipeline-bin`. The standard workflow does not need it, and the adapter's tests skip themselves when it is absent.
+
+`skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration. It writes `dev-pipeline/owner-instruction.md` from `task.md`, invokes the public `dev-pipeline owner` command, validates every neutral lifecycle event the core emits, and projects it into the task's own artifacts. Task-local state lives under `dev-pipeline/`: the core's lifecycle state in `core/`, the recorded event stream in `projected-events.jsonl`, and the two cursors that make recording and projecting separately restartable.
+
+Ordering is enforced, not assumed. An event for another task, from a run the adapter is not following, or with a gap in its sequence is refused rather than absorbed; a repeat is ignored. A new attempt, or a new run inside the current attempt, is the one case that legitimately resets the cursor.
+
+Projection is per-artifact:
+
+- `status.json` gets the task state and current step, plus the attempt, run, and last event identity under `dev_pipeline`.
+- `trace.md` gets one line per event, each carrying its event id as a marker so a replay cannot duplicate it.
+- `progress.json` gets a concrete activity, and a `recent_outcome` only for events that report an actual outcome — startup bookkeeping never becomes one. The adapter never publishes `completed`/`total`/`unit`, because the lifecycle vocabulary carries no bounds and an invented total reads as a measurement. Anything the owner agent publishes itself wins: the adapter marks its own writes with `source: dev-pipeline-adapter` and leaves owner-authored progress untouched.
+
+A clean subprocess exit is not a completion. The workflow states its outcome through lifecycle events, so a dev-pipeline child that exits without a terminal event is recorded as `failed`. Completion is checked against the task's own artifacts as well: `attempt_completed` is projected as `completed` only when `task.md` says done, no acceptance criterion is left unchecked, and every `required_live_evidence` id in `task_contract.json` appears in `verification.md`. Otherwise the task is `blocked` with the reason.
+
+### Delivery Extension Point
+
+The adapter carries no transport. It has no destination option, binds no recipient, deduplicates no messages, and claims no at-most-once delivery — those decisions belong to whoever owns a transport, because only that owner knows whether its transport can be replayed safely.
+
+`skills/task-runner/scripts/pipeline_notify.py` is where such an owner attaches. It formats messages and reports `no notification transport configured`, so in this template every offer is inert and nothing is recorded. An application that implements it starts receiving the notable lifecycle events the adapter already offers.
 
 ## Multi-Agent Prompt Repository
 

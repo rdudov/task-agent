@@ -55,6 +55,29 @@ class ChildLifecycleTests(unittest.TestCase):
             status = json.loads(task_runner.status_path(task_dir).read_text(encoding="utf-8"))
         self.assertEqual(status["state"], "failed")
 
+    def test_a_clean_dev_pipeline_exit_is_not_a_completion(self) -> None:
+        # The workflow reports its outcome through lifecycle events. A quiet
+        # exit means the adapter stopped reading, not that the work finished.
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task_dir(tmp, "running")
+            task_runner.finalize_child_lifecycle(task_dir, "dev-pipeline", "codex", 0)
+            status = json.loads(task_runner.status_path(task_dir).read_text(encoding="utf-8"))
+            trace = task_runner.trace_path(task_dir).read_text(encoding="utf-8")
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("without a terminal lifecycle event", status["current_step"])
+        self.assertIn("Rejected the dev-pipeline process exit", trace)
+
+    def test_a_dev_pipeline_terminal_state_from_events_is_kept(self) -> None:
+        for state in ("completed", "blocked", "failed"):
+            with self.subTest(state=state):
+                with tempfile.TemporaryDirectory() as tmp:
+                    task_dir = self._task_dir(tmp, state)
+                    task_runner.finalize_child_lifecycle(task_dir, "dev-pipeline", "codex", 0)
+                    status = json.loads(
+                        task_runner.status_path(task_dir).read_text(encoding="utf-8")
+                    )
+                self.assertEqual(status["state"], state)
+
     def test_clean_exit_leaves_the_status_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = self._task_dir(tmp, "running")
