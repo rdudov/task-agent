@@ -61,6 +61,8 @@ The child runner follows the parent CLI agent, so a Codex session delegates to C
 
 Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) and mapped per runner. `TASK_AGENT_WORKSPACE_ROOT` sets how far full access reaches; it defaults to the parent of this checkout.
 
+`start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. Both processes are recorded by kernel start-time identity rather than by pid alone, so a recycled pid is never mistaken for the child. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
+
 ## Multi-Agent Workflow
 
 `skills/task-runner/scripts/task_runner.py` supports `--workflow multi-agent-dev` for explicit team-of-agents development runs. By default use `--runner agent` (Cursor Agent CLI); pass `--runner codex` to run each role through Codex instead. This workflow does not support the Claude runner.

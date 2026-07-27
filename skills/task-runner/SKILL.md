@@ -121,6 +121,30 @@ Check progress:
 
 `status` includes a `progress` block when the child published a usable `progress.json`. See "Live Progress" below for what counts as usable.
 
+Restore supervision of a child whose watcher was lost:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py reattach tasks/001-example
+```
+
+## Process Supervision
+
+`start` returns as soon as the run is confirmed, and the work continues without it. The caller spawns a watcher in its own session; the watcher spawns the child in another. Neither is in the caller's process group, so closing the terminal that started the run does not end it.
+
+A recorded pid is not, by itself, a handle on a process: the kernel recycles pids, so a stale pid can name something unrelated. `process_identity(pid)` pins the specific incarnation by hashing the process start-time tick from `/proc/<pid>/stat`. Command text takes no part in it, because a process may rewrite its own argv after launch — the Node-based Codex CLI does. Both identities are recorded in `.runner/runner.json` as `process_identity` and `watcher_process_identity`.
+
+`status` reports `process_alive` together with `process_alive_source`, which says how the verdict was reached: `identity_match` is proof, while a `pid_only_*` source is a weaker guess. `stop` refuses outright on `identity_mismatch` rather than signalling a process group that may no longer be the child's.
+
+**Degradation.** Process identity reads `/proc`, which is Linux-specific. Where it is unavailable, `process_identity()` returns None for every pid; `process_identity_available()` tells that host apart from a dead process, and callers that can tolerate it fall back to pid-only liveness and say so in `process_alive_source`. `reattach` does not tolerate it and fails closed, because its whole job is refusing a child that only looks alive.
+
+`reattach` restores a watcher for a child that is still running. It refuses when:
+
+- the recorded pid is alive but its identity no longer matches, which is what a recycled pid looks like;
+- a watcher recorded for the task is still live, so a second one would duplicate supervision;
+- the run predates identity tracking, or the host cannot produce identities at all.
+
+A recovered watcher is not the child's parent and cannot read an exit code. It observes the identity until it disappears, then reads the terminal state the child was supposed to record. If there is none, it writes terminal `failed` and says so in `trace.md`; a child vanishing is not a completion.
+
 ## Live Progress
 
 A long-running child should publish `progress.json` in its task directory:

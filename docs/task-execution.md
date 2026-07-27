@@ -14,6 +14,14 @@ This document describes the parent-child execution model for non-trivial tasks.
 8. Monitor task artifacts instead of waiting silently.
 9. Before completion, promote reusable lookup knowledge, commands, limits, or workflow details to an index, skill, or rule; keep one-off results in the task directory.
 
+## Supervision
+
+A launched run is detached by design. `start` prepares the artifacts, spawns a watcher in a separate session, waits only for the watcher's startup record, and returns; the watcher spawns the child in a session of its own. Nothing in the chain stays in the caller's process group, so the run survives the terminal that began it.
+
+Because the run outlives its initiator, a pid alone is not enough to identify it later. The runner records a kernel start-time identity for both the child and the watcher in `.runner/runner.json`, and treats a pid whose identity no longer matches as a different process: `status` reports how each liveness verdict was reached, `stop` refuses to signal an unproven pid, and `reattach` refuses to supervise one. Where the host cannot produce identities, pid-only checks are marked as such and `reattach` fails closed rather than guessing. See `skills/task-runner/SKILL.md` for the per-command behavior.
+
+A watcher that is recovered rather than original cannot read the child's exit code. It observes liveness and then reads the terminal state the child recorded; a child that disappears without one is recorded as failed, never as done.
+
 ## Multi-Agent Workflow
 
 When the user explicitly asks to solve a task with a team of agents, the parent may use:

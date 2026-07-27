@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -767,6 +769,69 @@ def pid_is_running(pid: int) -> bool:
     return True
 
 
+def process_identity_available() -> bool:
+    """Report whether this host can produce a stable process identity at all.
+
+    Separating "this host cannot answer" from "that process is gone" is the
+    whole point. Both look like `process_identity() is None`, and a supervisor
+    that conflates them either declares every live child dead or accepts a
+    recycled PID as the original.
+    """
+    return process_identity(os.getpid()) is not None
+
+
+def process_identity(pid: int) -> str | None:
+    """Return a stable identity for a live pid, or None when unavailable.
+
+    Identity is the kernel start-time tick of the process, hashed. A PID alone
+    is not an identity: the kernel recycles it, so a stale recorded PID can name
+    an unrelated process. The start-time tick pins the specific incarnation.
+
+    Command text deliberately takes no part in this. A process may rewrite its
+    own argv after launch — the Node-based Codex CLI does — so mutable command
+    text cannot be a liveness signal.
+
+    Degradation: this reads `/proc/<pid>/stat`, which is Linux-specific. Where
+    `/proc` is absent or unreadable, every call returns None; use
+    `process_identity_available()` to tell that host apart from a dead process,
+    and fall back to `pid_is_running()` for the weaker PID-only check.
+    """
+    try:
+        raw_stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    closing_paren = raw_stat.rfind(")")
+    if closing_paren < 0:
+        return None
+    # The comm field is parenthesized and may itself contain spaces, so parsing
+    # starts after its closing paren. `stat` field 22 is the start-time tick;
+    # field 3 is the first token after comm, which puts start time at index 19.
+    fields_after_command = raw_stat[closing_paren + 2:].split()
+    if len(fields_after_command) <= 19:
+        return None
+    return hashlib.sha256(fields_after_command[19].encode()).hexdigest()
+
+
+def process_is_recorded_instance(pid: object, expected_identity: object) -> tuple[bool, str]:
+    """Decide whether a recorded pid still names the process that was recorded.
+
+    Returns the verdict and how it was reached, because the caller's options
+    differ per source: an identity match is proof, while a PID-only match is a
+    guess that a supervisor may accept for reporting but must not act on.
+    """
+    if not isinstance(pid, int):
+        return False, "no_recorded_pid"
+    if isinstance(expected_identity, str) and expected_identity:
+        if process_identity(pid) == expected_identity:
+            return True, "identity_match"
+        return False, "identity_mismatch"
+    if not process_identity_available():
+        return pid_is_running(pid), "pid_only_no_process_identity"
+    # The host can produce identities but none was recorded, so this metadata
+    # predates identity tracking. PID liveness is all that is left.
+    return pid_is_running(pid), "pid_only_unrecorded_identity"
+
+
 def cmd_start(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
@@ -940,16 +1005,19 @@ def cmd_start(args: argparse.Namespace) -> None:
         if isinstance(startup_meta, dict):
             detail = startup_meta.get("error") or detail
         abort_start(detail)
-    if not all(key in startup_meta for key in ("watcher_pid", "pid", "child_started_at")):
+    required_startup_fields = (
+        "watcher_pid",
+        "pid",
+        "child_started_at",
+        "process_identity",
+        "watcher_process_identity",
+    )
+    if not all(key in startup_meta for key in required_startup_fields):
         abort_start("Child runner startup record is missing process identity fields.")
 
-    meta.update(
-        {
-            "watcher_pid": startup_meta["watcher_pid"],
-            "pid": startup_meta["pid"],
-            "child_started_at": startup_meta["child_started_at"],
-        }
-    )
+    # The identity values may legitimately be null on a host without `/proc`;
+    # the fields must still be present so the record says which host it was.
+    meta.update({key: startup_meta[key] for key in required_startup_fields})
     write_json(runner_meta_path(task_dir), meta)
     append_trace(task_dir, f"Child process started with pid {startup_meta['pid']}.")
 
@@ -1064,6 +1132,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             "log_path": str(runner_log_path(task_dir)),
             "command": command,
             "watcher_pid": os.getpid(),
+            "watcher_process_identity": process_identity(os.getpid()),
             "watcher_started_at": utc_now(),
         },
     )
@@ -1084,10 +1153,14 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
     child_started_at = utc_now()
+    # Read the child's identity now, while it is certainly the process just
+    # spawned. Recording it later would risk pinning whatever inherited the PID.
+    child_identity = process_identity(process.pid)
     update_runner_meta(
         task_dir,
         {
             "pid": process.pid,
+            "process_identity": child_identity,
             "child_started_at": child_started_at,
         },
     )
@@ -1098,6 +1171,8 @@ def cmd_run_child(args: argparse.Namespace) -> None:
                 "pid": process.pid,
                 "watcher_pid": os.getpid(),
                 "child_started_at": child_started_at,
+                "process_identity": child_identity,
+                "watcher_process_identity": process_identity(os.getpid()),
             }
         ),
         flush=True,
@@ -1116,6 +1191,158 @@ def cmd_run_child(args: argparse.Namespace) -> None:
     finalize_child_lifecycle(task_dir, args.workflow, args.runner, return_code)
 
 
+def cmd_monitor_existing(args: argparse.Namespace) -> None:
+    """Watch a child this process did not spawn, until its identity disappears.
+
+    A recovered watcher is not the child's parent, so it cannot wait for an exit
+    code. It can only observe that the recorded identity stopped existing, and
+    read the terminal state the child was supposed to leave behind.
+    """
+    task_dir = resolve_task_dir(args.task_dir)
+    meta = read_json(runner_meta_path(task_dir))
+    pid = meta.get("pid")
+    expected = meta.get("process_identity")
+    if not isinstance(expected, str) or not expected or not isinstance(pid, int):
+        print(
+            json.dumps({"ok": False, "error": "No identity-bound child is recorded"}),
+            flush=True,
+        )
+        return
+    if process_identity(pid) != expected:
+        print(
+            json.dumps({"ok": False, "error": "Recorded child identity is not running"}),
+            flush=True,
+        )
+        return
+
+    watcher_identity = process_identity(os.getpid())
+    update_runner_meta(
+        task_dir,
+        {
+            "watcher_pid": os.getpid(),
+            "watcher_process_identity": watcher_identity,
+            "watcher_started_at": utc_now(),
+        },
+    )
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "pid": pid,
+                "watcher_pid": os.getpid(),
+                "watcher_process_identity": watcher_identity,
+            }
+        ),
+        flush=True,
+    )
+
+    interval = max(1, args.poll_interval)
+    while process_identity(pid) == expected:
+        time.sleep(interval)
+
+    state = read_json(status_path(task_dir)).get("state")
+    if state in {"completed", "failed", "blocked"}:
+        outcome = f"recovered_{state}"
+    else:
+        outcome = "recovered_terminal_state_unknown"
+        write_status(
+            task_dir,
+            "failed",
+            "Recovered watcher observed the child disappear without a terminal state",
+            {
+                "runner": meta.get("runner"),
+                "workflow": meta.get("workflow"),
+            },
+        )
+        append_trace(
+            task_dir,
+            "Recovered watcher rejected the child's disappearance as completion "
+            "because no terminal state was recorded.",
+        )
+    update_runner_meta(task_dir, {"finished_at": utc_now(), "outcome": outcome})
+
+
+def cmd_reattach(args: argparse.Namespace) -> None:
+    """Restore supervision of a live child after its watcher was lost."""
+    task_dir = resolve_task_dir(args.task_dir)
+    ensure_task_contract(task_dir)
+    meta = read_json(runner_meta_path(task_dir))
+
+    # Reattach fails closed. Its whole value is refusing a child that only looks
+    # alive, and without kernel identity a recycled PID is indistinguishable
+    # from the original process.
+    if not process_identity_available():
+        raise SystemExit(
+            "Reattach requires kernel process identity, which needs a readable "
+            "/proc on this host. Without it a recycled pid cannot be told apart "
+            "from the recorded child."
+        )
+    pid = meta.get("pid")
+    expected = meta.get("process_identity")
+    if not isinstance(pid, int):
+        raise SystemExit("No child process metadata found.")
+    if not isinstance(expected, str) or not expected:
+        raise SystemExit(
+            "The recorded run has no process identity, so a live pid cannot be "
+            "attributed to it."
+        )
+    if process_identity(pid) != expected:
+        raise SystemExit(f"Recorded child process identity is not running: {pid}")
+
+    watcher_pid = meta.get("watcher_pid")
+    watcher_identity = meta.get("watcher_process_identity")
+    if (
+        isinstance(watcher_pid, int)
+        and isinstance(watcher_identity, str)
+        and watcher_identity
+        and process_identity(watcher_pid) == watcher_identity
+    ):
+        raise SystemExit(f"A watcher is already monitoring this child: {watcher_pid}")
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "_monitor-existing",
+            str(task_dir),
+            "--poll-interval",
+            str(args.poll_interval),
+        ],
+        cwd=repo_root(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        text=True,
+    )
+    startup_line = ""
+    if process.stdout is not None:
+        startup_line = process.stdout.readline().strip()
+        process.stdout.close()
+    if not startup_line:
+        process.wait(timeout=5)
+        raise SystemExit("Recovered watcher failed to report startup metadata.")
+    try:
+        startup = json.loads(startup_line)
+    except json.JSONDecodeError:
+        process.wait(timeout=5)
+        raise SystemExit(f"Recovered watcher emitted unparsable output: {startup_line[:200]}")
+    if not isinstance(startup, dict) or not startup.get("ok"):
+        detail = startup.get("error") if isinstance(startup, dict) else None
+        raise SystemExit(detail or "Reattach failed.")
+
+    update_runner_meta(
+        task_dir,
+        {
+            "watcher_pid": startup["watcher_pid"],
+            "watcher_process_identity": startup["watcher_process_identity"],
+            "reattached_at": utc_now(),
+        },
+    )
+    append_trace(task_dir, f"Reattached watcher {startup['watcher_pid']} to child pid {pid}.")
+    print(json.dumps(startup, indent=2))
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     task_dir = resolve_task_dir(args.task_dir)
     ensure_task_contract(task_dir)
@@ -1132,7 +1359,11 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     pid = payload["runner"].get("pid")
     if isinstance(pid, int):
-        payload["runner"]["process_alive"] = pid_is_running(pid)
+        alive, source = process_is_recorded_instance(
+            pid, payload["runner"].get("process_identity")
+        )
+        payload["runner"]["process_alive"] = alive
+        payload["runner"]["process_alive_source"] = source
 
     print(json.dumps(payload, indent=2))
 
@@ -1153,7 +1384,14 @@ def cmd_stop(args: argparse.Namespace) -> None:
     pid = runner_meta.get("pid")
     if not isinstance(pid, int):
         raise SystemExit("No child process metadata found.")
-    if not pid_is_running(pid):
+    # Signalling a process group is destructive, so a recycled PID must never
+    # reach `killpg`. Where identity was recorded, a mismatch is a refusal.
+    alive, source = process_is_recorded_instance(pid, runner_meta.get("process_identity"))
+    if not alive:
+        if source == "identity_mismatch":
+            raise SystemExit(
+                f"Recorded child process identity is no longer running: {pid}"
+            )
         raise SystemExit(f"Process is not running: {pid}")
 
     os.killpg(pid, signal.SIGTERM)
@@ -1227,6 +1465,23 @@ def parse_args() -> argparse.Namespace:
     run_child_parser.add_argument("--artifacts-subdir", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--resume", action="store_true", help=argparse.SUPPRESS)
     run_child_parser.set_defaults(func=cmd_run_child)
+
+    monitor_parser = subparsers.add_parser("_monitor-existing", help=argparse.SUPPRESS)
+    monitor_parser.add_argument("task_dir", help="Task directory path.")
+    monitor_parser.add_argument("--poll-interval", type=int, default=5, help=argparse.SUPPRESS)
+    monitor_parser.set_defaults(func=cmd_monitor_existing)
+
+    reattach_parser = subparsers.add_parser(
+        "reattach", help="Restore watcher supervision for a running child."
+    )
+    reattach_parser.add_argument("task_dir", help="Task directory path.")
+    reattach_parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=5,
+        help="Seconds between child liveness checks.",
+    )
+    reattach_parser.set_defaults(func=cmd_reattach)
 
     status_parser = subparsers.add_parser("status", help="Show current task runner status.")
     status_parser.add_argument("task_dir", help="Task directory path.")
