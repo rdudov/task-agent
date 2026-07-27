@@ -1,6 +1,6 @@
 ---
 name: repo-health
-description: Use this skill after restores, before publishing a sanitized template, or when repository task/data/skill artifacts may be inconsistent. It runs generic structural checks for tasks, docs, skills, dependencies, and obvious secret leaks.
+description: Use this skill after restores, before publishing a sanitized template, before pushing source changes, or when a task's registered deliverables need validating. It runs generic structural checks for tasks, docs, skills, dependencies, obvious secret leaks, and the deliverables contract.
 ---
 
 # Repo Health
@@ -49,6 +49,18 @@ Run before pushing source changes to a configured remote:
 ```
 
 The check scans outgoing files for local task/data/state artifacts, environment files, private keys, and common token formats. It is a guardrail, not a complete security scanner; still review the outgoing diff before pushing.
+
+## Deliverables Check
+
+Run before marking a task complete when the user requested output files:
+
+```bash
+.venv/bin/python skills/repo-health/scripts/check_deliverables.py tasks/001-example
+```
+
+It validates the part of the delivery contract a local template can enforce: the manifest parses, every registered entry is a bare basename resolving to a contained regular non-symlink file with content, nothing is registered twice, and the count and byte totals stay within `--max-files` and `--max-bytes`. Files sitting in `deliverables/` without registration are reported as a warning, because unregistered means undelivered.
+
+It cannot judge *which* files should have been requested. That comparison against the request and its continuations stays with the agent. Enforcement that depends on a real transport — content identity across restarts, delivery deduplication, per-message limits — belongs to the runtime that owns that transport.
 
 ## Notes
 

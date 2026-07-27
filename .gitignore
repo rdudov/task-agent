@@ -10,10 +10,15 @@ __pycache__/
 llm_logs/
 memory_logs/
 
+# Claude Code: the wiring is committed, local overrides are not.
+CLAUDE.local.md
+.claude/settings.local.json
+
 # Track only skeleton files from durable local artifact trees.
 tasks/*
 !tasks/.gitkeep
 !tasks/INDEX.example.md
+!tasks/USER_PREFERENCES.example.md
 data/*
 !data/.gitkeep
 !data/local-projects.example.md

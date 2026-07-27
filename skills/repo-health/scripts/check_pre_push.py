@@ -19,9 +19,13 @@ FORBIDDEN_PREFIXES = (
     ".state/",
 )
 
+# Skeleton files the template intentionally tracks inside otherwise-local trees.
+# Keep this in sync with the matching `!` exceptions in .gitignore: a new tracked
+# skeleton file that is missing here fails the pre-push check.
 ALLOWED_TEMPLATE_ARTIFACTS = {
     "tasks/.gitkeep",
     "tasks/INDEX.example.md",
+    "tasks/USER_PREFERENCES.example.md",
     "data/.gitkeep",
     "data/local-projects.example.md",
     "data/projects/.gitkeep",

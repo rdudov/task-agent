@@ -16,6 +16,8 @@ ROOT_FILES = [
     "requirements.lock",
     "docs/architecture.md",
     "docs/task-execution.md",
+    "docs/claude-code-setup.md",
+    "CLAUDE.md",
 ]
 
 SECRET_PATTERNS = [
@@ -100,6 +102,52 @@ def check_scripts(root: Path) -> list[str]:
     return errors
 
 
+def check_agent_entry_points(root: Path) -> list[str]:
+    """Check that Claude Code still reaches the canonical rules and skills.
+
+    Both ways this wiring breaks are silent: Claude Code ignores an `@` import
+    that does not end in `.md`, and it skips a dangling symlink without a
+    warning. A session then runs with no project rules at all and nothing says
+    so, which is exactly the failure this check exists to make loud.
+    """
+    errors: list[str] = []
+    claude_md = root / "CLAUDE.md"
+    if not claude_md.exists():
+        return errors
+
+    imports = set(re.findall(r"^@(\S+)$", read_text(claude_md), flags=re.MULTILINE))
+    for imported in sorted(imports):
+        if not imported.endswith(".md"):
+            errors.append(f"CLAUDE.md: import is ignored unless it ends in .md: @{imported}")
+            continue
+        target = root / imported
+        if not target.exists():
+            errors.append(f"CLAUDE.md: imported path does not resolve: @{imported}")
+
+    rules_dir = root / ".cursor" / "rules"
+    if rules_dir.exists():
+        for rule in sorted(rules_dir.glob("*.mdc")):
+            link = root / ".claude" / "imports" / f"{rule.stem}.md"
+            if not link.exists():
+                errors.append(
+                    f".claude/imports/{rule.stem}.md: missing symlink, so {rule.name} "
+                    "never reaches Claude Code"
+                )
+            elif f".claude/imports/{rule.stem}.md" not in imports:
+                errors.append(
+                    f"CLAUDE.md: no import line for .claude/imports/{rule.stem}.md, "
+                    f"so {rule.name} never loads"
+                )
+
+    skills_link = root / ".claude" / "skills"
+    if skills_link.is_symlink() and not skills_link.resolve().exists():
+        errors.append(".claude/skills: dangling symlink, so repository skills never load")
+    elif (root / "skills").exists() and not skills_link.exists():
+        errors.append(".claude/skills: missing symlink to skills/, so no skill is discoverable")
+
+    return errors
+
+
 def check_secret_like_content(root: Path) -> list[str]:
     errors: list[str] = []
     for base in (root / "tasks", root / "data"):
@@ -142,6 +190,7 @@ def main() -> int:
             errors.extend(check_skill_manifest(manifest))
 
     errors.extend(check_tasks(root, allow_empty_tasks=args.allow_empty_tasks))
+    errors.extend(check_agent_entry_points(root))
     errors.extend(check_scripts(root))
     errors.extend(check_secret_like_content(root))
 

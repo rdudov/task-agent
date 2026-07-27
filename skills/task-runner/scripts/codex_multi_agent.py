@@ -273,9 +273,21 @@ def ensure_agents_dir(agents_dir: Path, repo_url: str, task_dir: Path | None = N
     return agents_dir
 
 
+def workspace_root() -> Path:
+    """Mirror the task runner's configurable workspace root.
+
+    Kept as a thin local copy so this script stays runnable on its own; the
+    contract is the environment variable, not the import.
+    """
+    configured = os.environ.get("TASK_AGENT_WORKSPACE_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return repo_root().parent
+
+
 def role_workdir(role_name: str, sandbox_mode: str) -> Path:
     if sandbox_mode == "danger-full-access" and role_name in {"developer", "code_reviewer"}:
-        return Path("/srv/agent-workspace")
+        return workspace_root()
     return repo_root()
 
 
@@ -750,8 +762,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--agents-dir",
-        default="/srv/agent-workspace/agents",
-        help="Directory with the role prompt templates.",
+        default=str(workspace_root() / "agents"),
+        help="Directory with the role prompt templates (default: <workspace root>/agents).",
     )
     parser.add_argument(
         "--agents-repo-url",

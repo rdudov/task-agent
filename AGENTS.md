@@ -23,6 +23,13 @@ If a change modifies one of these areas, update the relevant project docs before
 
 Do not duplicate skill-specific instructions in project-level docs.
 
+Agent entry points must not duplicate rules either. `AGENTS.md` is canonical for
+project rules, `.cursor/rules/*.mdc` for always-on rules, and `skills/` for
+skills. `CLAUDE.md` only imports them and `.claude/` only holds symlinks into
+them. Edit the canonical file, never a `.claude/` path, and add a `CLAUDE.md`
+import line when a new Cursor rule is added. See
+[docs/claude-code-setup.md](docs/claude-code-setup.md).
+
 ## Task Conventions
 
 Every substantial user task gets its own directory under `tasks/` before substantive work begins. The default is to create a task; skipping is only appropriate when the request is clearly trivial or the user explicitly opts out of task artifacts.
@@ -43,6 +50,18 @@ Before broad codebase search or live checks, use existing durable context first:
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.
 - Keep tasks flat in `tasks/`; express hierarchy through `Parent Task` and `Related Tasks` in `task.md`.
 - Task-specific findings and sources belong in the task directory.
+- A long-running child should publish substantive live progress in `progress.json`: a version 1 object with a concrete `activity`, `updated_at`, and optionally `recent_outcome`. `completed`, `total`, and `unit` are published only together and only when the owner actually knows the bounds. Neither owners nor readers may infer a missing total, and startup bookkeeping is not an outcome.
+- A task root may contain `USER_PREFERENCES.md` beside `INDEX.md`, using `tasks/USER_PREFERENCES.example.md` as the format. Agents read it before choosing an unspecified output representation and update it only from explicit, reusable user instructions, citing the task the instruction came from. The current request and later continuations override it. Do not turn one-off task requirements into defaults, and do not infer preferences from prose.
+
+## Requested Deliverables
+
+Files the user explicitly requested are a separate, user-facing class of output.
+
+- Put each complete requested file in the task's `deliverables/` directory and list its basename in stable order in `deliverables/manifest.json` under a `deliverables` array.
+- `findings.md`, `verification.md`, `sources.md`, and `trace.md` stay internal diagnostics. None of them substitutes for a different requested file, and they belong in the manifest only when the user asked for that record itself.
+- Registration in the manifest, not a filename extension, decides what is delivered. Only contained regular non-symlink files with content are eligible; a malformed or unsafe registration is a blocker rather than a partial delivery.
+- Validate a task's registered deliverables with `skills/repo-health/scripts/check_deliverables.py`. Enforcement that depends on an actual transport — content identity across restarts, delivery deduplication, per-message byte limits — belongs to the delivery-enabled runtime that owns that transport, not to this template.
+- Before reporting completion, re-read the original request and every continuation and confirm the response and registered deliverables satisfy the latest complete intent. A later clarification may supersede an earlier requested representation. Do not infer requested formats from keywords.
 
 ## Durable Data
 
@@ -56,11 +75,11 @@ Before broad codebase search or live checks, use existing durable context first:
 
 - Skills live under `skills/`.
 - Use `skills/task-creator/` to create task artifacts.
-- Use `skills/task-runner/` to delegate substantial work to child agents or run the explicit multi-agent workflow.
+- Use `skills/task-runner/` to delegate substantial work to child agents or run the explicit multi-agent workflow. The child runner follows the parent CLI agent unless a caller selects one explicitly, so a Codex parent delegates to a Codex child and a Claude parent to a Claude child. That resolution belongs to the task runner, not to prompt text, so callers that never read a skill get the same behavior. Every run records the resolved runner and the rule that resolved it. `multi-agent-dev` stays Codex- and Cursor-Agent-bound.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.
 - Use `skills/skill-maintainer/` when adding, restoring, or changing skills.
-- Use `skills/repo-health/` after restores, before publishing a sanitized template, or when task/data/skill artifacts may be inconsistent.
+- Use `skills/repo-health/` after restores, before publishing a sanitized template, or when task/data/skill artifacts may be inconsistent. It also owns `check_pre_push.py` for outgoing-change leak checks and `check_deliverables.py` for the registered-deliverables contract.
 
 ## Execution Contract
 
@@ -70,11 +89,21 @@ Before delegation, the parent agent should ensure `task.md` and `plan.md` contai
 
 Substantial implementation work should preserve at least one no-mock end-to-end verification path for the primary function being changed. Services, APIs, daemons, and workers should include a smoke check against the real runtime entrypoint in the target launch mode.
 
+When changed source is loaded by an active local service, daemon, worker, or unit, completion includes applying the change to those running units: restart or reload them, confirm they are running with fresh start timestamps, inspect recent logs for startup errors, and record that evidence. If restart is intentionally deferred or blocked, the final response and task artifacts must say so.
+
+When a deliverable's correctness materially depends on visual rendering, structural validation is only a preliminary check. Render or open it in a real renderer, viewer, or browser and inspect the resulting images. Inspect every slide of a short presentation; for a longer document inspect the first, last, and representative intermediate pages, widening coverage on layout risk or after finding a defect. Check clipping, overflow, overlap, missing or broken images, font substitution, unreadable sizing or contrast, and broken responsive or print layout where relevant. HTML must be exercised in a real browser at representative viewports. Package integrity, DOM parsing, text extraction, and static assertions alone are insufficient. This rule is format-extensible: use available renderers and install task-local tools for a new format rather than maintaining a closed list. Keep render evidence internal by default. An unavailable mandatory render or an unresolved visual defect blocks completion unless the task contract explicitly permits a recorded gap.
+
+Verify artifact completeness against the best available source of truth before reporting success. For text, code, and documents, compare size, line count, and start/end boundaries against the original input or source log, and look for truncation markers. A successful write or transport operation proves delivery, not completeness.
+
+Stub-first implementation is acceptable only for newly introduced seams or genuinely unavailable external dependencies. Do not replace an existing, exercisable production integration, provider path, API client, or runtime entrypoint with a stub when the task requires that path. A stub-only task may scaffold behavior or tests, but it does not earn credit for live evidence or required task-contract gates.
+
 Do not assume backward compatibility, legacy fallback behavior, or a compatibility migration unless the user request or task contract explicitly requires it.
 
 Agents must preserve the semantic target of the request instead of substituting a nearby implementation that merely produces a similar surface effect. When the user names a reference behavior, artifact, provider, model, protocol feature, or runtime branch, implementation and verification must exercise that named path directly, or the task must record the deviation as a blocker or explicit scope change.
 
 When an agent-caused mistake materially affects a task, the correction is not complete until the agent performs a short mistake review and updates the relevant rules, docs, skills, scripts, or task contract so the same failure is less likely to repeat. If the prevention change is broad, risky, or requires a significant redesign, record the analysis and present concrete options to the user before implementing it.
+
+That review should be systemic rather than a pile of narrow examples. Before changing code in a corrective task, identify the semantic target the user expected, the intended production path that should have satisfied it, the layer that owns that path, the evidence showing where it diverged, and the verification that will prove the real path now works. Do not add a second mechanism at a nearby layer when an existing layer already owns the decision; fix the owning layer unless the task explicitly changes the architecture.
 
 If behavior diverges by threshold, mode, provider, credential, feature flag, model path, transport, or fallback branch, each production-relevant branch touched by the task needs explicit validation evidence or an explicitly recorded verification gap.
 

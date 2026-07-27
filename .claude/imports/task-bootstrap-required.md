@@ -1,0 +1,1 @@
+../../.cursor/rules/task-bootstrap-required.mdc

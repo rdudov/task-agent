@@ -24,7 +24,9 @@ When the user explicitly asks to solve a task with a team of agents, the parent 
 
 Each pipeline role runs through the Cursor Agent CLI (`agent`). Use `--runner codex` when every role should run through Codex instead.
 
-The workflow uses an external role-prompt repository. By default it expects `/srv/agent-workspace/agents`; if that checkout is missing, configure an agents repository URL with `--agents-repo-url` or `CODEX_MULTI_AGENT_PROMPTS_REPO`. Use `--agents-dir` for a different local checkout.
+The workflow uses an external role-prompt repository. By default it expects `<workspace root>/agents`, where the workspace root is the parent of this checkout unless `TASK_AGENT_WORKSPACE_ROOT` says otherwise. If that checkout is missing, configure an agents repository URL with `--agents-repo-url` or `CODEX_MULTI_AGENT_PROMPTS_REPO`. Use `--agents-dir` for a different local checkout.
+
+The multi-agent workflow rejects `--runner claude`; its role prompts and model defaults are Codex- and Cursor-Agent-bound. The standard single-child workflow supports all three runners.
 
 Startup verifies that all required role prompt files exist before the first pipeline stage proceeds.
 
@@ -59,6 +61,14 @@ Examples of branch-specific checks that should not be skipped:
 - feature-flagged branches that are intended to be enabled in production
 - secret/token-gated branches whose dependencies are absent from the default happy path
 
+Stub-first work is allowed only for a newly introduced seam or a genuinely unavailable external system. Replacing an existing, exercisable production integration with a stub does not produce evidence about that integration, so a stub-only run never satisfies a live-evidence gate.
+
+When changed source is loaded by an active local service, daemon, worker, or unit, the change is not in effect until those units are restarted or reloaded. Completion includes doing that, confirming they came up with fresh start timestamps, checking recent logs, and recording the evidence — or stating explicitly that it was deferred.
+
+When a deliverable's correctness depends on how it renders, render it and look at the result. Archive validity, DOM parsing, and text extraction describe the file, not the page a person will see: they cannot detect clipped text, overlapping elements, a substituted font, or a broken image. `skills/task-artifacts/SKILL.md` describes the required coverage per format.
+
+Before reporting success, check that the artifact is complete against its source of truth — size, line count, boundaries, truncation markers. A successful write or send proves delivery, not completeness.
+
 ## Progress Artifacts
 
 Operational detail: `skills/task-artifacts/SKILL.md` (checkpoints, `verification.md`, completion checklist).
@@ -74,8 +84,28 @@ Recommended artifacts:
 - `verification.md` — live smokes and contract gates (redacted)
 - `findings.md`
 - `sources.md`
+- `progress.json` — substantive live progress during a long run
+- `deliverables/` and `deliverables/manifest.json` — explicitly requested output files
 
 Reusable local lookup context, such as repositories, important paths, recurring commands, or where prior artifacts live, should be recorded under `data/`. This template includes `data/local-projects.example.md` as a generic starting point.
+
+Durable answers to "how does the user want unspecified things done" belong in `tasks/USER_PREFERENCES.md`, not in a task directory. Write there only from an explicit reusable instruction, cite the task it came from, and let the current request override it. A one-off requirement is not a preference.
+
+Suggested `progress.json` for a long run:
+
+```json
+{
+  "version": 1,
+  "activity": "Migrating module 3 of the payment adapter",
+  "updated_at": "2026-04-03T12:00:00Z",
+  "recent_outcome": "Module 2 migrated, 14 call sites updated",
+  "completed": 3,
+  "total": 8,
+  "unit": "modules"
+}
+```
+
+`completed`, `total`, and `unit` are published together or not at all, and only when the owner knows the bounds. A reader must never infer a missing total: a made-up denominator reads as a real estimate and quietly misleads whoever is watching. `task_runner.py status` validates this and reports an incomplete triple as `counts_rejected` rather than showing half a measurement.
 
 Suggested `status.json`:
 

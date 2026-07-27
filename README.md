@@ -7,14 +7,17 @@ It is intentionally generic: no private task history, no local data, and no bund
 ## What Is Included
 
 - `tasks/` skeleton for durable task artifacts
+- `tasks/USER_PREFERENCES.example.md` as a starting point for durable user defaults
 - `data/projects/` skeleton for multi-task project records
 - `data/local-projects.example.md` as a starting point for local repository/path indexes
+- `AGENTS.md`, `.cursor/rules/`, and `CLAUDE.md` as one shared rule set for Codex, Cursor, and Claude Code
 - `skills/task-creator/` for creating task directories and updating the index
-- `skills/task-runner/` for parent-child CLI agent execution and optional multi-agent workflows (Cursor Agent or Codex)
+- `skills/task-runner/` for parent-child CLI agent execution and optional multi-agent workflows
+- `skills/task-artifacts/` for keeping task artifacts current during work
 - `skills/project-organizer/` for durable project records
-- `skills/repo-health/` for restore and publication checks
+- `skills/repo-health/` for restore, publication, deliverables, and pre-push checks
 - `skills/skill-maintainer/` for creating or changing skills
-- `docs/` for architecture, task execution, and self-development workflows
+- `docs/` for architecture, task execution, Claude Code setup, and self-development workflows
 
 ## Quick Start
 
@@ -35,7 +38,7 @@ Run health checks:
 
 ```bash
 .venv/bin/python skills/repo-health/scripts/check_repo_health.py --allow-empty-tasks
-PYTHONPATH=skills/task-runner/scripts .venv/bin/python -m pytest skills/task-runner/tests
+PYTHONPATH=skills/task-runner/scripts .venv/bin/python -m pytest skills/task-runner/tests skills/repo-health/tests
 ```
 
 Before pushing a source change from this workspace, run:
@@ -44,11 +47,25 @@ Before pushing a source change from this workspace, run:
 .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote origin
 ```
 
+## Agent Entry Points
+
+The same rules reach Codex, Cursor, and Claude Code without being copied. `AGENTS.md` holds the project rules, `.cursor/rules/*.mdc` hold the always-on rules, and `CLAUDE.md` imports both rather than restating them; `.claude/` contains only symlinks into the canonical files. Adding a Cursor rule means adding its `.claude/imports/` symlink and its `CLAUDE.md` import line — see [docs/claude-code-setup.md](./docs/claude-code-setup.md).
+
+## Delegating To A Child Agent
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example
+```
+
+The child runner follows the parent CLI agent, so a Codex session delegates to Codex and a Claude session to Claude. Pass `--runner codex|claude|agent` to decide explicitly, or set `TASK_AGENT_CHILD_RUNNER`. Every run records which rule decided.
+
+Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) and mapped per runner. `TASK_AGENT_WORKSPACE_ROOT` sets how far full access reaches; it defaults to the parent of this checkout.
+
 ## Multi-Agent Workflow
 
-`skills/task-runner/scripts/task_runner.py` supports `--workflow multi-agent-dev` for explicit team-of-agents development runs. By default use `--runner agent` (Cursor Agent CLI); pass `--runner codex` to run each role through Codex instead.
+`skills/task-runner/scripts/task_runner.py` supports `--workflow multi-agent-dev` for explicit team-of-agents development runs. By default use `--runner agent` (Cursor Agent CLI); pass `--runner codex` to run each role through Codex instead. This workflow does not support the Claude runner.
 
-The workflow uses role prompts from `/srv/agent-workspace/agents` by default. If that checkout is missing, startup fails unless an agents repository URL is configured. Override with:
+The workflow uses role prompts from `<workspace root>/agents` by default. If that checkout is missing, startup fails unless an agents repository URL is configured. Override with:
 
 - `--agents-dir`
 - `--agents-repo-url`
