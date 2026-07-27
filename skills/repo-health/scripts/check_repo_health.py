@@ -127,23 +127,46 @@ def check_agent_entry_points(root: Path) -> list[str]:
     rules_dir = root / ".cursor" / "rules"
     if rules_dir.exists():
         for rule in sorted(rules_dir.glob("*.mdc")):
+            rel = f".claude/imports/{rule.stem}.md"
             link = root / ".claude" / "imports" / f"{rule.stem}.md"
-            if not link.exists():
+            if not link.exists() and not link.is_symlink():
                 errors.append(
-                    f".claude/imports/{rule.stem}.md: missing symlink, so {rule.name} "
-                    "never reaches Claude Code"
+                    f"{rel}: missing symlink, so {rule.name} never reaches Claude Code"
                 )
-            elif f".claude/imports/{rule.stem}.md" not in imports:
+            elif not link.is_symlink():
+                # A real file here would load, which is exactly the problem: it is
+                # a second copy of the rule, free to drift from the canonical one.
                 errors.append(
-                    f"CLAUDE.md: no import line for .claude/imports/{rule.stem}.md, "
-                    f"so {rule.name} never loads"
+                    f"{rel}: must be a symlink to ../../.cursor/rules/{rule.name}, "
+                    "not a copy of the rule"
+                )
+            elif link.resolve() != rule.resolve():
+                errors.append(
+                    f"{rel}: resolves to {link.resolve()} instead of "
+                    f".cursor/rules/{rule.name}"
+                )
+            elif rel not in imports:
+                errors.append(
+                    f"CLAUDE.md: no import line for {rel}, so {rule.name} never loads"
                 )
 
+    skills_dir = root / "skills"
     skills_link = root / ".claude" / "skills"
-    if skills_link.is_symlink() and not skills_link.resolve().exists():
-        errors.append(".claude/skills: dangling symlink, so repository skills never load")
-    elif (root / "skills").exists() and not skills_link.exists():
-        errors.append(".claude/skills: missing symlink to skills/, so no skill is discoverable")
+    if skills_dir.exists():
+        if not skills_link.exists() and not skills_link.is_symlink():
+            errors.append(
+                ".claude/skills: missing symlink to skills/, so no skill is discoverable"
+            )
+        elif not skills_link.is_symlink():
+            errors.append(
+                ".claude/skills: must be a symlink to ../skills, not a separate directory"
+            )
+        elif not skills_link.resolve().exists():
+            errors.append(".claude/skills: dangling symlink, so repository skills never load")
+        elif skills_link.resolve() != skills_dir.resolve():
+            errors.append(
+                f".claude/skills: resolves to {skills_link.resolve()} instead of skills/"
+            )
 
     return errors
 

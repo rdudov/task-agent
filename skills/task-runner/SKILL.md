@@ -127,7 +127,7 @@ A long-running child should publish `progress.json` in its task directory:
 
 ```json
 {
-  "version": 1,
+  "schema_version": 1,
   "activity": "Reviewing module 3 of the migration",
   "updated_at": "2026-07-27T14:00:00+00:00",
   "recent_outcome": "Module 2 migrated, 14 call sites updated",
@@ -137,9 +137,9 @@ A long-running child should publish `progress.json` in its task directory:
 }
 ```
 
-`version`, `activity`, and `updated_at` are the substance. `recent_outcome` is optional. `completed`, `total`, and `unit` are optional **as a group**: publish all three or none, and only when the owner actually knows the bounds.
+`schema_version`, `activity`, and `updated_at` are all required. `recent_outcome` is optional. `completed`, `total`, and `unit` are optional **as a group**: publish all three or none, and only when the owner actually knows the bounds. The key is `schema_version`, matching the contract this template's upstream and the `dev-pipeline` owner protocol already use, so the same producer satisfies both.
 
-The reader enforces that contract rather than trusting it. A missing `version: 1` or a blank `activity` makes the whole file unusable, and a partial or incoherent count triple is reported as `counts_rejected` instead of being shown as half a measurement. This is deliberate: an inferred total is worse than no total, because it reads as a real estimate.
+The reader enforces that contract rather than trusting it. A wrong `schema_version`, a blank `activity`, a missing `updated_at`, or a file that does not parse all make the progress unusable and yield nothing rather than a partial reading. A partial or incoherent count triple is reported as `counts_rejected` instead of being shown as half a measurement, and a boolean is never accepted as a count. This is deliberate: an inferred or fake total is worse than no total, because it reads as a real estimate.
 
 Startup and bookkeeping are not progress. "Preparing the task directory" tells a watching human nothing about the work.
 

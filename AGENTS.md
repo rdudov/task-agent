@@ -50,7 +50,7 @@ Before broad codebase search or live checks, use existing durable context first:
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.
 - Keep tasks flat in `tasks/`; express hierarchy through `Parent Task` and `Related Tasks` in `task.md`.
 - Task-specific findings and sources belong in the task directory.
-- A long-running child should publish substantive live progress in `progress.json`: a version 1 object with a concrete `activity`, `updated_at`, and optionally `recent_outcome`. `completed`, `total`, and `unit` are published only together and only when the owner actually knows the bounds. Neither owners nor readers may infer a missing total, and startup bookkeeping is not an outcome.
+- A long-running child should publish substantive live progress in `progress.json`: a `schema_version: 1` object with a concrete `activity`, `updated_at`, and optionally `recent_outcome`. `completed`, `total`, and `unit` are published only together and only when the owner actually knows the bounds. Neither owners nor readers may infer a missing total, and startup bookkeeping is not an outcome.
 - A task root may contain `USER_PREFERENCES.md` beside `INDEX.md`, using `tasks/USER_PREFERENCES.example.md` as the format. Agents read it before choosing an unspecified output representation and update it only from explicit, reusable user instructions, citing the task the instruction came from. The current request and later continuations override it. Do not turn one-off task requirements into defaults, and do not infer preferences from prose.
 
 ## Requested Deliverables

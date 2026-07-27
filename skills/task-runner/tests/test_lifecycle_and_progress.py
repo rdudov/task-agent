@@ -1,4 +1,7 @@
+import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -91,7 +94,7 @@ class StructuredProgressTests(unittest.TestCase):
 
     def test_blank_activity_makes_the_file_unusable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            task_dir = self._write(tmp, {"version": 1, "activity": "   "})
+            task_dir = self._write(tmp, {"schema_version": 1, "activity": "   ", "updated_at": "2026-07-27T00:00:00Z"})
             self.assertIsNone(task_runner.structured_progress(task_dir))
 
     def test_complete_counts_produce_a_percentage(self) -> None:
@@ -99,7 +102,7 @@ class StructuredProgressTests(unittest.TestCase):
             task_dir = self._write(
                 tmp,
                 {
-                    "version": 1,
+                    "schema_version": 1,
                     "activity": "Migrating module 3",
                     "updated_at": "2026-07-27T14:00:00+00:00",
                     "recent_outcome": "Module 2 migrated",
@@ -115,9 +118,9 @@ class StructuredProgressTests(unittest.TestCase):
 
     def test_partial_counts_are_rejected_rather_than_completed_by_inference(self) -> None:
         for payload in (
-            {"version": 1, "activity": "Working", "completed": 3},
-            {"version": 1, "activity": "Working", "total": 8},
-            {"version": 1, "activity": "Working", "completed": 3, "total": 8},
+            {"schema_version": 1, "activity": "Working", "updated_at": "2026-07-27T00:00:00Z", "completed": 3},
+            {"schema_version": 1, "activity": "Working", "updated_at": "2026-07-27T00:00:00Z", "total": 8},
+            {"schema_version": 1, "activity": "Working", "updated_at": "2026-07-27T00:00:00Z", "completed": 3, "total": 8},
         ):
             with self.subTest(payload=payload):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -133,8 +136,9 @@ class StructuredProgressTests(unittest.TestCase):
                     task_dir = self._write(
                         tmp,
                         {
-                            "version": 1,
+                            "schema_version": 1,
                             "activity": "Working",
+                            "updated_at": "2026-07-27T00:00:00Z",
                             "completed": completed,
                             "total": total,
                             "unit": unit,
@@ -149,7 +153,7 @@ class StructuredProgressTests(unittest.TestCase):
             task_dir = self._write(
                 tmp,
                 {
-                    "version": 1,
+                    "schema_version": 1,
                     "activity": "Reading the migration plan",
                     "updated_at": "2026-07-27T14:00:00+00:00",
                 },
@@ -198,6 +202,94 @@ class ChildPromptContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             prompt = self._prompt(tmp)
         self.assertIn(str(task_runner.workspace_root()), prompt)
+
+
+class ProgressRobustnessTests(unittest.TestCase):
+    """Regressions for review findings: a status reader must not be fragile."""
+
+    def _task(self, tmp: str, raw: str) -> Path:
+        task_dir = Path(tmp) / "001-example"
+        task_dir.mkdir()
+        task_runner.progress_path(task_dir).write_text(raw, encoding="utf-8")
+        return task_dir
+
+    def test_malformed_json_yields_none_instead_of_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task(tmp, "{not json")
+            self.assertIsNone(task_runner.structured_progress(task_dir))
+
+    def test_non_object_payload_yields_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task(tmp, '["a", "list"]')
+            self.assertIsNone(task_runner.structured_progress(task_dir))
+
+    def test_missing_updated_at_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task(tmp, json.dumps({"schema_version": 1, "activity": "Working"}))
+            self.assertIsNone(task_runner.structured_progress(task_dir))
+
+    def test_blank_updated_at_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task(
+                tmp,
+                json.dumps({"schema_version": 1, "activity": "Working", "updated_at": "  "}),
+            )
+            self.assertIsNone(task_runner.structured_progress(task_dir))
+
+    def test_legacy_version_key_is_not_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task(
+                tmp,
+                json.dumps(
+                    {"version": 1, "activity": "Working", "updated_at": "2026-07-27T00:00:00Z"}
+                ),
+            )
+            self.assertIsNone(task_runner.structured_progress(task_dir))
+
+    def test_booleans_are_not_counts(self) -> None:
+        # bool is a subclass of int, so a naive isinstance check accepts True.
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task(
+                tmp,
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "activity": "Working",
+                        "updated_at": "2026-07-27T00:00:00Z",
+                        "completed": True,
+                        "total": 8,
+                        "unit": "modules",
+                    }
+                ),
+            )
+            progress = task_runner.structured_progress(task_dir)
+        self.assertEqual(progress["counts_rejected"], "incoherent completed/total/unit")
+        self.assertNotIn("percent", progress)
+
+    def test_non_finite_counts_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task(
+                tmp,
+                '{"schema_version": 1, "activity": "Working", '
+                '"updated_at": "2026-07-27T00:00:00Z", '
+                '"completed": NaN, "total": 8, "unit": "modules"}',
+            )
+            progress = task_runner.structured_progress(task_dir)
+        self.assertEqual(progress["counts_rejected"], "incoherent completed/total/unit")
+
+    def test_status_command_survives_malformed_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "001-example"
+            task_dir.mkdir()
+            (task_dir / "task.md").write_text("# t", encoding="utf-8")
+            (task_dir / "plan.md").write_text("# p", encoding="utf-8")
+            task_runner.progress_path(task_dir).write_text("{broken", encoding="utf-8")
+            args = argparse.Namespace(task_dir=str(task_dir))
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                task_runner.cmd_status(args)
+            payload = json.loads(buffer.getvalue())
+        self.assertNotIn("progress", payload)
 
 
 if __name__ == "__main__":

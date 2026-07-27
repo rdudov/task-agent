@@ -95,7 +95,7 @@ Suggested `progress.json` for a long run:
 
 ```json
 {
-  "version": 1,
+  "schema_version": 1,
   "activity": "Migrating module 3 of the payment adapter",
   "updated_at": "2026-04-03T12:00:00Z",
   "recent_outcome": "Module 2 migrated, 14 call sites updated",

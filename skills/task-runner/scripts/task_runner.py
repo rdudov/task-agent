@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -170,7 +171,7 @@ Before doing substantial work:
 While working:
 - Keep `{trace_md}` updated with concise chronological notes.
 - Keep `{status_json}` updated with `state`, `current_step`, and `updated_at`.
-- For a long run, publish substantive live progress in `{progress_json}`: a version 1
+- For a long run, publish substantive live progress in `{progress_json}`: a `schema_version: 1`
   object with a concrete `activity`, `updated_at`, and optionally `recent_outcome`.
   Publish `completed`, `total`, and `unit` only together and only when you actually
   know the bounds; never invent a total. Startup bookkeeping is not an outcome.
@@ -682,25 +683,44 @@ def build_workflow_command(
     return command
 
 
-def structured_progress(task_dir: Path) -> dict | None:
-    """Return validated version 1 progress, or None when it says nothing useful.
+def valid_progress_number(value: object) -> bool:
+    """Accept a real number only. `True` is an int in Python; a count is not."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
-    The point of the schema is that a reader can trust it. `activity` must be
-    real text, and the count triple is accepted only when it is complete and
-    coherent, so nobody downstream has to infer a missing total.
+
+def structured_progress(task_dir: Path) -> dict | None:
+    """Return validated `schema_version: 1` progress, or None when unusable.
+
+    The point of the schema is that a reader can trust it. `activity` and
+    `updated_at` must be real text, and the count triple is accepted only when
+    it is complete and coherent, so nobody downstream has to infer a missing
+    total. A malformed file yields None rather than taking down the caller.
     """
-    payload = read_json(progress_path(task_dir))
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    try:
+        payload = read_json(progress_path(task_dir))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         return None
 
     activity = payload.get("activity")
-    if not isinstance(activity, str) or not activity.strip():
+    updated_at = payload.get("updated_at")
+    if (
+        not isinstance(activity, str)
+        or not activity.strip()
+        or not isinstance(updated_at, str)
+        or not updated_at.strip()
+    ):
         return None
 
     progress: dict = {
-        "version": 1,
+        "schema_version": 1,
         "activity": activity.strip(),
-        "updated_at": payload.get("updated_at"),
+        "updated_at": updated_at.strip(),
     }
     recent_outcome = payload.get("recent_outcome")
     if isinstance(recent_outcome, str) and recent_outcome.strip():
@@ -712,8 +732,8 @@ def structured_progress(task_dir: Path) -> dict | None:
     counts_declared = [value is not None for value in (completed, total, unit)]
     if all(counts_declared):
         if (
-            isinstance(completed, int)
-            and isinstance(total, int)
+            valid_progress_number(completed)
+            and valid_progress_number(total)
             and isinstance(unit, str)
             and unit.strip()
             and total > 0
@@ -874,13 +894,39 @@ def cmd_start(args: argparse.Namespace) -> None:
         startup_line = process.stdout.readline().strip()
         process.stdout.close()
 
+    def abort_start(detail: str) -> None:
+        """Fail the start without leaving the task claiming to be running.
+
+        The watcher records its own terminal state when it can. This is the
+        parent's backstop for the cases where it could not, such as output that
+        is not a startup record at all.
+        """
+        if read_json(status_path(task_dir)).get("state") not in {"completed", "failed", "blocked"}:
+            write_status(
+                task_dir,
+                "failed",
+                detail,
+                {"runner": args.runner, "workflow": args.workflow},
+            )
+            append_trace(task_dir, detail)
+        raise SystemExit(detail)
+
     if not startup_line:
         process.wait(timeout=5)
-        raise SystemExit("Child runner failed to report startup metadata.")
+        abort_start("Child runner failed to report startup metadata.")
 
-    startup_meta = json.loads(startup_line)
-    if not startup_meta.get("ok"):
-        raise SystemExit(startup_meta.get("error", "Child runner failed before launch."))
+    try:
+        startup_meta = json.loads(startup_line)
+    except json.JSONDecodeError:
+        process.wait(timeout=5)
+        abort_start(f"Child runner emitted unparsable startup output: {startup_line[:200]}")
+    if not isinstance(startup_meta, dict) or not startup_meta.get("ok"):
+        detail = "Child runner failed before launch."
+        if isinstance(startup_meta, dict):
+            detail = startup_meta.get("error") or detail
+        abort_start(detail)
+    if not all(key in startup_meta for key in ("watcher_pid", "pid", "child_started_at")):
+        abort_start("Child runner startup record is missing process identity fields.")
 
     meta.update(
         {
@@ -924,39 +970,74 @@ def finalize_child_lifecycle(
     )
 
 
+def report_launch_failure(task_dir: Path, args: argparse.Namespace, exc: Exception) -> None:
+    """Turn any pre-launch failure into one truthful startup record.
+
+    Everything before the child exists shares this path, because a refusal that
+    leaves the task reading `running` is worse than the refusal it reports.
+    """
+    update_runner_meta(
+        task_dir,
+        {
+            "launch_error": str(exc),
+            "finished_at": utc_now(),
+            "outcome": "failed_to_launch",
+        },
+    )
+    write_status(
+        task_dir,
+        "failed",
+        f"Child failed to launch: {exc}",
+        {
+            "runner": getattr(args, "runner", None),
+            "workflow": getattr(args, "workflow", None),
+        },
+    )
+    append_trace(task_dir, f"Child failed to launch before starting: {exc}")
+    print(json.dumps({"ok": False, "error": str(exc)}), flush=True)
+
+
 def cmd_run_child(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
     ensure_task_contract(task_dir)
-    resolved_sandbox_mode = resolve_sandbox_mode(
-        args.runner,
-        args.workflow,
-        getattr(args, "sandbox_mode", None),
-    )
 
-    workflow_command = build_workflow_command(
-        args.workflow,
-        args.runner,
-        task_dir,
-        getattr(args, "agents_dir", None),
-        getattr(args, "agents_repo_url", None),
-        getattr(args, "artifacts_subdir", None),
-        resolved_sandbox_mode,
-        getattr(args, "resume", False),
-        getattr(args, "model", None),
-    )
-    command = workflow_command or build_command(
-        args.runner,
-        runner_prompt_path(task_dir),
-        root,
-        args.model,
-        resolved_sandbox_mode,
-    )
-    if args.runner == "claude" and args.workflow == "standard":
-        require_claude_sandbox_dependencies(resolved_sandbox_mode or "workspace-write")
-        require_safe_claude_project_settings(
-            root, resolved_sandbox_mode or "workspace-write"
+    # Preflight and command construction can both refuse to proceed. They run
+    # inside the guarded block so a refusal reaches the parent as structured
+    # startup output rather than as a traceback the parent cannot parse.
+    try:
+        resolved_sandbox_mode = resolve_sandbox_mode(
+            args.runner,
+            args.workflow,
+            getattr(args, "sandbox_mode", None),
         )
+        workflow_command = build_workflow_command(
+            args.workflow,
+            args.runner,
+            task_dir,
+            getattr(args, "agents_dir", None),
+            getattr(args, "agents_repo_url", None),
+            getattr(args, "artifacts_subdir", None),
+            resolved_sandbox_mode,
+            getattr(args, "resume", False),
+            getattr(args, "model", None),
+        )
+        command = workflow_command or build_command(
+            args.runner,
+            runner_prompt_path(task_dir),
+            root,
+            args.model,
+            resolved_sandbox_mode,
+        )
+        if args.runner == "claude" and args.workflow == "standard":
+            require_claude_sandbox_dependencies(resolved_sandbox_mode or "workspace-write")
+            require_safe_claude_project_settings(
+                root, resolved_sandbox_mode or "workspace-write"
+            )
+    except (Exception, SystemExit) as exc:
+        report_launch_failure(task_dir, args, exc if isinstance(exc, Exception) else RuntimeError(str(exc)))
+        raise SystemExit(1)
+
     update_runner_meta(
         task_dir,
         {
@@ -984,16 +1065,8 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             start_new_session=True,
         )
     except Exception as exc:
-        update_runner_meta(
-            task_dir,
-            {
-                "launch_error": str(exc),
-                "finished_at": utc_now(),
-                "outcome": "failed_to_launch",
-            },
-        )
-        print(json.dumps({"ok": False, "error": str(exc)}), flush=True)
-        raise
+        report_launch_failure(task_dir, args, exc)
+        raise SystemExit(1)
 
     child_started_at = utc_now()
     update_runner_meta(
