@@ -879,28 +879,18 @@ def cmd_start(args: argparse.Namespace) -> None:
     if getattr(args, "resume", False):
         watcher_command.append("--resume")
 
-    process = subprocess.Popen(
-        watcher_command,
-        cwd=root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        text=True,
-    )
-
-    startup_line = ""
-    if process.stdout is not None:
-        startup_line = process.stdout.readline().strip()
-        process.stdout.close()
-
-    def abort_start(detail: str) -> None:
+    def abort_start(detail: str, meta_extra: dict | None = None) -> None:
         """Fail the start without leaving the task claiming to be running.
 
-        The watcher records its own terminal state when it can. This is the
-        parent's backstop for the cases where it could not, such as output that
-        is not a startup record at all.
+        Every process boundary here can refuse: the parent may fail to spawn the
+        watcher, the watcher may fail to spawn the child, and the watcher may
+        emit something that is not a startup record. A refusal at any of them is
+        a failure, not ongoing work, so none of them may leave `running` behind.
+        The watcher records its own terminal state when it can; this is the
+        parent's backstop for when it could not.
         """
+        if meta_extra:
+            update_runner_meta(task_dir, meta_extra)
         if read_json(status_path(task_dir)).get("state") not in {"completed", "failed", "blocked"}:
             write_status(
                 task_dir,
@@ -910,6 +900,31 @@ def cmd_start(args: argparse.Namespace) -> None:
             )
             append_trace(task_dir, detail)
         raise SystemExit(detail)
+
+    try:
+        process = subprocess.Popen(
+            watcher_command,
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            text=True,
+        )
+    except OSError as exc:
+        abort_start(
+            f"Parent agent could not start the task watcher: {exc}",
+            {
+                "launch_error": str(exc),
+                "finished_at": utc_now(),
+                "outcome": "watcher_failed_to_launch",
+            },
+        )
+
+    startup_line = ""
+    if process.stdout is not None:
+        startup_line = process.stdout.readline().strip()
+        process.stdout.close()
 
     if not startup_line:
         process.wait(timeout=5)
