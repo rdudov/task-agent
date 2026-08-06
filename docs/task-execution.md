@@ -30,9 +30,10 @@ an absent host PID is unobservable rather than dead, so status reports unknown
 and start/stop/reattach fail closed.
 
 `--repo <path>` is runner-neutral. In the standard workflow it becomes an
-explicit Codex/Claude access root or the Cursor Agent workspace; write modes
-perform a create/delete probe before launch and record the grant. In the
-dev-pipeline workflow the same path is the core owner's target repository.
+explicit Codex/Claude access root or an additive Cursor Agent workspace root;
+write modes perform an exclusive random-file create/delete probe before launch
+and record the grant. Cursor retains task-agent as its primary workspace. In
+the dev-pipeline workflow the same path is the core owner's target repository.
 
 ## Dev-Pipeline Workflow
 

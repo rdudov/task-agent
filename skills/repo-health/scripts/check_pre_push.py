@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import base64
+import os
 import re
 import subprocess
 import sys
@@ -38,29 +38,11 @@ FORBIDDEN_SUFFIXES = (
     ".key",
 )
 
-class EncodedLiteralPattern:
-    """Regex-compatible matcher whose guard literals do not leak into source."""
-
-    def __init__(self, *encoded_literals: str) -> None:
-        self.literals = tuple(
-            base64.b64decode(value).decode("utf-8") for value in encoded_literals
-        )
-
-    def search(self, text: str):
-        return next((literal for literal in self.literals if literal in text), None)
+PRIVATE_HISTORY_MARKERS_ENV = "TASK_AGENT_PRIVATE_HISTORY_MARKERS"
+PRIVATE_HISTORY_MARKERS_PATH = Path(".state/private-history-markers")
 
 
-SECRET_PATTERNS: list[tuple[str, object]] = [
-    (
-        "private task/project history",
-        EncodedLiteralPattern(
-            "bW9leC1zdHJhdGVneS1sYWI=",
-            "Z3JlZW5maWVsZC1kZWVwcmVzZWFyY2g=",
-            "NDIzLXJ1bi1maXJzdC1zaXgtbW9udGgtbW9leC1zdHJhdGVneS1jeWNsZQ==",
-            "MjAyNi0wNS0wMi10dXJrZXktZmxvdGlsbGE=",
-            "Y29tcGFuaW9uLWFnZW50IHJvb3Q=",
-        ),
-    ),
+SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("private key", re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")),
     (
         "secret assignment",
@@ -130,8 +112,51 @@ def outgoing_files(remote: str, root: Path, base: str | None) -> list[str]:
 def unexpected_refs(remote: str, root: Path) -> list[str]:
     """Return refs that a publishing clone must not retain or mirror."""
     refs = run_git(["for-each-ref", "--format=%(refname)"], root).splitlines()
-    allowed = ("refs/heads/", f"refs/remotes/{remote}/")
-    return sorted(ref for ref in refs if ref and not ref.startswith(allowed))
+    allowed_prefixes = (
+        "refs/heads/",
+        f"refs/remotes/{remote}/",
+        "refs/tags/",
+        "refs/notes/",
+    )
+    allowed_exact = {"refs/stash"}
+    return sorted(
+        ref
+        for ref in refs
+        if ref
+        and ref not in allowed_exact
+        and not ref.startswith(allowed_prefixes)
+    )
+
+
+def private_history_markers(root: Path) -> tuple[str, ...]:
+    """Load deployment-local privacy markers without publishing their values."""
+    configured = os.environ.get(PRIVATE_HISTORY_MARKERS_ENV)
+    path = (
+        Path(configured).expanduser()
+        if configured
+        else root / PRIVATE_HISTORY_MARKERS_PATH
+    )
+    if configured and not path.exists():
+        raise RuntimeError(f"Configured private-history marker file is missing: {path}")
+    if not path.exists():
+        return ()
+    markers = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        marker = line.strip()
+        if marker and not marker.startswith("#"):
+            if len(marker) < 4:
+                raise RuntimeError(
+                    f"Private-history marker is too short in {path}: {marker!r}"
+                )
+            markers.append(marker)
+    return tuple(markers)
+
+
+def private_history_match(text: str, root: Path) -> str | None:
+    return next(
+        (marker for marker in private_history_markers(root) if marker in text),
+        None,
+    )
 
 
 def is_forbidden_path(path: str, allow_local_artifacts: bool) -> bool:
@@ -165,6 +190,10 @@ def scan_file(root: Path, rel_path: str, allow_local_artifacts: bool) -> list[st
         text = full.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return [f"{rel_path}: cannot read ({exc})"]
+
+    if private_history_match(text, root):
+        errors.append(f"{rel_path}: possible leak (private task/project history)")
+        return errors
 
     for label, pattern in SECRET_PATTERNS:
         if pattern.search(text):

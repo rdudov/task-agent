@@ -39,7 +39,8 @@ def _load_pre_push():
     return module
 
 
-SECRET_PATTERNS = _load_pre_push().SECRET_PATTERNS
+PRE_PUSH = _load_pre_push()
+SECRET_PATTERNS = PRE_PUSH.SECRET_PATTERNS
 
 
 def repo_root() -> Path:
@@ -230,6 +231,11 @@ def check_secret_like_content(root: Path) -> list[str]:
                 continue
             text = read_text(path)
         except OSError:
+            continue
+        if PRE_PUSH.private_history_match(text, root):
+            errors.append(
+                f"{relative}: possible secret-like content (private task/project history)"
+            )
             continue
         for label, pattern in SECRET_PATTERNS:
             if pattern.search(text):

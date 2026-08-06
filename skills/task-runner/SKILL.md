@@ -86,9 +86,10 @@ Start a standard Codex child:
 ```
 
 To work in another repository, add `--repo /path/to/target-repo`. Standard
-Codex and Claude receive a narrow additional root; Cursor Agent uses it as its
-workspace. Write modes verify the target before spawn, and the resolved grant
-is recorded in `.runner/runner.json`.
+Codex and Claude receive a narrow additional root; Cursor Agent receives it as
+an additional root while retaining task-agent as its primary workspace. Write
+modes verify the target with an exclusive random-file create/delete probe
+before spawn, and the resolved grant is recorded in `.runner/runner.json`.
 
 Start a standard Claude child:
 

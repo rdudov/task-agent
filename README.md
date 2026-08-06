@@ -52,6 +52,12 @@ Before pushing a source change from this workspace, run:
 .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote origin
 ```
 
+To block deployment-specific project/task/trip names without publishing them,
+put one literal per line in ignored `.state/private-history-markers`, or point
+`TASK_AGENT_PRIVATE_HISTORY_MARKERS` at another local file. The guard also
+refuses foreign remote and unknown ref namespaces while allowing ordinary local
+branches, tags, notes, and stash.
+
 ## Agent Entry Points
 
 The same rules reach Codex, Cursor, and Claude Code without being copied. `AGENTS.md` holds the project rules, `.cursor/rules/*.mdc` hold the always-on rules, and `CLAUDE.md` imports both rather than restating them; `.claude/` contains only symlinks into the canonical files. Adding a Cursor rule means adding its `.claude/imports/` symlink and its `CLAUDE.md` import line — see [docs/claude-code-setup.md](./docs/claude-code-setup.md).
@@ -67,7 +73,8 @@ The child runner follows the parent CLI agent, so a Codex session delegates to C
 Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) and mapped per runner. `TASK_AGENT_WORKSPACE_ROOT` sets how far full access reaches; it defaults to the parent of this checkout.
 
 For the standard workflow, `--repo /path/to/target-repo` makes that repository
-the explicit child workspace/access grant for Codex, Claude, or Cursor Agent.
+an additional workspace/access root for Codex, Claude, or Cursor Agent while
+the task-agent checkout remains the primary workspace.
 Write modes verify writability before launch and record the result.
 
 `start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity and PID namespace rather than by pid alone. An observer in another namespace reports liveness as unknown and cannot replace, stop, or reattach the host run. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.

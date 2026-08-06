@@ -282,6 +282,22 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
                     access_directories=directories,
                 )
                 self.assertIn(str(target), command)
+                if runner == "agent":
+                    self.assertEqual(
+                        command[command.index("--workspace") + 1],
+                        str(task_runner.repo_root()),
+                    )
+                self.assertEqual(command[command.index("--add-dir") + 1], str(target))
+
+            read_only_codex = task_runner.build_command(
+                "codex",
+                prompt,
+                task_runner.repo_root(),
+                None,
+                "read-only",
+                access_directories=[target],
+            )
+            self.assertNotIn("--add-dir", read_only_codex)
 
     def test_nested_pid_namespace_cannot_replace_or_signal_host_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

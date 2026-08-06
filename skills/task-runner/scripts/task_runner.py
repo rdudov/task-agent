@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -667,16 +668,25 @@ def verify_write_access(directories: list[Path]) -> list[dict]:
     """Prove before spawning that a requested writable target is writable."""
     records = []
     for directory in directories:
-        probe = directory / f".task-runner-access-check-{os.getpid()}"
         record: dict[str, object] = {"path": str(directory), "checked_at": utc_now()}
+        probe: Path | None = None
         try:
-            probe.write_text("task-runner write check\n", encoding="utf-8")
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=".task-runner-access-check-",
+                dir=directory,
+                delete=False,
+            ) as handle:
+                probe = Path(handle.name)
+                handle.write("task-runner write check\n")
             record["writable"] = True
         except OSError as exc:
             record["writable"] = False
             record["error"] = str(exc)
         finally:
-            probe.unlink(missing_ok=True)
+            if probe is not None:
+                probe.unlink(missing_ok=True)
         records.append(record)
     return records
 
@@ -771,7 +781,7 @@ def build_command(
                     "sandbox_workspace_write.exclude_slash_tmp=true",
                 ]
             )
-        elif access_directories:
+        elif resolved_sandbox_mode in WRITE_ACCESS_MODES and access_directories:
             for directory in access_directories:
                 command.extend(["--add-dir", str(directory)])
         if model:
@@ -805,8 +815,10 @@ def build_command(
             "--trust",
             "--force",
             "--workspace",
-            str(access_directories[0] if access_directories else root),
+            str(root),
         ]
+        for directory in access_directories:
+            command.extend(["--add-dir", str(directory)])
         if model:
             command.extend(["--model", model])
         command.append(prompt)
