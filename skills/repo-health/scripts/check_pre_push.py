@@ -152,10 +152,25 @@ def private_history_markers(root: Path) -> tuple[str, ...]:
     return tuple(markers)
 
 
-def private_history_match(text: str, root: Path) -> str | None:
-    return next(
-        (marker for marker in private_history_markers(root) if marker in text),
-        None,
+def private_history_match(text: str, markers: tuple[str, ...]) -> str | None:
+    return next((marker for marker in markers if marker in text), None)
+
+
+def private_history_notice(markers: tuple[str, ...], root: Path) -> str | None:
+    """Say out loud when the private-name check had nothing to check with.
+
+    An empty marker list is not a pass: it means the deployment never told the
+    guard which names are private, so nothing was compared. Returning quietly
+    here is how a guard lies in the operator's favour, so callers print this.
+    """
+    if markers:
+        return None
+    configured = os.environ.get(PRIVATE_HISTORY_MARKERS_ENV)
+    path = Path(configured).expanduser() if configured else root / PRIVATE_HISTORY_MARKERS_PATH
+    return (
+        "NOTICE: private-history marker list is empty; "
+        f"the private name check did NOT run (no markers in {path}). "
+        "Secret and forbidden-path checks still ran."
     )
 
 
@@ -173,8 +188,15 @@ def is_forbidden_path(path: str, allow_local_artifacts: bool) -> bool:
     return any(path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
 
 
-def scan_file(root: Path, rel_path: str, allow_local_artifacts: bool) -> list[str]:
+def scan_file(
+    root: Path,
+    rel_path: str,
+    allow_local_artifacts: bool,
+    markers: tuple[str, ...] | None = None,
+) -> list[str]:
     errors: list[str] = []
+    if markers is None:
+        markers = private_history_markers(root)
     full = root / rel_path
     if not full.exists():
         return errors
@@ -191,7 +213,7 @@ def scan_file(root: Path, rel_path: str, allow_local_artifacts: bool) -> list[st
     except OSError as exc:
         return [f"{rel_path}: cannot read ({exc})"]
 
-    if private_history_match(text, root):
+    if private_history_match(text, markers):
         errors.append(f"{rel_path}: possible leak (private task/project history)")
         return errors
 
@@ -211,6 +233,11 @@ def main() -> int:
         action="store_true",
         help="Allow tasks/, data/, and .state/ paths when intentionally publishing a template artifact change.",
     )
+    parser.add_argument(
+        "--require-private-history-markers",
+        action="store_true",
+        help="Fail instead of only warning when the private-history marker list is empty.",
+    )
     args = parser.parse_args()
 
     root = repo_root()
@@ -218,9 +245,22 @@ def main() -> int:
         url = remote_url(args.remote, root)
         files = outgoing_files(args.remote, root, args.base)
         extra_refs = unexpected_refs(args.remote, root)
+        markers = private_history_markers(root)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+
+    # Announce a disabled private-name check before any result, so an operator
+    # never reads "passed" as "the private names were checked and found absent".
+    notice = private_history_notice(markers, root)
+    if notice:
+        print(notice, file=sys.stderr)
+        if args.require_private_history_markers:
+            print(
+                "ERROR: --require-private-history-markers was given and the marker list is empty.",
+                file=sys.stderr,
+            )
+            return 1
 
     if not files and not extra_refs:
         print(f"Pre-push check passed for {args.remote} ({url}): no outgoing files.")
@@ -229,7 +269,11 @@ def main() -> int:
     errors: list[str] = []
     errors.extend(f"{ref}: unexpected ref in publishing clone" for ref in extra_refs)
     for rel_path in files:
-        errors.extend(scan_file(root, rel_path, allow_local_artifacts=args.allow_local_artifacts))
+        errors.extend(scan_file(
+            root, rel_path,
+            allow_local_artifacts=args.allow_local_artifacts,
+            markers=markers,
+        ))
 
     if errors:
         print(f"Pre-push check FAILED for {args.remote} ({url}):", file=sys.stderr)

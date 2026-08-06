@@ -64,6 +64,13 @@ same local list without publishing it. Pre-push also refuses refs from another
 remote and unknown ref namespaces, while allowing ordinary local heads, tags,
 notes, and stash.
 
+An empty marker list means the name comparison never happened, so neither script
+treats it as a pass. Both print an explicit stderr notice naming the file they
+looked for; a clean report without that notice is the only one that means the
+private names were checked and found absent. `check_pre_push.py` takes
+`--require-private-history-markers` to exit non-zero instead of warning, which is
+what a deployment that depends on the name check should use.
+
 ## Deliverables Check
 
 Run before marking a task complete when the user requested output files:

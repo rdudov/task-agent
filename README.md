@@ -4,6 +4,25 @@ Task Agent is a small, forkable workspace for task-first autonomous-agent workfl
 
 It is intentionally generic: no private task history, no local data, and no bundled personal integrations. Project-level operating rules live in [AGENTS.md](./AGENTS.md).
 
+## History Rewritten On 2026-08-06
+
+Every commit before this date was rewritten to remove deployment-specific host
+paths and private project, task, and trip names that the earlier commits still
+carried in examples. Only those strings changed: the tree at the tip is
+byte-identical to what it was before the rewrite. Commit hashes did change, so a
+clone made before 2026-08-06 has no commit in common with `origin/main`.
+
+If you have such a clone, discard its local history:
+
+```bash
+git fetch --all && git reset --hard origin/main
+```
+
+Commit anything you want to keep to a separate branch first; the reset discards
+uncommitted and unpushed work. One merged leftover branch was renamed in the same
+change and is now `port-generic-agent-workspace-work`; prune stale
+remote-tracking refs with `git fetch --prune`.
+
 ## What Is Included
 
 - `tasks/` skeleton for durable task artifacts
@@ -57,6 +76,12 @@ put one literal per line in ignored `.state/private-history-markers`, or point
 `TASK_AGENT_PRIVATE_HISTORY_MARKERS` at another local file. The guard also
 refuses foreign remote and unknown ref namespaces while allowing ordinary local
 branches, tags, notes, and stash.
+
+An empty marker list is not a pass. A fresh clone has no `.state/`, so the name
+check has nothing to compare against; both `check_pre_push.py` and
+`check_repo_health.py` now say so on stderr instead of reporting a clean run.
+Pass `--require-private-history-markers` to `check_pre_push.py` to turn that
+notice into a failure.
 
 ## Agent Entry Points
 

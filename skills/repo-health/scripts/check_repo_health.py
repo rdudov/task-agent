@@ -224,6 +224,16 @@ def check_secret_like_content(root: Path) -> list[str]:
         # A leak gate that silently scans nothing is worse than no gate. Say the
         # scope could not be established rather than pass by default.
         return [f"repository scope for the secret scan cannot be established: {exc}"]
+    try:
+        markers = PRE_PUSH.private_history_markers(root)
+    except RuntimeError as exc:
+        return [f"private-history markers cannot be loaded: {exc}"]
+    # Same reason as the scope failure above: an empty marker list means the
+    # private-name comparison did not happen, and that must be said, not implied
+    # by a clean report.
+    notice = PRE_PUSH.private_history_notice(markers, root)
+    if notice:
+        print(notice, file=sys.stderr)
     for relative in candidates:
         path = root / relative
         try:
@@ -232,7 +242,7 @@ def check_secret_like_content(root: Path) -> list[str]:
             text = read_text(path)
         except OSError:
             continue
-        if PRE_PUSH.private_history_match(text, root):
+        if PRE_PUSH.private_history_match(text, markers):
             errors.append(
                 f"{relative}: possible secret-like content (private task/project history)"
             )
