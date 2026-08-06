@@ -175,7 +175,9 @@ It supports `--runner codex` and `--runner claude`, because those are the owner 
 This workflow depends on the separate public `rdudov/dev-pipeline` project. The
 tested commit is pinned in both requirements files, so the documented virtualenv
 install provides the CLI. An editable local checkout can replace it during core
-development; `--dev-pipeline-bin` remains available for an explicit executable.
+development. The runner resolves `.venv/bin/dev-pipeline` first and then `PATH`;
+`TASK_AGENT_DEV_PIPELINE_BIN` or `--dev-pipeline-bin` selects an explicit
+executable, and an unresolved CLI fails before launch.
 
 `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration. It writes `dev-pipeline/owner-instruction.md` from `task.md`, invokes the public `dev-pipeline owner` command, validates every neutral lifecycle event the core emits, and projects it into the task's own artifacts. Task-local state lives under `dev-pipeline/`: the core's lifecycle state in `core/`, the recorded event stream in `projected-events.jsonl`, and the two cursors that make recording and projecting separately restartable.
 

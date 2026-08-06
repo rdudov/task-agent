@@ -85,6 +85,23 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             prefix, record = task_runner.watcher_supervision_boundary(task, "b" * 32)
         self.assertIn("--scope", prefix)
         self.assertEqual(record["durability"], "independent_cgroup")
+
+    def test_default_pipeline_cli_is_resolved_from_the_readme_virtualenv(self) -> None:
+        expected = task_runner.repo_root() / ".venv" / "bin" / "dev-pipeline"
+        self.assertTrue(expected.is_file())
+        command = task_runner.build_dev_pipeline_command(
+            "codex",
+            Path("/tmp/001-example"),
+            "danger-full-access",
+            None,
+            str(task_runner.repo_root()),
+            None,
+            "start",
+            None,
+            None,
+            None,
+        )
+        self.assertEqual(command[command.index("--dev-pipeline-bin") + 1], str(expected))
     def test_resolve_sandbox_mode_keeps_standard_codex_default_implicit(self) -> None:
         self.assertIsNone(
             task_runner.resolve_sandbox_mode(

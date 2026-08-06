@@ -86,6 +86,11 @@ the active virtual environment with an editable checkout:
 
 The adapter is transport-neutral. It builds the owner instruction, calls the public CLI, validates the neutral lifecycle events it emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. It binds no recipient and delivers no messages; `skills/task-runner/scripts/pipeline_notify.py` is the documented, deliberately inert seam where an application with a real transport attaches its own delivery and replay rules.
 
+By default the runner resolves the CLI installed at `.venv/bin/dev-pipeline`,
+then falls back to `PATH`. `TASK_AGENT_DEV_PIPELINE_BIN` or
+`--dev-pipeline-bin` can select another executable explicitly; an unresolved
+CLI fails before an owner process is started.
+
 The owner closes task frontmatter through `tasks_index.py`, completes every plan
 step, and records passing live evidence. A completion reported without those
 durable gates is blocked. For a contract with mandatory prose policy families,

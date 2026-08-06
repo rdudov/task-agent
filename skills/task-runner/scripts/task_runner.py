@@ -763,6 +763,35 @@ DEV_PIPELINE_OPTIONS = (
     "retry_reason",
 )
 
+DEV_PIPELINE_BIN_ENV = "TASK_AGENT_DEV_PIPELINE_BIN"
+
+
+def resolve_dev_pipeline_bin(explicit: str | None = None) -> str:
+    """Resolve the CLI installed by this repository's own README."""
+    configured = explicit or os.environ.get(DEV_PIPELINE_BIN_ENV)
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.parent != Path(".") or candidate.is_absolute():
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                raise SystemExit(f"Dev-pipeline executable is not runnable: {candidate}")
+            return str(candidate.resolve())
+        found = shutil.which(configured)
+        if found:
+            return found
+        raise SystemExit(f"Dev-pipeline executable is not on PATH: {configured}")
+
+    local = repo_root() / ".venv" / "bin" / "dev-pipeline"
+    if local.is_file() and os.access(local, os.X_OK):
+        return str(local)
+    found = shutil.which("dev-pipeline")
+    if found:
+        return found
+    raise SystemExit(
+        "dev-pipeline is not installed. Run `.venv/bin/pip install -r "
+        "requirements.lock` from the task-agent checkout, or set "
+        f"{DEV_PIPELINE_BIN_ENV}."
+    )
+
 
 def dev_pipeline_options(args: argparse.Namespace) -> dict:
     """Collect the dev-pipeline options a namespace actually carries.
@@ -808,7 +837,7 @@ def build_dev_pipeline_command(
         "--repo",
         repo,
         "--dev-pipeline-bin",
-        dev_pipeline_bin or "dev-pipeline",
+        resolve_dev_pipeline_bin(dev_pipeline_bin),
         "--operation",
         operation,
         "--owner-runtime",
