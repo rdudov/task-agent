@@ -237,9 +237,13 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         self.assertIn("--previous-state-dir", command)
         self.assertEqual(command[command.index("--retry-reason") + 1], "intentional_replacement")
 
+    def test_dev_pipeline_maps_the_agent_runner_to_the_cursor_owner_runtime(self) -> None:
+        command = self._dev_pipeline_command(runner="agent")
+        self.assertEqual(command[command.index("--owner-runtime") + 1], "cursor")
+
     def test_dev_pipeline_refuses_a_runner_the_core_cannot_drive(self) -> None:
         with self.assertRaises(SystemExit):
-            self._dev_pipeline_command(runner="agent")
+            self._dev_pipeline_command(runner="no-such-runner")
 
     def test_dev_pipeline_refuses_to_run_without_a_target_repository(self) -> None:
         with self.assertRaises(SystemExit):

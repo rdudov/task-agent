@@ -278,6 +278,10 @@ def codex_workdir(sandbox_mode: str | None, notebook: Path | None = None) -> Pat
 
 
 CLI_RUNNERS = ("codex", "claude", "agent")
+
+# The dev-pipeline core names owner runtimes after the product; this launcher
+# names runners after the executable it launches. `agent` is the Cursor CLI.
+DEV_PIPELINE_OWNER_RUNTIMES = {"codex": "codex", "claude": "claude", "agent": "cursor"}
 DEFAULT_RUNNER = "codex"
 CODEX_APPROVAL_MODE = "never"
 RUNNER_OVERRIDE_ENV = "TASK_AGENT_CHILD_RUNNER"
@@ -737,7 +741,7 @@ def resolve_sandbox_mode(
     """
     if sandbox_mode:
         return sandbox_mode
-    if workflow == "dev-pipeline" and runner in {"codex", "claude"}:
+    if workflow == "dev-pipeline" and runner in DEV_PIPELINE_OWNER_RUNTIMES:
         return "danger-full-access"
     return None
 
@@ -932,10 +936,12 @@ def build_dev_pipeline_command(
     directory to the adapter, which owns the public CLI contract and the
     projection of its events.
     """
-    if runner not in {"codex", "claude"}:
+    if runner not in DEV_PIPELINE_OWNER_RUNTIMES:
         raise SystemExit(
-            "The dev-pipeline workflow supports the codex and claude runners, "
-            "because those are the owner runtimes the dev-pipeline core drives."
+            "The dev-pipeline workflow supports the "
+            + ", ".join(sorted(DEV_PIPELINE_OWNER_RUNTIMES))
+            + " runners, because those are the owner runtimes the dev-pipeline "
+            "core drives."
         )
     if not repo:
         raise SystemExit("The dev-pipeline workflow requires --repo.")
@@ -950,7 +956,7 @@ def build_dev_pipeline_command(
         "--operation",
         operation,
         "--owner-runtime",
-        runner,
+        DEV_PIPELINE_OWNER_RUNTIMES[runner],
     ]
     if state_dir:
         command.extend(["--state-dir", state_dir])

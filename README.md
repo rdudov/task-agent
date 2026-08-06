@@ -41,7 +41,7 @@ remote-tracking refs with `git fetch --prune`.
 ## Quick Start
 
 Prerequisites are Python 3.11+, Git, network access, and an installed and
-authenticated Codex or Claude CLI for the `dev-pipeline` owner. Clone the
+authenticated Codex, Claude, or Cursor CLI for the `dev-pipeline` owner. Clone the
 repository, then from its directory create the environment and install the
 pinned public dependency together with the test tools:
 
@@ -93,7 +93,7 @@ The same rules reach Codex, Cursor, and Claude Code without being copied. `AGENT
 .venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example
 ```
 
-The child runner follows the parent CLI agent, so a Codex session delegates to Codex and a Claude session to Claude. Pass `--runner codex|claude|agent` to decide explicitly, or set `TASK_AGENT_CHILD_RUNNER`. Cursor Agent remains available for the standard workflow; the standalone pipeline owns Codex and Claude sessions. Every run records which rule decided.
+The child runner follows the parent CLI agent, so a Codex session delegates to Codex and a Claude session to Claude. Pass `--runner codex|claude|agent` to decide explicitly, or set `TASK_AGENT_CHILD_RUNNER`. All three drive both workflows: under `dev-pipeline` the `agent` runner becomes the core's `cursor` owner runtime. Every run records which rule decided.
 
 Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) and mapped per runner. `TASK_AGENT_WORKSPACE_ROOT` sets how far full access reaches; it defaults to the parent of this checkout.
 
@@ -106,7 +106,7 @@ Write modes verify writability before launch and record the result.
 
 ## Dev-Pipeline Workflow
 
-`--workflow dev-pipeline` runs a task through the standalone `dev-pipeline` CLI, which drives an evidence-gated Codex or Claude owner session:
+`--workflow dev-pipeline` runs a task through the standalone `dev-pipeline` CLI, which drives an evidence-gated Codex, Claude, or Cursor owner session:
 
 ```bash
 .venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \

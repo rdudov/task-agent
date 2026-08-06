@@ -596,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model")
     parser.add_argument(
         "--owner-runtime",
-        choices=("codex", "claude"),
+        choices=("codex", "claude", "cursor"),
         default="codex",
         help="CLI runtime that owns the pipeline session.",
     )
