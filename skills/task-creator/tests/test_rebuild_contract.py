@@ -257,8 +257,8 @@ def test_12_project_filter_compares_json_elements_exactly(repo: Path) -> None:
     Filtering for a value that is merely a substring of a stored element must
     match nothing: the filter names an element, not a fragment of one.
     """
-    make_task(repo, 129, "lab", projects=["data/projects/example-project/project.md"])
-    make_task(repo, 130, "deep", projects=["data/projects/second-example/status.md"])
+    make_task(repo, 129, "alpha", projects=["data/projects/example-project/project.md"])
+    make_task(repo, 130, "beta", projects=["data/projects/second-example/status.md"])
 
     exact = json.loads(run(
         repo, "query", "--status", "all",

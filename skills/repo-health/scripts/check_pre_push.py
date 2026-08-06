@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import re
 import subprocess
 import sys
@@ -37,7 +38,29 @@ FORBIDDEN_SUFFIXES = (
     ".key",
 )
 
-SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+class EncodedLiteralPattern:
+    """Regex-compatible matcher whose guard literals do not leak into source."""
+
+    def __init__(self, *encoded_literals: str) -> None:
+        self.literals = tuple(
+            base64.b64decode(value).decode("utf-8") for value in encoded_literals
+        )
+
+    def search(self, text: str):
+        return next((literal for literal in self.literals if literal in text), None)
+
+
+SECRET_PATTERNS: list[tuple[str, object]] = [
+    (
+        "private task/project history",
+        EncodedLiteralPattern(
+            "bW9leC1zdHJhdGVneS1sYWI=",
+            "Z3JlZW5maWVsZC1kZWVwcmVzZWFyY2g=",
+            "NDIzLXJ1bi1maXJzdC1zaXgtbW9udGgtbW9leC1zdHJhdGVneS1jeWNsZQ==",
+            "MjAyNi0wNS0wMi10dXJrZXktZmxvdGlsbGE=",
+            "Y29tcGFuaW9uLWFnZW50IHJvb3Q=",
+        ),
+    ),
     ("private key", re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")),
     (
         "secret assignment",
@@ -104,6 +127,13 @@ def outgoing_files(remote: str, root: Path, base: str | None) -> list[str]:
     return sorted({line for line in out.splitlines() if line})
 
 
+def unexpected_refs(remote: str, root: Path) -> list[str]:
+    """Return refs that a publishing clone must not retain or mirror."""
+    refs = run_git(["for-each-ref", "--format=%(refname)"], root).splitlines()
+    allowed = ("refs/heads/", f"refs/remotes/{remote}/")
+    return sorted(ref for ref in refs if ref and not ref.startswith(allowed))
+
+
 def is_forbidden_path(path: str, allow_local_artifacts: bool) -> bool:
     if path in ALLOWED_TEMPLATE_ARTIFACTS:
         return False
@@ -158,15 +188,17 @@ def main() -> int:
     try:
         url = remote_url(args.remote, root)
         files = outgoing_files(args.remote, root, args.base)
+        extra_refs = unexpected_refs(args.remote, root)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    if not files:
+    if not files and not extra_refs:
         print(f"Pre-push check passed for {args.remote} ({url}): no outgoing files.")
         return 0
 
     errors: list[str] = []
+    errors.extend(f"{ref}: unexpected ref in publishing clone" for ref in extra_refs)
     for rel_path in files:
         errors.extend(scan_file(root, rel_path, allow_local_artifacts=args.allow_local_artifacts))
 

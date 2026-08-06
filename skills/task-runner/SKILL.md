@@ -85,6 +85,11 @@ Start a standard Codex child:
 .venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner codex
 ```
 
+To work in another repository, add `--repo /path/to/target-repo`. Standard
+Codex and Claude receive a narrow additional root; Cursor Agent uses it as its
+workspace. Write modes verify the target before spawn, and the resolved grant
+is recorded in `.runner/runner.json`.
+
 Start a standard Claude child:
 
 ```bash
@@ -178,6 +183,7 @@ install provides the CLI. An editable local checkout can replace it during core
 development. The runner resolves `.venv/bin/dev-pipeline` first and then `PATH`;
 `TASK_AGENT_DEV_PIPELINE_BIN` or `--dev-pipeline-bin` selects an explicit
 executable, and an unresolved CLI fails before launch.
+Start, direct adapter invocation, and `review-candidate` all use this resolver.
 
 `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration. It writes `dev-pipeline/owner-instruction.md` from `task.md`, invokes the public `dev-pipeline owner` command, validates every neutral lifecycle event the core emits, and projects it into the task's own artifacts. Task-local state lives under `dev-pipeline/`: the core's lifecycle state in `core/`, the recorded event stream in `projected-events.jsonl`, and the two cursors that make recording and projecting separately restartable.
 

@@ -25,6 +25,14 @@ A watcher that is recovered rather than original cannot read the child's exit co
 Launch ownership is serialized. A second start for a task with an identity-bound
 live child or watcher is refused before any metadata is replaced, because two
 live writers make progress attribution and later stop/reattach unsafe.
+New runs also bind that evidence to their PID namespace. From another namespace,
+an absent host PID is unobservable rather than dead, so status reports unknown
+and start/stop/reattach fail closed.
+
+`--repo <path>` is runner-neutral. In the standard workflow it becomes an
+explicit Codex/Claude access root or the Cursor Agent workspace; write modes
+perform a create/delete probe before launch and record the grant. In the
+dev-pipeline workflow the same path is the core owner's target repository.
 
 ## Dev-Pipeline Workflow
 

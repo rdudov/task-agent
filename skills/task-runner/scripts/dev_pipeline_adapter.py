@@ -38,7 +38,7 @@ from task_contract import (
     enforced_review_verdict,
     load_task_contract,
 )
-from task_runner import completion_refusal
+from task_runner import completion_refusal, resolve_dev_pipeline_bin
 
 
 # Lifecycle kinds worth telling a human about. The template has no transport, so
@@ -582,7 +582,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_dir", type=Path)
     parser.add_argument("--repo", required=True, type=Path, help="Target repository for the run.")
-    parser.add_argument("--dev-pipeline-bin", default="dev-pipeline")
+    parser.add_argument("--dev-pipeline-bin")
     parser.add_argument("--operation", choices=("start", "resume", "retry"), default="start")
     parser.add_argument(
         "--state-dir", type=Path, help="Task-local core lifecycle state directory."
@@ -606,6 +606,7 @@ def main(argv: list[str] | None = None) -> int:
         default="workspace-write",
     )
     args = parser.parse_args(argv)
+    args.dev_pipeline_bin = resolve_dev_pipeline_bin(args.dev_pipeline_bin)
     if args.operation == "retry" and args.state_dir is None:
         parser.error("Retry requires an explicit new --state-dir")
     if args.operation != "retry" and (args.previous_state_dir or args.retry_reason):

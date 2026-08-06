@@ -334,14 +334,17 @@ def claude_access_arguments(
     sandbox_mode: str,
     capabilities: dict[str, object] | None = None,
     notebook: Path | None = None,
+    access_directories: tuple[Path, ...] | list[Path] = (),
 ) -> list[str]:
     """Map a runner-neutral access mode to Claude's real permission boundary."""
+    granted = [str(directory) for directory in access_directories]
     if sandbox_mode == "danger-full-access":
         # --add-dir is variadic, so it must be followed by another option or it
         # swallows the trailing prompt argument.
         return [
             "--add-dir",
             str(codex_workdir(sandbox_mode)),
+            *granted,
             "--dangerously-skip-permissions",
         ]
 
@@ -373,10 +376,20 @@ def claude_access_arguments(
         # project roots; no --add-dir is supplied.
         permission_mode = "acceptEdits"
         tool_arguments = ["--tools", "Read,Bash,Edit,Write,WebFetch,WebSearch"]
+        if granted:
+            writable = list(granted)
+            if notebook is not None:
+                writable.extend(
+                    str(path)
+                    for path in (notebook, repo_root() / ".state")
+                    if str(path) not in writable
+                )
+            sandbox_settings["filesystem"] = {"allowWrite": writable}
     else:
         raise SystemExit(f"Unsupported Claude sandbox mode: {sandbox_mode}")
 
     return [
+        *(["--add-dir", *granted] if granted else []),
         "--setting-sources",
         "project",
         *tool_arguments,
@@ -624,6 +637,82 @@ def child_environment(runner: str) -> dict[str, str]:
     return env
 
 
+WRITE_ACCESS_MODES = {"workspace-write", "danger-full-access"}
+
+
+def resolve_access_directories(
+    runner: str,
+    repo: str | Path | None,
+) -> list[Path]:
+    """Turn `--repo` into the directory the standard child must reach."""
+    if not repo:
+        return []
+    path = Path(repo).expanduser()
+    if not path.is_absolute():
+        path = repo_root() / path
+    try:
+        path = path.resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit(
+            f"--repo cannot be granted because it does not exist: {repo} ({exc})"
+        ) from exc
+    if not path.is_dir():
+        raise SystemExit(f"--repo must be a directory, not a file: {path}")
+    if runner not in CLI_RUNNERS:
+        raise SystemExit(f"Unsupported runner: {runner}")
+    return [path]
+
+
+def verify_write_access(directories: list[Path]) -> list[dict]:
+    """Prove before spawning that a requested writable target is writable."""
+    records = []
+    for directory in directories:
+        probe = directory / f".task-runner-access-check-{os.getpid()}"
+        record: dict[str, object] = {"path": str(directory), "checked_at": utc_now()}
+        try:
+            probe.write_text("task-runner write check\n", encoding="utf-8")
+            record["writable"] = True
+        except OSError as exc:
+            record["writable"] = False
+            record["error"] = str(exc)
+        finally:
+            probe.unlink(missing_ok=True)
+        records.append(record)
+    return records
+
+
+def prepare_access_grant(
+    runner: str,
+    sandbox_mode: str | None,
+    repo: str | Path | None,
+) -> tuple[list[Path], dict]:
+    """Resolve a runner-neutral target grant and fail closed when it cannot hold."""
+    directories = resolve_access_directories(runner, repo)
+    effective_mode = sandbox_mode or (
+        "workspace-write" if runner in {"codex", "claude", "agent"} else None
+    )
+    grant: dict[str, object] = {
+        "sandbox_mode": effective_mode,
+        "granted_directories": [str(directory) for directory in directories],
+        "grants_write": bool(directories) and effective_mode in WRITE_ACCESS_MODES,
+        "write_check": [],
+    }
+    if not directories or effective_mode not in WRITE_ACCESS_MODES:
+        return directories, grant
+    checks = verify_write_access(directories)
+    grant["write_check"] = checks
+    unwritable = [check for check in checks if not check["writable"]]
+    if unwritable:
+        details = "; ".join(
+            f"{check['path']}: {check.get('error')}" for check in unwritable
+        )
+        raise SystemExit(
+            "Refusing to start a child that cannot write where it was pointed. "
+            f"--repo is not writable for this process: {details}."
+        )
+    return directories, grant
+
+
 def resolve_sandbox_mode(
     runner: str,
     workflow: str,
@@ -650,6 +739,7 @@ def build_command(
     model: str | None,
     sandbox_mode: str | None,
     notebook: Path | None = None,
+    access_directories: tuple[Path, ...] | list[Path] = (),
 ) -> list[str]:
     prompt = prompt_path.read_text(encoding="utf-8")
     if runner == "codex":
@@ -681,6 +771,9 @@ def build_command(
                     "sandbox_workspace_write.exclude_slash_tmp=true",
                 ]
             )
+        elif access_directories:
+            for directory in access_directories:
+                command.extend(["--add-dir", str(directory)])
         if model:
             command.extend(["--model", model])
         command.append(prompt)
@@ -693,7 +786,11 @@ def build_command(
         command = [
             "claude",
             "--print",
-            *claude_access_arguments(resolved_sandbox_mode, notebook=notebook),
+            *claude_access_arguments(
+                resolved_sandbox_mode,
+                notebook=notebook,
+                access_directories=access_directories,
+            ),
         ]
         resolved_model = model or os.environ.get("CLAUDE_CHILD_DEFAULT_MODEL")
         if resolved_model:
@@ -708,7 +805,7 @@ def build_command(
             "--trust",
             "--force",
             "--workspace",
-            str(root),
+            str(access_directories[0] if access_directories else root),
         ]
         if model:
             command.extend(["--model", model])
@@ -1042,6 +1139,21 @@ def process_identity(pid: int) -> str | None:
     return hashlib.sha256(fields_after_command[19].encode()).hexdigest()
 
 
+def pid_namespace_identity() -> str | None:
+    """Return the kernel identity of the PID namespace this observer can see."""
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
+def runner_pid_namespace_visible(meta: dict) -> bool:
+    """Whether negative PID lookups are evidence for this runner record."""
+    recorded = meta.get("pid_namespace")
+    current = pid_namespace_identity()
+    return not recorded or (current is not None and recorded == current)
+
+
 def process_is_recorded_instance(pid: object, expected_identity: object) -> tuple[bool, str]:
     """Decide whether a recorded pid still names the process that was recorded.
 
@@ -1095,6 +1207,16 @@ def require_no_live_run(task_dir: Path, launch_token: str | None = None) -> None
         raise SystemExit(
             f"Refusing to start a second run for {task_dir.name}: a watcher launch "
             "is still pending. Wait for startup or stop it before retrying."
+        )
+    if (
+        not runner_pid_namespace_visible(meta)
+        and not meta.get("finished_at")
+        and any(isinstance(meta.get(key), int) for key in ("pid", "watcher_pid"))
+    ):
+        raise SystemExit(
+            f"Refusing to start a second run for {task_dir.name}: this process is in "
+            "a different PID namespace and cannot establish that the recorded host "
+            "child and watcher are dead. Retry from the host supervision context."
         )
     alive = live_run_processes(task_dir)
     if not alive:
@@ -1164,6 +1286,9 @@ def cmd_start(args: argparse.Namespace) -> None:
         args.workflow,
         getattr(args, "sandbox_mode", None),
     )
+    access_directories, access_grant = prepare_access_grant(
+        args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
+    )
 
     workflow_command = build_workflow_command(
         args.workflow,
@@ -1211,6 +1336,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         args.model,
         resolved_sandbox_mode,
         task_dir,
+        access_directories,
     )
     meta = {
         "runner": args.runner,
@@ -1221,7 +1347,9 @@ def cmd_start(args: argparse.Namespace) -> None:
         "prompt_path": str(runner_prompt_path(task_dir)),
         "log_path": str(runner_log_path(task_dir)),
         "command": command,
+        "access_grant": access_grant,
         "progress_baseline": observe_progress_state(task_dir),
+        "pid_namespace": pid_namespace_identity(),
     }
     if resolved_sandbox_mode:
         meta["sandbox_mode"] = resolved_sandbox_mode
@@ -1265,6 +1393,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         watcher_command.extend(["--model", args.model])
     if resolved_sandbox_mode:
         watcher_command.extend(["--sandbox-mode", resolved_sandbox_mode])
+    if access_directories and args.workflow == "standard":
+        watcher_command.extend(["--repo", str(access_directories[0])])
     for name, value in dev_pipeline_options(args).items():
         watcher_command.extend([f"--{name.replace('_', '-')}", str(value)])
 
@@ -1460,6 +1590,9 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             args.workflow,
             getattr(args, "sandbox_mode", None),
         )
+        access_directories, access_grant = prepare_access_grant(
+            args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
+        )
         workflow_command = build_workflow_command(
             args.workflow,
             args.runner,
@@ -1475,6 +1608,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             args.model,
             resolved_sandbox_mode,
             task_dir,
+            access_directories,
         )
         if args.runner == "claude" and args.workflow == "standard":
             require_claude_sandbox_dependencies(resolved_sandbox_mode or "workspace-write")
@@ -1495,6 +1629,12 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             "prompt_path": str(runner_prompt_path(task_dir)),
             "log_path": str(runner_log_path(task_dir)),
             "command": command,
+            "access_grant": access_grant,
+            **(
+                {"pid_namespace": pid_namespace_identity()}
+                if not read_json(runner_meta_path(task_dir)).get("pid_namespace")
+                else {}
+            ),
             "watcher_pid": os.getpid(),
             "watcher_process_identity": process_identity(os.getpid()),
             "watcher_started_at": utc_now(),
@@ -1566,6 +1706,12 @@ def cmd_monitor_existing(args: argparse.Namespace) -> None:
     """
     task_dir = resolve_task_dir(args.task_dir)
     meta = read_json(runner_meta_path(task_dir))
+    if not runner_pid_namespace_visible(meta):
+        print(
+            json.dumps({"ok": False, "error": "Recorded child is in a different PID namespace"}),
+            flush=True,
+        )
+        return
     pid = meta.get("pid")
     expected = meta.get("process_identity")
     if not isinstance(expected, str) or not expected or not isinstance(pid, int):
@@ -1633,6 +1779,11 @@ def cmd_reattach(args: argparse.Namespace) -> None:
     task_dir = resolve_task_dir(args.task_dir)
     ensure_task_contract(task_dir)
     meta = read_json(runner_meta_path(task_dir))
+    if not runner_pid_namespace_visible(meta):
+        raise SystemExit(
+            "Recorded run belongs to a different PID namespace; reattach from "
+            "the host supervision context."
+        )
 
     # Reattach fails closed. Its whole value is refusing a child that only looks
     # alive, and without kernel identity a recycled PID is indistinguishable
@@ -1724,12 +1875,15 @@ def cmd_status(args: argparse.Namespace) -> None:
         payload["progress"] = progress
 
     pid = payload["runner"].get("pid")
-    if isinstance(pid, int):
+    if isinstance(pid, int) and runner_pid_namespace_visible(payload["runner"]):
         alive, source = process_is_recorded_instance(
             pid, payload["runner"].get("process_identity")
         )
         payload["runner"]["process_alive"] = alive
         payload["runner"]["process_alive_source"] = source
+    elif isinstance(pid, int):
+        payload["runner"]["process_alive"] = None
+        payload["runner"]["process_visibility"] = "different_pid_namespace"
 
     print(json.dumps(payload, indent=2))
 
@@ -1747,6 +1901,11 @@ def cmd_stop(args: argparse.Namespace) -> None:
     task_dir = resolve_task_dir(args.task_dir)
     ensure_task_contract(task_dir)
     runner_meta = read_json(runner_meta_path(task_dir))
+    if not runner_pid_namespace_visible(runner_meta):
+        raise SystemExit(
+            "Recorded child belongs to a different PID namespace; run stop from "
+            "the host supervision context."
+        )
     pid = runner_meta.get("pid")
     if not isinstance(pid, int):
         raise SystemExit("No child process metadata found.")
@@ -1785,12 +1944,7 @@ def cmd_review_candidate(args: argparse.Namespace) -> None:
     if not repository.is_dir():
         raise SystemExit(f"Review repository is not a directory: {repository}")
     ensure_task_contract(task_dir)
-    executable = args.dev_pipeline_bin or shutil.which("dev-pipeline")
-    if not executable:
-        raise SystemExit(
-            "dev-pipeline is not installed; install the pinned requirement or pass "
-            "--dev-pipeline-bin."
-        )
+    executable = resolve_dev_pipeline_bin(args.dev_pipeline_bin)
     review_dir = task_dir / "dev-pipeline" / "contract-review"
     review_dir.mkdir(parents=True, exist_ok=True)
     subject_path = task_dir / COMPLETION_REVIEW_SUBJECT
@@ -1871,11 +2025,11 @@ def parse_args() -> argparse.Namespace:
     )
     start_parser.add_argument(
         "--repo",
-        help="Target repository the dev-pipeline owner works in.",
+        help="Target repository: standard child access root or dev-pipeline owner workspace.",
     )
     start_parser.add_argument(
         "--dev-pipeline-bin",
-        help="Executable for the dev-pipeline CLI. Defaults to `dev-pipeline` on PATH.",
+        help="Executable for the dev-pipeline CLI. Defaults to this checkout's .venv, then PATH.",
     )
     start_parser.add_argument(
         "--operation",

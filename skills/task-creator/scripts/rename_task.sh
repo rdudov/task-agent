@@ -15,4 +15,6 @@ if [[ $# -ne 2 ]]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 "$script_dir/tasks_index.py" rename "$1" "$2"
+source "$script_dir/python_runtime.sh"
+python_bin="$(task_agent_python)"
+exec "$python_bin" "$script_dir/tasks_index.py" rename "$1" "$2"

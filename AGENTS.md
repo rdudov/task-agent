@@ -76,6 +76,11 @@ Files the user explicitly requested are a separate, user-facing class of output.
 - Skills live under `skills/`.
 - Use `skills/task-creator/` to create task artifacts.
 - Use `skills/task-runner/` to delegate substantial work to child agents or run a task through the dev-pipeline workflow. The child runner follows the parent CLI agent unless a caller selects one explicitly, so a Codex parent delegates to a Codex child and a Claude parent to a Claude child. That resolution belongs to the task runner, not to prompt text, so callers that never read a skill get the same behavior. Every run records the resolved runner and the rule that resolved it. A launched run is supervised by kernel process identity so a recycled pid is never mistaken for the child.
+- `--repo` is an access input for both workflows. Standard runs grant the
+  resolved target through the selected runner and verify it before a write-mode
+  launch; dev-pipeline passes it to the core owner. New supervision records also
+  bind liveness to the observer's PID namespace, so a nested observer cannot
+  declare an invisible host process dead or replace it.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.
 - Use `skills/skill-maintainer/` when adding, restoring, or changing skills.

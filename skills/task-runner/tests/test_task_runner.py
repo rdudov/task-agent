@@ -1,4 +1,7 @@
 import importlib.util
+import argparse
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -102,6 +105,52 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             None,
         )
         self.assertEqual(command[command.index("--dev-pipeline-bin") + 1], str(expected))
+
+    def test_pipeline_cli_resolution_covers_explicit_env_path_and_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            local = root / ".venv" / "bin" / "dev-pipeline"
+            local.parent.mkdir(parents=True)
+            local.write_text("#!/bin/sh\n", encoding="utf-8")
+            local.chmod(0o755)
+            explicit = root / "explicit"
+            explicit.write_text("#!/bin/sh\n", encoding="utf-8")
+            explicit.chmod(0o755)
+
+            with mock.patch.object(task_runner, "repo_root", return_value=root):
+                self.assertEqual(task_runner.resolve_dev_pipeline_bin(str(explicit)), str(explicit))
+                with mock.patch.dict(
+                    task_runner.os.environ,
+                    {task_runner.DEV_PIPELINE_BIN_ENV: str(explicit)},
+                    clear=False,
+                ):
+                    self.assertEqual(task_runner.resolve_dev_pipeline_bin(), str(explicit))
+                with mock.patch.dict(task_runner.os.environ, {}, clear=True):
+                    self.assertEqual(task_runner.resolve_dev_pipeline_bin(), str(local))
+                    local.unlink()
+                    with mock.patch.object(task_runner.shutil, "which", return_value="/bin/dev-pipeline"):
+                        self.assertEqual(task_runner.resolve_dev_pipeline_bin(), "/bin/dev-pipeline")
+                    with mock.patch.object(task_runner.shutil, "which", return_value=None):
+                        with self.assertRaisesRegex(SystemExit, "not installed"):
+                            task_runner.resolve_dev_pipeline_bin()
+
+    def test_review_candidate_uses_the_shared_pipeline_resolver(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw) / "task"
+            repo = Path(raw) / "repo"
+            task.mkdir()
+            repo.mkdir()
+            args = argparse.Namespace(
+                task_dir=str(task), repo=str(repo), dev_pipeline_bin=None, model=None
+            )
+            with mock.patch.object(task_runner, "resolve_task_dir", return_value=task), \
+                 mock.patch.object(task_runner, "ensure_task_contract"), \
+                 mock.patch.object(
+                     task_runner, "resolve_dev_pipeline_bin", side_effect=SystemExit("shared-resolver")
+                 ) as resolver:
+                with self.assertRaisesRegex(SystemExit, "shared-resolver"):
+                    task_runner.cmd_review_candidate(args)
+            resolver.assert_called_once_with(None)
     def test_resolve_sandbox_mode_keeps_standard_codex_default_implicit(self) -> None:
         self.assertIsNone(
             task_runner.resolve_sandbox_mode(
@@ -197,22 +246,72 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             self._dev_pipeline_command(repo=None)
 
     def test_build_codex_command_uses_current_approval_flag_without_full_auto(self) -> None:
-        prompt_path = Path("/tmp/task-runner-prompt.txt")
-        prompt_path.write_text("test prompt", encoding="utf-8")
-        self.addCleanup(lambda: prompt_path.unlink(missing_ok=True))
-
-        command = task_runner.build_command(
-            runner="codex",
-            prompt_path=prompt_path,
-            root=Path("/tmp/repo"),
-            model=None,
-            sandbox_mode="danger-full-access",
-        )
+        with tempfile.TemporaryDirectory() as raw:
+            prompt_path = Path(raw) / "task-runner-prompt.txt"
+            prompt_path.write_text("test prompt", encoding="utf-8")
+            command = task_runner.build_command(
+                runner="codex",
+                prompt_path=prompt_path,
+                root=Path("/tmp/repo"),
+                model=None,
+                sandbox_mode="danger-full-access",
+            )
 
         self.assertEqual(command[0:4], ["codex", "--ask-for-approval", "never", "exec"])
         self.assertNotIn("--full-auto", command)
         self.assertIn("--sandbox", command)
         self.assertIn("danger-full-access", command)
+
+    def test_standard_repo_is_granted_to_all_supported_runners(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw).resolve()
+            prompt = target / "prompt.txt"
+            prompt.write_text("test", encoding="utf-8")
+            for runner in ("codex", "claude", "agent"):
+                directories, grant = task_runner.prepare_access_grant(
+                    runner, "workspace-write", target
+                )
+                self.assertEqual(directories, [target])
+                self.assertTrue(grant["grants_write"])
+                command = task_runner.build_command(
+                    runner,
+                    prompt,
+                    task_runner.repo_root(),
+                    None,
+                    "workspace-write",
+                    access_directories=directories,
+                )
+                self.assertIn(str(target), command)
+
+    def test_nested_pid_namespace_cannot_replace_or_signal_host_run(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            (task / ".runner").mkdir()
+            (task / "task.md").write_text("# Task\n", encoding="utf-8")
+            (task / "plan.md").write_text("# Plan\n", encoding="utf-8")
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {
+                    "runner": "codex",
+                    "workflow": "standard",
+                    "pid": 987654,
+                    "process_identity": "host-child",
+                    "pid_namespace": "pid:[host]",
+                },
+            )
+            with mock.patch.object(
+                task_runner, "pid_namespace_identity", return_value="pid:[nested]"
+            ):
+                with self.assertRaisesRegex(SystemExit, "different PID namespace"):
+                    task_runner.require_no_live_run(task)
+                with self.assertRaisesRegex(SystemExit, "different PID namespace"):
+                    task_runner.cmd_stop(argparse.Namespace(task_dir=str(task)))
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    task_runner.cmd_status(argparse.Namespace(task_dir=str(task)))
+            payload = json.loads(stdout.getvalue())
+            self.assertIsNone(payload["runner"]["process_alive"])
+            self.assertEqual(payload["runner"]["process_visibility"], "different_pid_namespace")
 
 
 if __name__ == "__main__":

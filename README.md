@@ -21,11 +21,14 @@ It is intentionally generic: no private task history, no local data, and no bund
 
 ## Quick Start
 
-Prerequisites are Python 3.11+, Git, and either the Codex or Claude CLI for the
-`dev-pipeline` owner. From Cursor's integrated terminal, create the environment
-and install the pinned public dependency together with the test tools:
+Prerequisites are Python 3.11+, Git, network access, and an installed and
+authenticated Codex or Claude CLI for the `dev-pipeline` owner. Clone the
+repository, then from its directory create the environment and install the
+pinned public dependency together with the test tools:
 
 ```bash
+git clone https://github.com/rdudov/task-agent.git
+cd task-agent
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
 ```
@@ -40,7 +43,7 @@ Run health checks:
 
 ```bash
 .venv/bin/python skills/repo-health/scripts/check_repo_health.py --allow-empty-tasks
-PYTHONPATH=skills/task-runner/scripts .venv/bin/python -m pytest skills/task-runner/tests skills/repo-health/tests
+PYTHONPATH=skills/task-runner/scripts .venv/bin/python -m pytest skills/task-runner/tests skills/task-creator/tests skills/repo-health/tests
 ```
 
 Before pushing a source change from this workspace, run:
@@ -63,7 +66,11 @@ The child runner follows the parent CLI agent, so a Codex session delegates to C
 
 Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) and mapped per runner. `TASK_AGENT_WORKSPACE_ROOT` sets how far full access reaches; it defaults to the parent of this checkout.
 
-`start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity rather than by pid alone, and a second live run for the same task is refused. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
+For the standard workflow, `--repo /path/to/target-repo` makes that repository
+the explicit child workspace/access grant for Codex, Claude, or Cursor Agent.
+Write modes verify writability before launch and record the result.
+
+`start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity and PID namespace rather than by pid alone. An observer in another namespace reports liveness as unknown and cannot replace, stop, or reattach the host run. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
 
 ## Dev-Pipeline Workflow
 
@@ -90,6 +97,8 @@ By default the runner resolves the CLI installed at `.venv/bin/dev-pipeline`,
 then falls back to `PATH`. `TASK_AGENT_DEV_PIPELINE_BIN` or
 `--dev-pipeline-bin` can select another executable explicitly; an unresolved
 CLI fails before an owner process is started.
+The same resolver is used by normal runs, direct adapter invocation, and
+`review-candidate`.
 
 The owner closes task frontmatter through `tasks_index.py`, completes every plan
 step, and records passing live evidence. A completion reported without those

@@ -768,7 +768,7 @@ def cmd_add(args: argparse.Namespace) -> int:
     if args.json:
         # `path` is repo-relative here and in `query`, so the key means one thing
         # everywhere. A caller running from another directory joins it to the
-        # agent-workspace root it already had to know to invoke this script.
+        # workspace root it already had to know to invoke this script.
         print(json.dumps({"id": number, "slug": slug, "title": title,
                           "path": f"tasks/{slug}", "reused": reused}, ensure_ascii=False))
     else:

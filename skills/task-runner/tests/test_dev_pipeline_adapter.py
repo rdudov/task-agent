@@ -5,6 +5,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -391,6 +392,19 @@ class CoreCommandTests(unittest.TestCase):
                     dev_pipeline_adapter.main(
                         [str(task_dir), "--repo", str(task_dir.parent), option, "value"]
                     )
+
+    def test_direct_adapter_invocation_uses_the_shared_pipeline_resolver(self) -> None:
+        task_dir = make_task(self.tmp)
+        with mock.patch.object(
+            dev_pipeline_adapter,
+            "resolve_dev_pipeline_bin",
+            side_effect=SystemExit("shared-resolver"),
+        ) as resolver:
+            with self.assertRaisesRegex(SystemExit, "shared-resolver"):
+                dev_pipeline_adapter.main(
+                    [str(task_dir), "--repo", str(task_dir.parent)]
+                )
+        resolver.assert_called_once_with(None)
 
     def test_the_delivery_seam_is_inert_and_records_nothing(self) -> None:
         task_dir = make_task(self.tmp)

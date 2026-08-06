@@ -109,6 +109,11 @@ frontmatter. `create_task.sh` is a thin wrapper around `tasks_index.py add`;
 either is fine. `--json` prints `{"id", "slug", "title", "path", "reused"}`, which is what
 a programmatic caller should consume instead of parsing a path.
 
+The shell wrappers prefer this checkout's `.venv/bin/python`, because that is
+where the Quick Start installs PyYAML. `TASK_AGENT_PYTHON` can select another
+executable explicitly; only when neither exists do they fall back to `python3`
+from `PATH`.
+
 Remote intake callers must also pass a stable `--request-id VALUE`. The value is
 stored in `task.md` frontmatter and indexed uniquely. Repeating `add` with the
 same request id returns the original task with `"reused": true`; this remains

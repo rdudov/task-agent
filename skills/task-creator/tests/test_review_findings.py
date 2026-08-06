@@ -324,9 +324,9 @@ def test_p2_2_set_projects_add_appends_without_duplicating(repo: Path) -> None:
 
 
 def test_p2_2_a_durable_record_can_be_looked_up_by_its_short_name(repo: Path) -> None:
-    """`--project example-project` is what the skill and the human docs promise."""
-    make_task(repo, 129, "lab", projects=["data/projects/example-project/project.md"])
-    make_task(repo, 130, "deep", projects=["data/projects/second-example/status.md"])
+    """`--project example-project` is what the skill and human docs promise."""
+    make_task(repo, 129, "alpha", projects=["data/projects/example-project/project.md"])
+    make_task(repo, 130, "beta", projects=["data/projects/second-example/status.md"])
 
     listed = json.loads(run(
         repo, "query", "--status", "all", "--project", "example-project", "--format", "json",
