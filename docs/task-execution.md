@@ -16,11 +16,15 @@ This document describes the parent-child execution model for non-trivial tasks.
 
 ## Supervision
 
-A launched run is detached by design. `start` prepares the artifacts, spawns a watcher in a separate session, waits only for the watcher's startup record, and returns; the watcher spawns the child in a session of its own. Nothing in the chain stays in the caller's process group, so the run survives the terminal that began it.
+A launched run is detached by design. `start` prepares the artifacts, spawns a watcher in a separate session, waits only for the watcher's startup record, and returns; the watcher spawns the child in a session of its own. Nothing in the chain stays in the caller's process group, so the run survives the terminal that began it. When the host systemd manager is reachable, the watcher also runs in its own transient scope; otherwise `.runner/runner.json` records that durability is limited to the caller's cgroup.
 
 Because the run outlives its initiator, a pid alone is not enough to identify it later. The runner records a kernel start-time identity for both the child and the watcher in `.runner/runner.json`, and treats a pid whose identity no longer matches as a different process: `status` reports how each liveness verdict was reached, `stop` refuses to signal an unproven pid, and `reattach` refuses to supervise one. Where the host cannot produce identities, pid-only checks are marked as such and `reattach` fails closed rather than guessing. See `skills/task-runner/SKILL.md` for the per-command behavior.
 
 A watcher that is recovered rather than original cannot read the child's exit code. It observes liveness and then reads the terminal state the child recorded; a child that disappears without one is recorded as failed, never as done.
+
+Launch ownership is serialized. A second start for a task with an identity-bound
+live child or watcher is refused before any metadata is replaced, because two
+live writers make progress attribution and later stop/reattach unsafe.
 
 ## Dev-Pipeline Workflow
 
@@ -33,11 +37,21 @@ A watcher that is recovered rather than original cannot read the child's exit co
 
 The runner decides nothing about the pipeline itself. `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration: it renders the owner instruction from `task.md`, calls the public CLI, validates the neutral lifecycle events the core emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. The core interprets owner-runtime behavior; the adapter only projects what the core reports.
 
-The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed, and a reported completion is still refused while the task's own artifacts contradict it — an unfinished status, an unchecked acceptance criterion, or a `required_live_evidence` gate missing from `verification.md`.
+The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed. Standard and dev-pipeline finalizers share one completion decision: YAML frontmatter must be `completed`, `plan.md` must have no `[pending]` or `[in_progress]`, every required evidence gate's latest section must record `OK`, `PASS`, or `PASSED`, any required author verdict must be unambiguous, and enforced policy families need an approved digest-bound review.
+
+The owner instruction states these conditions explicitly. Generate the bounded
+policy review over a final committed candidate with `task_runner.py
+review-candidate TASK --repo REPOSITORY`; the subject binds the effective
+contract and candidate digest, so a stale or readability-only approval cannot
+close the task.
 
 The adapter carries no transport: no destination, no recipient binding, no delivery deduplication. Those belong to an application that owns a transport, and `skills/task-runner/scripts/pipeline_notify.py` is the documented seam where it attaches. In this template that seam is inert by design.
 
 This workflow requires the separate `dev-pipeline` package; see `skills/task-runner/SKILL.md` for the install step and the per-artifact projection rules.
+
+The dependency comes from the public `rdudov/dev-pipeline` repository and is
+pinned by commit in both requirements files. The normal README installation is
+therefore sufficient on a fresh Cursor machine; a local checkout is optional.
 
 When `task_contract.json` is present, an orchestrated workflow should carry it into the work as a task execution contract overlay instead of trusting stage documents alone to preserve hard constraints. Review and final completion should validate against that contract, not only against free-text summaries.
 
@@ -75,6 +89,13 @@ When changed source is loaded by an active local service, daemon, worker, or uni
 When a deliverable's correctness depends on how it renders, render it and look at the result. Archive validity, DOM parsing, and text extraction describe the file, not the page a person will see: they cannot detect clipped text, overlapping elements, a substituted font, or a broken image. `skills/task-artifacts/SKILL.md` describes the required coverage per format.
 
 Before reporting success, check that the artifact is complete against its source of truth — size, line count, boundaries, truncation markers. A successful write or send proves delivery, not completeness.
+
+For read-only reviews, the subject stays outside every writable root while the
+reviewer's own task directory and `.state/` remain writable. Codex implements
+this as a scoped workspace-write sandbox rooted at the notebook; Claude uses
+`dontAsk`, sandboxed Bash, and an explicit allow-list. This boundary permits
+search, tests, `findings.md`, and canonical task closure without granting edits
+to the reviewed repository.
 
 ## Progress Artifacts
 

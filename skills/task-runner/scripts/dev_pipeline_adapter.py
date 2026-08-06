@@ -26,6 +26,19 @@ from typing import Iterable
 from dev_pipeline.events import validate_event
 
 from pipeline_notify import try_send_pipeline_status_message
+from task_completion import (
+    TASKS_INDEX_PATH,
+    completion_ready,
+    task_reference,
+)
+from task_contract import (
+    PASSING_EVIDENCE_RESULTS,
+    enforced_live_evidence,
+    enforced_policy_families,
+    enforced_review_verdict,
+    load_task_contract,
+)
+from task_runner import completion_refusal
 
 
 # Lifecycle kinds worth telling a human about. The template has no transport, so
@@ -138,10 +151,54 @@ def prepare_owner_instruction(task_dir: Path) -> Path:
         "use runner startup bookkeeping as a meaningful outcome.\n\n"
         f"Follow `{task_dir / 'task_contract.json'}` when present and "
         f"`{task_dir / 'plan.md'}` for the execution plan.\n\n"
+        f"{completion_contract_instruction(task_dir)}\n\n"
         "## Canonical task request\n\n"
         f"{task_text.rstrip()}\n",
     )
     return instruction_path
+
+
+def completion_contract_instruction(task_dir: Path) -> str:
+    """Tell the owner how to satisfy the exact shared completion gate."""
+    contract = load_task_contract(task_dir)
+    reference = task_reference(task_dir)
+    lines = [
+        "## Closing this task",
+        "",
+        "The attempt is accepted only when all durable gates pass:",
+        f"1. Set task frontmatter through `{TASKS_INDEX_PATH} set-status {reference} completed`.",
+        f"2. Remove every `[pending]` and `[in_progress]` marker from `{task_dir / 'plan.md'}`.",
+    ]
+    gates = [str(item["id"]) for item in enforced_live_evidence(contract)]
+    if gates:
+        allowed = "|".join(sorted(PASSING_EVIDENCE_RESULTS))
+        lines.append(
+            "3. Record a passing `- Result:` (`"
+            + allowed
+            + "`) in `verification.md` for: "
+            + ", ".join(gates)
+            + ". The last section for a repeated gate id wins."
+        )
+    verdict = enforced_review_verdict(contract)
+    if verdict:
+        lines.append(
+            f"4. `{verdict['path']}` must contain exactly one standalone `Verdict: "
+            + "|".join(verdict["allowed"])
+            + "` line written by the review owner."
+        )
+    families = enforced_policy_families(contract)
+    if families:
+        lines.append(
+            "Run the bounded contract-policy review after the candidate is final: "
+            f"`{Path(__file__).with_name('task_runner.py')} review-candidate {task_dir} "
+            "--repo <target-repository>`. It must approve the effective contract and "
+            "exact committed candidate for: " + ", ".join(families) + "."
+        )
+    lines.append(
+        "If completion cannot be established, set the task to `blocked`, record the reason, "
+        "and leave remaining plan work explicit."
+    )
+    return "\n".join(lines)
 
 
 def contract_completion_ready(task_dir: Path) -> tuple[bool, str]:
@@ -151,33 +208,7 @@ def contract_completion_ready(task_dir: Path) -> tuple[bool, str]:
     was finished. Where the task states its own completion conditions, those
     decide.
     """
-    task_file = task_dir / "task.md"
-    if not task_file.exists():
-        return False, "task.md is missing"
-    task_text = task_file.read_text(encoding="utf-8")
-    status_section = task_status_value(task_text)
-    if status_section not in {"done", "completed"}:
-        return False, "task.md status is not done"
-    if "- [ ]" in task_text:
-        return False, "task.md still has unchecked acceptance criteria"
-
-    contract_path = task_dir / "task_contract.json"
-    if not contract_path.exists():
-        return True, ""
-    contract = read_json(contract_path)
-    required = [
-        item.get("id")
-        for item in contract.get("required_live_evidence", [])
-        if isinstance(item, dict)
-    ]
-    verification_path = task_dir / "verification.md"
-    verification = (
-        verification_path.read_text(encoding="utf-8") if verification_path.exists() else ""
-    )
-    missing = [gate for gate in required if gate and gate not in verification]
-    if missing:
-        return False, f"verification.md is missing required gates: {', '.join(missing)}"
-    return True, ""
+    return completion_ready(task_dir)
 
 
 def task_status_value(task_text: str) -> str:
@@ -221,7 +252,7 @@ def status_projection(event: dict, task_dir: Path) -> tuple[str, str]:
         ready, reason = contract_completion_ready(task_dir)
         if ready:
             return "completed", "Dev-pipeline owner attempt completed"
-        return "blocked", f"Rejected premature completion: {reason}"
+        return "blocked", completion_refusal(task_dir, reason)["summary"]
     return "running", f"Dev-pipeline event: {kind}"
 
 
@@ -431,6 +462,11 @@ class TaskArtifactProjector:
                 },
             }
         )
+        if event["kind"] == "attempt_completed" and state == "blocked":
+            _ready, reason = contract_completion_ready(self.task_dir)
+            status["completion_refusal"] = completion_refusal(self.task_dir, reason)
+        else:
+            status.pop("completion_refusal", None)
         write_json(status_path, status)
 
     def project_trace(self, event: dict, step: str) -> None:

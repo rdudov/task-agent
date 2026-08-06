@@ -25,8 +25,15 @@ The bundled script validates:
 - task index presence and task links when `tasks/INDEX.md` exists
 - every task directory has `task.md` and `plan.md`
 - every `skills/*/SKILL.md` has `name` and `description` frontmatter
-- executable Python scripts parse with `py_compile`
-- obvious secret-like keys are not present under `tasks/` or `data/`
+- executable Python scripts parse in memory, so the check works on read-only
+  checkouts and does not create `__pycache__` entries
+- obvious secret-like content is absent from the files Git can publish: tracked
+  files plus untracked, non-ignored files. The check reuses the pre-push guard's
+  pattern definitions and fails closed if Git cannot establish that scope.
+
+Ignored `tasks/` and `data/` contain durable local evidence, not publishable
+source. Repository health therefore does not scan those histories for secrets;
+`check_pre_push.py` still refuses real task/data artifacts in outgoing commits.
 
 ## Command
 

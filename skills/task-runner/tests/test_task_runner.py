@@ -1,6 +1,9 @@
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -20,6 +23,68 @@ task_runner = _load_task_runner_module()
 
 
 class TaskRunnerSandboxModeTests(unittest.TestCase):
+    def test_codex_approval_mode_is_bound_to_the_recorded_constant(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            prompt = Path(raw) / "prompt.txt"
+            prompt.write_text("test", encoding="utf-8")
+            command = task_runner.build_command(
+                "codex", prompt, task_runner.repo_root(), None, "workspace-write"
+            )
+        index = command.index("--ask-for-approval")
+        self.assertEqual(command[index + 1], task_runner.CODEX_APPROVAL_MODE)
+
+    def test_codex_read_only_keeps_only_the_task_notebook_writable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            notebook = Path(raw) / "tasks" / "001-review"
+            notebook.mkdir(parents=True)
+            prompt = Path(raw) / "prompt.txt"
+            prompt.write_text("review", encoding="utf-8")
+            command = task_runner.build_command(
+                "codex", prompt, task_runner.repo_root(), None, "read-only", notebook
+            )
+        self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")
+        self.assertEqual(command[command.index("-C") + 1], str(notebook))
+        self.assertIn("sandbox_workspace_write.exclude_slash_tmp=true", command)
+
+    def test_claude_read_only_can_write_only_its_notebook_and_index(self) -> None:
+        notebook = task_runner.repo_root() / "tasks" / "001-review"
+        command = task_runner.claude_access_arguments(
+            "read-only", {"needs_weaker_nested_sandbox": False}, notebook
+        )
+        self.assertIn("Bash", command[command.index("--tools") + 1])
+        settings = json.loads(command[command.index("--settings") + 1])
+        self.assertEqual(
+            settings["sandbox"]["filesystem"]["allowWrite"],
+            [str(notebook), str(task_runner.repo_root() / ".state")],
+        )
+
+    def test_second_live_run_is_refused_before_metadata_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw) / "001-example"
+            (task / ".runner").mkdir(parents=True)
+            pid = __import__("os").getpid()
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {
+                    "pid": pid,
+                    "process_identity": task_runner.process_identity(pid),
+                },
+            )
+            with self.assertRaises(SystemExit) as raised:
+                task_runner.require_no_live_run(task)
+        self.assertIn("Refusing to start a second run", str(raised.exception))
+
+    def test_supervision_boundary_records_systemd_or_explicit_fallback(self) -> None:
+        task = Path("/tmp/001-example")
+        with mock.patch.object(task_runner, "host_systemd_scope_available", return_value=False):
+            prefix, record = task_runner.watcher_supervision_boundary(task, "a" * 32)
+        self.assertEqual(prefix, [])
+        self.assertEqual(record["mode"], "process_session")
+        with mock.patch.object(task_runner, "host_systemd_scope_available", return_value=True), \
+             mock.patch.object(task_runner.shutil, "which", return_value="/usr/bin/systemd-run"):
+            prefix, record = task_runner.watcher_supervision_boundary(task, "b" * 32)
+        self.assertIn("--scope", prefix)
+        self.assertEqual(record["durability"], "independent_cgroup")
     def test_resolve_sandbox_mode_keeps_standard_codex_default_implicit(self) -> None:
         self.assertIsNone(
             task_runner.resolve_sandbox_mode(

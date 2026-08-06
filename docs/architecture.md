@@ -30,7 +30,12 @@ Optional task artifacts:
 - `deliverables/` and `deliverables/manifest.json` for explicitly requested output files
 - `dev-pipeline/` for dev-pipeline lifecycle state and projected events
 
-The canonical task list is `tasks/INDEX.md`. It is local generated state and is not tracked by the template. Use [tasks/INDEX.example.md](../tasks/INDEX.example.md) as the format template.
+Task metadata lives in YAML frontmatter in `task.md`; the rebuildable SQLite
+index and rendered `tasks/INDEX.md` are projections. Only
+`skills/task-creator/scripts/tasks_index.py` writes that metadata, allocates
+numbers, changes status, and rebuilds the index. `tasks/INDEX.md` remains local
+generated state and is not tracked by the template. Use
+[tasks/INDEX.example.md](../tasks/INDEX.example.md) as the display format.
 
 `tasks/USER_PREFERENCES.md` sits beside the index and holds durable defaults for choices the user did not spell out. It is written only from explicit reusable instructions and is always overridden by the current request. See [tasks/USER_PREFERENCES.example.md](../tasks/USER_PREFERENCES.example.md).
 
@@ -100,11 +105,11 @@ The one absolute path the runner needs is the workspace root that full access re
 ## Workflow
 
 1. A non-trivial user request becomes a task artifact under `tasks/`.
-2. The task is added to `tasks/INDEX.md`.
+2. `tasks_index.py` writes task frontmatter and regenerates `tasks/INDEX.md`.
 3. The parent agent prepares the task directory as the execution handoff.
 4. A child CLI agent may perform substantial work and write progress artifacts into the task directory.
 5. A task may instead run through the task-runner dev-pipeline workflow, which drives an evidence-gated owner session and projects its lifecycle events back into the task artifacts.
-6. When present, `task_contract.json` is carried into the work by the orchestrator and used by review/completion gates.
+6. When present, `task_contract.json` is carried into the work by the orchestrator and used by the shared standard/dev-pipeline completion gate. Required evidence uses last-result-wins semantics; policy prose is established by a digest-bound bounded review rather than owner self-attestation.
 7. If source files change, the finished source change is committed and pushed unless the task explicitly keeps it local or publication is blocked; remote-backed repositories should be synced before branch/push and checked with the pre-push leak check before publication.
 8. If engine behavior changes, project documentation is updated in the same change.
 

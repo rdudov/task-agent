@@ -50,10 +50,17 @@ RUN_STARTED = {"run_operation": "native_session_start"}
 def make_task(tmp_path: Path, name: str = "001-example", status: str = "planned") -> Path:
     task_dir = tmp_path / name
     task_dir.mkdir(parents=True)
+    frontmatter_status = "completed" if status == "done" else status
     (task_dir / "task.md").write_text(
-        f"# Example\n\n## Summary\nWork\n\n## Status\n{status}\n", encoding="utf-8"
+        "---\n"
+        f"id: 1\nslug: example\ntitle: Example\ndate: 2026-07-27\nstatus: {frontmatter_status}\n"
+        "projects: []\ntrips: []\n---\n# Example\n\n## Summary\nWork\n",
+        encoding="utf-8",
     )
-    (task_dir / "plan.md").write_text("# Plan\n", encoding="utf-8")
+    (task_dir / "plan.md").write_text("# Plan\n\n1. [completed] Work\n", encoding="utf-8")
+    (task_dir / "task_contract.json").write_text(
+        json.dumps({"version": 1}), encoding="utf-8"
+    )
     return task_dir
 
 
@@ -201,17 +208,16 @@ class CompletionGateTests(unittest.TestCase):
     def test_completion_is_rejected_while_the_task_is_not_done(self) -> None:
         status = self._complete(make_task(self.tmp, status="planned"))
         self.assertEqual(status["state"], "blocked")
-        self.assertIn("status is not done", status["current_step"])
+        self.assertIn("frontmatter status", status["current_step"])
 
     def test_completion_is_rejected_while_criteria_are_unchecked(self) -> None:
         task_dir = make_task(self.tmp, status="done")
-        (task_dir / "task.md").write_text(
-            "# Example\n\n## Acceptance Criteria\n- [x] first\n- [ ] second\n\n## Status\ndone\n",
-            encoding="utf-8",
+        (task_dir / "plan.md").write_text(
+            "# Plan\n\n1. [completed] first\n2. [pending] second\n", encoding="utf-8"
         )
         status = self._complete(task_dir)
         self.assertEqual(status["state"], "blocked")
-        self.assertIn("unchecked acceptance criteria", status["current_step"])
+        self.assertIn("unfinished steps", status["current_step"])
 
     def test_completion_is_rejected_while_a_required_gate_is_unrecorded(self) -> None:
         task_dir = make_task(self.tmp, status="done")
@@ -222,7 +228,8 @@ class CompletionGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         (task_dir / "verification.md").write_text(
-            "# Verification\n\n## live-smoke\nran\n", encoding="utf-8"
+            "# Verification\n\n## live-smoke\n- Result: **OK**\n- Evidence: ran\n",
+            encoding="utf-8",
         )
         status = self._complete(task_dir)
         self.assertEqual(status["state"], "blocked")
@@ -234,7 +241,9 @@ class CompletionGateTests(unittest.TestCase):
             json.dumps({"required_live_evidence": [{"id": "live-smoke"}]}), encoding="utf-8"
         )
         (task_dir / "verification.md").write_text(
-            "# Verification\n\n## live-smoke\nran against the real entrypoint\n", encoding="utf-8"
+            "# Verification\n\n## live-smoke\n- Result: **OK**\n"
+            "- Evidence: ran against the real entrypoint\n",
+            encoding="utf-8",
         )
         status = self._complete(task_dir)
         self.assertEqual(status["state"], "completed")

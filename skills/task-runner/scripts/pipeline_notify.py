@@ -5,6 +5,22 @@ import re
 from pathlib import Path
 
 
+# Shared machine vocabulary for the branch where an owner process ended after
+# publishing an incomplete bound. The name reports an observation, not an
+# inferred stopping point. Older task artifacts remain readable.
+INTERRUPTED_COMPLETION_KIND = "owner_ended_after_incomplete_published_progress"
+LEGACY_INTERRUPTED_COMPLETION_KINDS = frozenset(
+    {"owner_stopped_with_work_outstanding"}
+)
+
+
+def is_interrupted_completion_kind(kind: object) -> bool:
+    return (
+        kind == INTERRUPTED_COMPLETION_KIND
+        or kind in LEGACY_INTERRUPTED_COMPLETION_KINDS
+    )
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 

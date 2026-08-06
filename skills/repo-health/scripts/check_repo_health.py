@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import py_compile
+import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,15 +17,29 @@ ROOT_FILES = [
     "requirements.lock",
     "docs/architecture.md",
     "docs/task-execution.md",
-    "docs/claude-code-setup.md",
-    "CLAUDE.md",
 ]
 
-SECRET_PATTERNS = [
-    re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
-    re.compile(r"\b(?:OPENAI|ANTHROPIC|GITHUB|TELEGRAM|GOOGLE|GMAIL|SLACK|DISCORD)_[A-Z0-9_]*(?:KEY|TOKEN|SECRET|HASH)\s*[:=]\s*['\"]?[A-Za-z0-9_-]{16,}"),
-    re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{40,})\b"),
-]
+
+def _load_pre_push():
+    """Reuse the leak-guard's pattern definitions instead of keeping a copy.
+
+    "What looks like a leaked secret" is one concept and the two scripts in this
+    skill disagreed about it. The copy here had `\\s*` where `check_pre_push.py`
+    has `[ \\t]*`, so `EXAMPLE_API_TOKEN=` with an *empty* value matched across
+    the newline and reported the *next* variable's name as the secret -- which is
+    how a committed `.env.example` template became two of the fifteen errors that
+    blocked every task's closure.
+    """
+    path = Path(__file__).resolve().parent / "check_pre_push.py"
+    spec = importlib.util.spec_from_file_location("check_pre_push", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load the leak-guard pattern owner: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+SECRET_PATTERNS = _load_pre_push().SECRET_PATTERNS
 
 
 def repo_root() -> Path:
@@ -58,17 +73,16 @@ def check_tasks(root: Path, allow_empty_tasks: bool) -> list[str]:
             return errors
         return ["tasks/: missing task artifact directory"]
 
-    index = tasks_dir / "INDEX.md"
-    example_index = tasks_dir / "INDEX.example.md"
-    if not index.exists():
-        task_dirs = sorted(path for path in tasks_dir.iterdir() if path.is_dir())
-        if allow_empty_tasks and not task_dirs and example_index.exists():
-            return errors
-        errors.append("tasks/INDEX.md: missing canonical task index")
-    elif not index.read_text(encoding="utf-8", errors="replace").strip():
-        errors.append("tasks/INDEX.md: empty canonical task index")
-
-    task_dirs = sorted(path for path in tasks_dir.iterdir() if path.is_dir())
+    # `.state/tasks-index.db` is one table rebuilt from `tasks/` on demand, so
+    # neither its staleness nor its absence is a health problem: the next command
+    # builds it again, task numbers included. What still matters structurally is
+    # that every task directory carries its artifacts; `tasks_index.py check`
+    # owns the task-metadata properties.
+    # Hidden names are not tasks. `tasks_index.py` skips them because that is
+    # where `add` stages a directory before publishing it, and a stray
+    # `tasks/.claude` otherwise reports as a task missing both its artifacts.
+    task_dirs = sorted(path for path in tasks_dir.iterdir()
+                       if path.is_dir() and not path.name.startswith("."))
     if not task_dirs and not allow_empty_tasks:
         errors.append("tasks/: no task directories found")
 
@@ -77,29 +91,46 @@ def check_tasks(root: Path, allow_empty_tasks: bool) -> list[str]:
             if not (task_dir / required).exists():
                 errors.append(f"{task_dir.relative_to(root)}: missing {required}")
 
-    if index.exists():
-        for match in re.finditer(r"\]\(([^)]+/task\.md)\)", read_text(index)):
-            link = match.group(1)
-            target = (tasks_dir / link).resolve()
-            try:
-                target.relative_to(tasks_dir.resolve())
-            except ValueError:
-                errors.append(f"tasks/INDEX.md: task link escapes tasks/: {link}")
-                continue
-            if not target.exists():
-                errors.append(f"tasks/INDEX.md: broken task link {link}")
-
     return errors
 
 
 def check_scripts(root: Path) -> list[str]:
+    """Parse every skill script, without writing anything into the repository.
+
+    This used to call `py_compile.compile`, which writes a `__pycache__` entry
+    next to each script as a side effect. A health check that mutates the tree it
+    is inspecting cannot run over a read-only checkout at all -- it aborts on the
+    first `OSError` instead of reporting on the repository. `compile()` answers
+    the same question, "does this parse", and answers it in memory.
+    """
     errors: list[str] = []
     for script in sorted((root / "skills").glob("*/scripts/*.py")):
         try:
-            py_compile.compile(str(script), doraise=True)
-        except py_compile.PyCompileError as exc:
-            errors.append(f"{script.relative_to(root)}: Python syntax check failed: {exc.msg}")
+            compile(script.read_bytes(), str(script), "exec")
+        except SyntaxError as exc:
+            errors.append(f"{script.relative_to(root)}: Python syntax check failed: {exc}")
+        except (OSError, ValueError) as exc:
+            errors.append(f"{script.relative_to(root)}: cannot be read for the syntax check: {exc}")
     return errors
+
+
+def scannable_paths(root: Path) -> list[str]:
+    """The repository content Git would carry, as repository-relative paths.
+
+    `git ls-files --cached --others --exclude-standard` is exactly "tracked, plus
+    what is not tracked yet and not ignored": the files a task actually adds to
+    or changes in the repository. Raises when the scope cannot be established.
+    """
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "git ls-files failed").strip())
+    return [item for item in proc.stdout.split("\0") if item]
 
 
 def check_agent_entry_points(root: Path) -> list[str]:
@@ -171,22 +202,39 @@ def check_agent_entry_points(root: Path) -> list[str]:
     return errors
 
 
+
 def check_secret_like_content(root: Path) -> list[str]:
+    """Scan the tracked tree, which is the only content this repository publishes.
+
+    It used to walk `tasks/` and `data/` instead. Both are listed in `.gitignore`
+    in full, so that scan covered zero publishable bytes and every byte of the
+    durable local artifacts -- including finished snapshots of unrelated tasks,
+    their `__pycache__`, their captured `runner.log`, and the `.env.example`
+    files they copied in. A product run reported fifteen errors that way, none of
+    them from the tree under change, which blocked the closure of *every* task
+    rather than of the one that introduced something. The scope is now what the
+    task really changes; the strictness is unchanged, and `check_pre_push.py`
+    still refuses `tasks/` and `data/` outright in outgoing commits.
+    """
     errors: list[str] = []
-    for base in (root / "tasks", root / "data"):
-        if not base.exists():
-            continue
-        for path in base.rglob("*"):
+    try:
+        candidates = scannable_paths(root)
+    except (RuntimeError, OSError) as exc:
+        # A leak gate that silently scans nothing is worse than no gate. Say the
+        # scope could not be established rather than pass by default.
+        return [f"repository scope for the secret scan cannot be established: {exc}"]
+    for relative in candidates:
+        path = root / relative
+        try:
             if not path.is_file() or path.stat().st_size > 2_000_000:
                 continue
-            try:
-                text = read_text(path)
-            except OSError:
-                continue
-            for pattern in SECRET_PATTERNS:
-                if pattern.search(text):
-                    errors.append(f"{path.relative_to(root)}: possible secret-like content")
-                    break
+            text = read_text(path)
+        except OSError:
+            continue
+        for label, pattern in SECRET_PATTERNS:
+            if pattern.search(text):
+                errors.append(f"{relative}: possible secret-like content ({label})")
+                break
     return errors
 
 

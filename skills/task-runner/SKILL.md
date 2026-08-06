@@ -52,7 +52,7 @@ Access level is expressed once, through `--sandbox-mode`, and mapped per runner:
 | --- | --- | --- |
 | `workspace-write` (standard default) | `--sandbox workspace-write`, cwd repo root | `acceptEdits`, native sandbox writable only in cwd/temp |
 | `danger-full-access` | `--sandbox danger-full-access`, cwd workspace root | permission bypass plus `--add-dir <workspace root>` |
-| `read-only` | `--sandbox read-only` | only `Read`, `WebFetch`, `WebSearch`; `dontAsk`; no Bash |
+| `read-only` | task directory writable through a scoped `workspace-write`; subject remains outside writable roots | `Read`, `Grep`, `Glob`, and sandboxed Bash; only the task directory and `.state/` are writable |
 
 The workspace root is the directory a full-access child may reach. It defaults to the parent of this checkout and is overridden with `TASK_AGENT_WORKSPACE_ROOT`. Nothing else in the runner hardcodes an absolute path.
 
@@ -60,7 +60,12 @@ Claude children keep the repository as their working directory so `CLAUDE.md`, a
 
 Claude's restricted modes depend on its native OS sandbox, which is Linux-specific and needs `bubblewrap` and `socat`. The launcher checks both before starting and **fails closed** when they are missing or the host is not Linux; it never downgrades a requested boundary, because that would make task artifacts claim a confinement that never applied. On such a host, either run the child through Linux or choose `danger-full-access` deliberately.
 
-Claude's Bash sandbox always grants cwd writes, so `read-only` deliberately omits Bash and every native file-writing tool; non-interactive `dontAsk` prevents permission escalation. `--add-dir` is discovery configuration, not confinement, and is used only for intentional full access. A root-launched session additionally sets Claude's documented weaker nested mode, which keeps bwrap filesystem confinement while exposing the host `/proc` view.
+Read-only review protects the subject, not the reviewer's notebook. Codex maps
+the mode to a workspace-write sandbox rooted at the task directory; Claude uses
+`dontAsk` and an explicit `allowWrite` containing only the task directory and
+`.state/`. Neither receives native file-writing access to the subject. This lets
+the reviewer search, run tests, write `findings.md`, and close its own task while
+subject-write probes still fail.
 
 Restricted runs load only the project settings source, so `CLAUDE.md`, rules, and skills stay discoverable while user and local permission history does not load. They fail before launch if a checked-in `.claude/settings.json` contains hooks, other command-bearing configuration, plugins, non-read permission allow rules, added directories, unsandboxed excluded commands, extra write paths, filesystem disablement, proxy or network allowances, or Unix sockets.
 
@@ -128,6 +133,12 @@ A recorded pid is not, by itself, a handle on a process: the kernel recycles pid
 
 A recovered watcher is not the child's parent and cannot read an exit code. It observes the identity until it disappears, then reads the terminal state the child was supposed to record. If there is none, it writes terminal `failed` and says so in `trace.md`; a child vanishing is not a completion.
 
+The runner serializes launch ownership and refuses a second live run before it
+can overwrite the first run's identities or progress baseline. On hosts where a
+systemd manager is reachable, the watcher starts in its own transient scope so
+stopping a parent service does not kill the task; the recorded
+`supervision_boundary` states whether this stronger boundary was available.
+
 ## Live Progress
 
 A long-running child should publish `progress.json` in its task directory:
@@ -161,7 +172,10 @@ Startup and bookkeeping are not progress. "Preparing the task directory" tells a
 
 It supports `--runner codex` and `--runner claude`, because those are the owner runtimes the dev-pipeline core drives. `--operation start|resume|retry` chooses the lifecycle operation; a retry needs a new `--state-dir` and the previous one, so the earlier attempt stays immutable.
 
-This workflow depends on the separate `dev-pipeline` project, which is not on PyPI. Install it into this checkout's virtualenv (`.venv/bin/pip install /path/to/dev-pipeline`) and either put its CLI on PATH or pass `--dev-pipeline-bin`. The standard workflow does not need it, and the adapter's tests skip themselves when it is absent.
+This workflow depends on the separate public `rdudov/dev-pipeline` project. The
+tested commit is pinned in both requirements files, so the documented virtualenv
+install provides the CLI. An editable local checkout can replace it during core
+development; `--dev-pipeline-bin` remains available for an explicit executable.
 
 `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration. It writes `dev-pipeline/owner-instruction.md` from `task.md`, invokes the public `dev-pipeline owner` command, validates every neutral lifecycle event the core emits, and projects it into the task's own artifacts. Task-local state lives under `dev-pipeline/`: the core's lifecycle state in `core/`, the recorded event stream in `projected-events.jsonl`, and the two cursors that make recording and projecting separately restartable.
 
@@ -173,7 +187,21 @@ Projection is per-artifact:
 - `trace.md` gets one line per event, each carrying its event id as a marker so a replay cannot duplicate it.
 - `progress.json` gets a concrete activity, and a `recent_outcome` only for events that report an actual outcome — startup bookkeeping never becomes one. The adapter never publishes `completed`/`total`/`unit`, because the lifecycle vocabulary carries no bounds and an invented total reads as a measurement. Anything the owner agent publishes itself wins: the adapter marks its own writes with `source: dev-pipeline-adapter` and leaves owner-authored progress untouched.
 
-A clean subprocess exit is not a completion. The workflow states its outcome through lifecycle events, so a dev-pipeline child that exits without a terminal event is recorded as `failed`. Completion is checked against the task's own artifacts as well: `attempt_completed` is projected as `completed` only when `task.md` says done, no acceptance criterion is left unchecked, and every `required_live_evidence` id in `task_contract.json` appears in `verification.md`. Otherwise the task is `blocked` with the reason.
+A clean subprocess exit is not a completion. Both profiles consume one durable
+completion decision: task YAML frontmatter is `completed`, `plan.md` has no
+unfinished markers, every required evidence gate's latest section records a
+passing result, any required reviewer verdict is unambiguous, and enforced
+policy families have an approved digest-bound review. A refused completion is
+`blocked`; when the owner last published an incomplete bound, the record says
+only that the run ended after that published lower bound and does not invent a
+stopping point.
+
+Create the bounded policy review over the final committed candidate with:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py review-candidate \
+  tasks/001-example --repo /path/to/target-repo
+```
 
 ### Delivery Extension Point
 

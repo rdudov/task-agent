@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -10,11 +11,28 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline_notify import try_send_pipeline_stop_message
-from task_contract import ensure_task_contract_file
+from pipeline_notify import (
+    INTERRUPTED_COMPLETION_KIND,
+    try_send_pipeline_stop_message,
+)
+from task_completion import completion_ready
+from task_contract import (
+    COMPLETION_REVIEW_CONTEXT,
+    COMPLETION_REVIEW_EXCLUSIONS,
+    COMPLETION_REVIEW_PURPOSE,
+    COMPLETION_REVIEW_QUESTION,
+    COMPLETION_REVIEW_RUN,
+    COMPLETION_REVIEW_SUBJECT,
+    completion_review_bound_materials,
+    completion_review_evidence,
+    completion_review_subject,
+    ensure_task_contract_file,
+    require_review_verdict_contract,
+)
 
 
 def utc_now() -> str:
@@ -93,6 +111,20 @@ def progress_path(task_dir: Path) -> Path:
     return task_dir / "progress.json"
 
 
+def observe_progress_state(task_dir: Path) -> dict:
+    """Capture the filesystem state used to bind progress to one run."""
+    try:
+        stat = progress_path(task_dir).stat()
+    except OSError:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "st_mtime_ns": stat.st_mtime_ns,
+        "st_ino": stat.st_ino,
+        "st_size": stat.st_size,
+    }
+
+
 def user_preferences_path(task_dir: Path) -> Path:
     """Durable user preferences live beside the task index, not inside a task."""
     return task_dir.parent / "USER_PREFERENCES.md"
@@ -125,6 +157,14 @@ def append_trace(task_dir: Path, message: str) -> None:
 
 def write_status(task_dir: Path, state: str, current_step: str, extra: dict | None = None) -> None:
     payload = read_json(status_path(task_dir))
+    if state in {"ready", "running"}:
+        for terminal_field in (
+            "exit_code",
+            "finished_at",
+            "outcome",
+            "completion_refusal",
+        ):
+            payload.pop(terminal_field, None)
     payload.update(
         {
             "state": state,
@@ -228,14 +268,17 @@ Before finishing:
 """
 
 
-def codex_workdir(sandbox_mode: str | None) -> Path:
+def codex_workdir(sandbox_mode: str | None, notebook: Path | None = None) -> Path:
     if sandbox_mode == 'danger-full-access':
         return workspace_root()
+    if sandbox_mode == "read-only" and notebook is not None:
+        return notebook
     return repo_root()
 
 
 CLI_RUNNERS = ("codex", "claude", "agent")
 DEFAULT_RUNNER = "codex"
+CODEX_APPROVAL_MODE = "never"
 RUNNER_OVERRIDE_ENV = "TASK_AGENT_CHILD_RUNNER"
 
 # Process names of the parent CLIs we can recognize by ancestry. Ancestry beats
@@ -290,6 +333,7 @@ def claude_sandbox_capabilities() -> dict[str, object]:
 def claude_access_arguments(
     sandbox_mode: str,
     capabilities: dict[str, object] | None = None,
+    notebook: Path | None = None,
 ) -> list[str]:
     """Map a runner-neutral access mode to Claude's real permission boundary."""
     if sandbox_mode == "danger-full-access":
@@ -312,10 +356,17 @@ def claude_access_arguments(
         sandbox_settings["enableWeakerNestedSandbox"] = True
 
     if sandbox_mode == "read-only":
-        # Claude's Bash sandbox always grants cwd writes, so it cannot express a
-        # true read-only Bash boundary. Expose only non-writing built-ins.
         permission_mode = "dontAsk"
-        tool_arguments = ["--tools", "Read,WebFetch,WebSearch"]
+        read_only_tools = "Read,Grep,Glob,WebFetch,WebSearch"
+        if notebook is None:
+            tool_arguments = ["--tools", read_only_tools]
+        else:
+            # The subject remains read-only. Bash is admitted only so the child
+            # can search, test, and maintain its own durable review notebook.
+            tool_arguments = ["--tools", f"{read_only_tools},Bash"]
+            sandbox_settings["filesystem"] = {
+                "allowWrite": [str(notebook), str(repo_root() / ".state")]
+            }
     elif sandbox_mode == "workspace-write":
         # Claude's sandbox defaults to writes in cwd and its session temp dir.
         # acceptEdits authorizes native file tools only within Claude's granted
@@ -598,22 +649,38 @@ def build_command(
     root: Path,
     model: str | None,
     sandbox_mode: str | None,
+    notebook: Path | None = None,
 ) -> list[str]:
     prompt = prompt_path.read_text(encoding="utf-8")
     if runner == "codex":
         resolved_sandbox_mode = sandbox_mode or "workspace-write"
-        workdir = codex_workdir(resolved_sandbox_mode)
+        workdir = codex_workdir(resolved_sandbox_mode, notebook)
+        effective_sandbox = (
+            "workspace-write"
+            if resolved_sandbox_mode == "read-only" and notebook is not None
+            else resolved_sandbox_mode
+        )
         command = [
             "codex",
             "--ask-for-approval",
-            "never",
+            CODEX_APPROVAL_MODE,
             "exec",
             "--skip-git-repo-check",
             "--sandbox",
-            resolved_sandbox_mode,
+            effective_sandbox,
             "-C",
             str(workdir),
         ]
+        if resolved_sandbox_mode == "read-only" and notebook is not None:
+            command.extend(
+                [
+                    "-c",
+                    "sandbox_workspace_write.writable_roots="
+                    + json.dumps([str(repo_root() / ".state")]),
+                    "-c",
+                    "sandbox_workspace_write.exclude_slash_tmp=true",
+                ]
+            )
         if model:
             command.extend(["--model", model])
         command.append(prompt)
@@ -623,7 +690,11 @@ def build_command(
         resolved_sandbox_mode = sandbox_mode or "workspace-write"
         # The child keeps the repository as its working directory so CLAUDE.md,
         # and through it AGENTS.md and the always-on rules, load automatically.
-        command = ["claude", "--print", *claude_access_arguments(resolved_sandbox_mode)]
+        command = [
+            "claude",
+            "--print",
+            *claude_access_arguments(resolved_sandbox_mode, notebook=notebook),
+        ]
         resolved_model = model or os.environ.get("CLAUDE_CHILD_DEFAULT_MODEL")
         if resolved_model:
             command.extend(["--model", resolved_model])
@@ -830,6 +901,65 @@ def structured_progress(task_dir: Path) -> dict | None:
     return progress
 
 
+def progress_belongs_to_current_run(task_dir: Path) -> bool:
+    """Whether the current progress file changed after this run's baseline."""
+    meta = read_json(runner_meta_path(task_dir))
+    baseline = meta.get("progress_baseline")
+    if not isinstance(baseline, dict) or "exists" not in baseline:
+        return True
+    current = observe_progress_state(task_dir)
+    if not baseline["exists"]:
+        return bool(current.get("exists"))
+    if not current.get("exists"):
+        return False
+    return (
+        current.get("st_ino") != baseline.get("st_ino")
+        or current.get("st_mtime_ns", 0) > baseline.get("st_mtime_ns", 0)
+    )
+
+
+def incomplete_published_progress(task_dir: Path) -> dict | None:
+    """Return an incomplete bound observed from the run that just ended."""
+    if not progress_belongs_to_current_run(task_dir):
+        return None
+    progress = structured_progress(task_dir)
+    if not progress or "completed" not in progress:
+        return None
+    if progress["completed"] >= progress["total"]:
+        return None
+    return {
+        key: progress[key]
+        for key in ("completed", "total", "unit", "activity")
+    }
+
+
+COMPLETION_REFUSAL_PREMATURE = "premature_completion"
+COMPLETION_REFUSAL_INTERRUPTED = INTERRUPTED_COMPLETION_KIND
+
+
+def completion_refusal(task_dir: Path, reason: str) -> dict:
+    """Describe only what durable state establishes about a refused close."""
+    published = incomplete_published_progress(task_dir)
+    if published is None:
+        return {
+            "kind": COMPLETION_REFUSAL_PREMATURE,
+            "reason": reason,
+            "summary": f"Rejected premature completion: {reason}",
+        }
+    counts = f"{published['completed']:g} of {published['total']:g} {published['unit']}"
+    return {
+        "kind": COMPLETION_REFUSAL_INTERRUPTED,
+        "reason": reason,
+        "last_published_progress": published,
+        "summary": (
+            "Owner run ended before its closing step; last published progress "
+            f"was {counts}, and where the owner actually got to is not observed. "
+            "Work it started may have continued outside its process. Completion "
+            f"refused because {reason}"
+        ),
+    }
+
+
 def pid_is_running(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -903,10 +1033,100 @@ def process_is_recorded_instance(pid: object, expected_identity: object) -> tupl
     return pid_is_running(pid), "pid_only_unrecorded_identity"
 
 
+def live_run_processes(task_dir: Path) -> list[dict]:
+    """Return identity-bound child/watcher processes for one task."""
+    meta = read_json(runner_meta_path(task_dir))
+    if not meta or meta.get("dry_run"):
+        return []
+    alive: list[dict] = []
+    for role, pid_key, identity_key in (
+        ("child", "pid", "process_identity"),
+        ("watcher", "watcher_pid", "watcher_process_identity"),
+    ):
+        pid = meta.get(pid_key)
+        running, source = process_is_recorded_instance(pid, meta.get(identity_key))
+        if running and source == "identity_match":
+            alive.append({"role": role, "pid": pid})
+    return alive
+
+
+def acquire_run_ownership(task_dir: Path):
+    directory = runner_dir(task_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = (directory / "ownership.lock").open("a+")
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    return handle
+
+
+def require_no_live_run(task_dir: Path, launch_token: str | None = None) -> None:
+    """Refuse metadata replacement while an identity-bound run is live."""
+    meta = read_json(runner_meta_path(task_dir))
+    pending = meta.get("launch_pending")
+    if isinstance(pending, dict) and pending.get("token") != launch_token:
+        raise SystemExit(
+            f"Refusing to start a second run for {task_dir.name}: a watcher launch "
+            "is still pending. Wait for startup or stop it before retrying."
+        )
+    alive = live_run_processes(task_dir)
+    if not alive:
+        return
+    rendered = ", ".join(f"{item['role']} pid {item['pid']}" for item in alive)
+    raise SystemExit(
+        f"Refusing to start a second run for {task_dir.name}: {rendered} is still "
+        "running under the recorded kernel identity. Stop or reattach it first."
+    )
+
+
+def host_systemd_scope_available() -> bool:
+    """Whether this PID namespace can reach a host systemd manager."""
+    try:
+        init_name = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return False
+    return (
+        init_name == "systemd"
+        and Path("/run/systemd/system").is_dir()
+        and shutil.which("systemd-run") is not None
+    )
+
+
+def watcher_supervision_boundary(task_dir: Path, launch_token: str) -> tuple[list[str], dict]:
+    """Give the detached watcher an independent cgroup when the host can."""
+    if not host_systemd_scope_available():
+        return [], {
+            "mode": "process_session",
+            "durability": "caller_cgroup",
+            "reason": "host systemd manager is unavailable in this PID namespace",
+        }
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_dir.name)[:80].strip("-.")
+    unit = f"task-agent-{safe_task}-{launch_token[:12]}.scope"
+    return [
+        str(shutil.which("systemd-run")),
+        "--quiet",
+        "--scope",
+        "--collect",
+        "--description",
+        f"Task Agent runner for {task_dir.name}",
+        "--unit",
+        unit,
+    ], {
+        "mode": "systemd_scope",
+        "durability": "independent_cgroup",
+        "unit": unit,
+    }
+
+
 def cmd_start(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
+    ownership_lock = acquire_run_ownership(task_dir)
+    require_no_live_run(task_dir)
     ensure_task_contract(task_dir)
+    if getattr(args, "require_review_verdict", False):
+        try:
+            require_review_verdict_contract(task_dir)
+        except ValueError as exc:
+            raise SystemExit(f"Cannot prepare review verdict contract: {exc}") from None
     # Resolve once, here, while this process is still a direct descendant of the
     # parent CLI. The detached watcher receives the decision and never re-detects.
     args.runner, runner_resolution = resolve_runner(args.runner)
@@ -961,6 +1181,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         root,
         args.model,
         resolved_sandbox_mode,
+        task_dir,
     )
     meta = {
         "runner": args.runner,
@@ -971,6 +1192,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         "prompt_path": str(runner_prompt_path(task_dir)),
         "log_path": str(runner_log_path(task_dir)),
         "command": command,
+        "progress_baseline": observe_progress_state(task_dir),
     }
     if resolved_sandbox_mode:
         meta["sandbox_mode"] = resolved_sandbox_mode
@@ -980,9 +1202,20 @@ def cmd_start(args: argparse.Namespace) -> None:
         write_json(runner_meta_path(task_dir), meta)
         append_trace(task_dir, "Dry run prepared prompt and runner metadata without launching a child process.")
         write_status(task_dir, "ready", f"Prepared child run via {args.runner}", {"runner": args.runner})
+        ownership_lock.close()
         print(json.dumps(meta, indent=2))
         return
 
+    launch_token = uuid.uuid4().hex
+    scope_prefix, supervision_boundary = watcher_supervision_boundary(
+        task_dir, launch_token
+    )
+    meta["supervision_boundary"] = supervision_boundary
+    meta["launch_pending"] = {
+        "token": launch_token,
+        "started_at": utc_now(),
+        **({"unit": supervision_boundary["unit"]} if "unit" in supervision_boundary else {}),
+    }
     write_json(runner_meta_path(task_dir), meta)
 
     watcher_command = [
@@ -996,6 +1229,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         runner_resolution,
         "--workflow",
         args.workflow,
+        "--launch-token",
+        launch_token,
     ]
     if args.model:
         watcher_command.extend(["--model", args.model])
@@ -1024,11 +1259,12 @@ def cmd_start(args: argparse.Namespace) -> None:
                 {"runner": args.runner, "workflow": args.workflow},
             )
             append_trace(task_dir, detail)
+        ownership_lock.close()
         raise SystemExit(detail)
 
     try:
         process = subprocess.Popen(
-            watcher_command,
+            [*scope_prefix, *watcher_command],
             cwd=root,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1078,8 +1314,10 @@ def cmd_start(args: argparse.Namespace) -> None:
     # The identity values may legitimately be null on a host without `/proc`;
     # the fields must still be present so the record says which host it was.
     meta.update({key: startup_meta[key] for key in required_startup_fields})
+    meta.pop("launch_pending", None)
     write_json(runner_meta_path(task_dir), meta)
     append_trace(task_dir, f"Child process started with pid {startup_meta['pid']}.")
+    ownership_lock.close()
 
     print(json.dumps(meta, indent=2))
 
@@ -1099,6 +1337,22 @@ def finalize_child_lifecycle(
     if task_state in {"completed", "failed", "blocked"}:
         return
     if return_code == 0 and workflow != "dev-pipeline":
+        ready, reason = completion_ready(task_dir)
+        if ready:
+            return
+        refusal = completion_refusal(task_dir, reason)
+        write_status(
+            task_dir,
+            "blocked",
+            refusal["summary"],
+            {
+                "runner": runner,
+                "workflow": workflow,
+                "exit_code": return_code,
+                "completion_refusal": refusal,
+            },
+        )
+        append_trace(task_dir, refusal["summary"])
         return
     if workflow == "dev-pipeline":
         # The dev-pipeline workflow states its own outcome through lifecycle
@@ -1155,7 +1409,18 @@ def report_launch_failure(task_dir: Path, args: argparse.Namespace, exc: Excepti
 def cmd_run_child(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
+    launch_token = getattr(args, "launch_token", None)
+    direct_lock = None
+    if launch_token is None:
+        direct_lock = acquire_run_ownership(task_dir)
+    require_no_live_run(task_dir, launch_token)
     ensure_task_contract(task_dir)
+
+    if launch_token is not None:
+        meta = read_json(runner_meta_path(task_dir))
+        pending = meta.get("launch_pending")
+        if not isinstance(pending, dict) or pending.get("token") != launch_token:
+            raise SystemExit("Watcher launch token does not match the pending launch claim.")
 
     # Preflight and command construction can both refuse to proceed. They run
     # inside the guarded block so a refusal reaches the parent as structured
@@ -1180,6 +1445,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             root,
             args.model,
             resolved_sandbox_mode,
+            task_dir,
         )
         if args.runner == "claude" and args.workflow == "standard":
             require_claude_sandbox_dependencies(resolved_sandbox_mode or "workspace-write")
@@ -1233,6 +1499,8 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             "child_started_at": child_started_at,
         },
     )
+    if direct_lock is not None:
+        direct_lock.close()
     print(
         json.dumps(
             {
@@ -1479,6 +1747,71 @@ def cmd_stop(args: argparse.Namespace) -> None:
     print(json.dumps({"stopped_pid": pid}, indent=2))
 
 
+def cmd_review_candidate(args: argparse.Namespace) -> None:
+    """Materialize the exact completion subject and run a bounded reviewer."""
+    from dev_pipeline.conventions import build_context_packet
+
+    task_dir = resolve_task_dir(args.task_dir)
+    repository = Path(args.repo).expanduser().resolve()
+    if not repository.is_dir():
+        raise SystemExit(f"Review repository is not a directory: {repository}")
+    ensure_task_contract(task_dir)
+    executable = args.dev_pipeline_bin or shutil.which("dev-pipeline")
+    if not executable:
+        raise SystemExit(
+            "dev-pipeline is not installed; install the pinned requirement or pass "
+            "--dev-pipeline-bin."
+        )
+    review_dir = task_dir / "dev-pipeline" / "contract-review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    subject_path = task_dir / COMPLETION_REVIEW_SUBJECT
+    context_path = task_dir / COMPLETION_REVIEW_CONTEXT
+    run_path = task_dir / COMPLETION_REVIEW_RUN
+    try:
+        subject = completion_review_subject(task_dir, repository, Path(executable))
+        write_json(subject_path, subject)
+        materials = completion_review_bound_materials(
+            task_dir, repository, Path(executable), materialize=True
+        )
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise SystemExit(
+            "The completion reviewer requires a committed candidate and stable "
+            f"tracked baseline: {exc}"
+        ) from None
+    context = build_context_packet(
+        role="diff_review",
+        purpose=COMPLETION_REVIEW_PURPOSE,
+        question=COMPLETION_REVIEW_QUESTION,
+        artifacts=[subject_path, *materials],
+        evidence=completion_review_evidence(task_dir),
+        exclusions=COMPLETION_REVIEW_EXCLUSIONS,
+        risks=["compatibility"],
+        artifact_version="1.0.0",
+    )
+    write_json(context_path, context)
+    command = [
+        executable,
+        "agent",
+        "--packet",
+        str(context_path),
+        "--repo",
+        str(repository),
+        "--output",
+        str(run_path),
+        "--diagnostics-prefix",
+        str(review_dir / "reviewer-diagnostics"),
+        "--sandbox",
+        "read-only",
+    ]
+    if args.model:
+        command.extend(["--model", args.model])
+    completed = subprocess.run(command, cwd=repo_root(), check=False)
+    if completed.returncode:
+        raise SystemExit(completed.returncode)
+    print(json.dumps({"subject": str(subject_path), "context": str(context_path),
+                      "reviewer_run": str(run_path)}, indent=2))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run or monitor child task agents.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1497,6 +1830,11 @@ def parse_args() -> argparse.Namespace:
         default="standard",
     )
     start_parser.add_argument("--model", help="Optional model override for the resolved runner.")
+    start_parser.add_argument(
+        "--require-review-verdict",
+        action="store_true",
+        help="Require the review owner's canonical Verdict line before completion.",
+    )
     start_parser.add_argument(
         "--sandbox-mode",
         choices=["read-only", "workspace-write", "danger-full-access"],
@@ -1536,6 +1874,7 @@ def parse_args() -> argparse.Namespace:
     run_child_parser.add_argument("task_dir", help="Task directory path.")
     run_child_parser.add_argument("--runner", choices=list(CLI_RUNNERS), default=DEFAULT_RUNNER)
     run_child_parser.add_argument("--runner-resolution", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--launch-token", help=argparse.SUPPRESS)
     run_child_parser.add_argument(
         "--workflow",
         choices=["standard", "dev-pipeline"],
@@ -1589,6 +1928,16 @@ def parse_args() -> argparse.Namespace:
     stop_parser = subparsers.add_parser("stop", help="Stop a running child agent.")
     stop_parser.add_argument("task_dir", help="Task directory path.")
     stop_parser.set_defaults(func=cmd_stop)
+
+    review_parser = subparsers.add_parser(
+        "review-candidate",
+        help="Run the bounded contract-policy review over a committed candidate.",
+    )
+    review_parser.add_argument("task_dir", help="Task directory path.")
+    review_parser.add_argument("--repo", required=True, help="Committed target repository.")
+    review_parser.add_argument("--dev-pipeline-bin", help="Dev-pipeline CLI executable.")
+    review_parser.add_argument("--model", help="Optional reviewer model override.")
+    review_parser.set_defaults(func=cmd_review_candidate)
 
     return parser.parse_args()
 

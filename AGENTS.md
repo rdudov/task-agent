@@ -44,7 +44,7 @@ A request is substantial when any of these apply:
 
 Before broad codebase search or live checks, use existing durable context first: `tasks/INDEX.md`, related task artifacts, and the local project/path index described by `data/local-projects.example.md`. Promote repeated lookup knowledge to an index, skill, or rule before closing the task.
 
-`tasks/INDEX.md` is the canonical ordered task index for a local workspace. It is local generated state and is not tracked by the template; use `tasks/INDEX.example.md` as the format template.
+`tasks/INDEX.md` is the canonical ordered task index for a local workspace. It is local generated state and is not tracked by the template; use `tasks/INDEX.example.md` as the format template. Task YAML frontmatter is the source of truth for task metadata, and `skills/task-creator/scripts/tasks_index.py` is the only interface that writes it.
 - Each task directory must contain `task.md` and `plan.md`.
 - Delegated or review-sensitive tasks may also include `task_contract.json` for structured non-negotiable constraints, forbidden substitutions, required live evidence, and completion policy.
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.
@@ -86,6 +86,12 @@ Files the user explicitly requested are a separate, user-facing class of output.
 When a parent agent delegates a task to a child agent, the task directory is the source of truth.
 
 Before delegation, the parent agent should ensure `task.md` and `plan.md` contain enough context for independent execution. If the task has non-negotiable constraints, forbidden substitutions, or mandatory live verification gates, record them in `task_contract.json`.
+
+Both standard and dev-pipeline runs use the same durable completion decision.
+Exit code zero is refused unless task frontmatter is `completed`, the plan has no
+unfinished markers, required evidence has a latest passing result, and required
+review gates are established. A cross-review task may require its author to
+publish exactly one canonical `Verdict:` line in `findings.md`.
 
 Substantial implementation work should preserve at least one no-mock end-to-end verification path for the primary function being changed. Services, APIs, daemons, and workers should include a smoke check against the real runtime entrypoint in the target launch mode.
 

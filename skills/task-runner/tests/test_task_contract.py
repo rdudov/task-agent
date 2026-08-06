@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from task_contract import parse_task_markdown_contract, render_task_contract_overlay
+from task_contract import (
+    parse_task_markdown_contract,
+    render_task_contract_overlay,
+    unsatisfied_review_verdict,
+    verification_gate_result,
+)
 
 
 def test_parse_task_markdown_contract_extracts_hard_constraints_and_evidence(tmp_path: Path) -> None:
@@ -62,3 +67,32 @@ def test_render_task_contract_overlay_includes_completion_rule() -> None:
     assert "flite" in overlay
     assert "direct_roundtrip" in overlay
     assert "Do not mark the task approved or completed" in overlay
+
+
+def test_verification_uses_exact_gate_heading_and_latest_result() -> None:
+    verification = """# Verification
+
+## live_probe_extra
+- Result: **OK**
+
+## live_probe
+- Result: **FAIL**
+
+## live_probe repaired
+- Result: **PASSED**
+"""
+    assert verification_gate_result(verification, "live_probe") == "PASSED"
+    assert verification_gate_result(verification, "missing") is None
+
+
+def test_required_review_verdict_must_be_authors_own_unambiguous_line(tmp_path: Path) -> None:
+    contract = {
+        "review_verdict": {"path": "findings.md", "allowed": ["approved", "rework"]},
+        "completion_policy": {"require_review_verdict": True},
+    }
+    (tmp_path / "findings.md").write_text(
+        "Verdict: approved\n\nVerdict: rework\n", encoding="utf-8"
+    )
+    assert unsatisfied_review_verdict(contract, tmp_path)
+    (tmp_path / "findings.md").write_text("Verdict: approved\n", encoding="utf-8")
+    assert unsatisfied_review_verdict(contract, tmp_path) == []

@@ -78,12 +78,13 @@ class ChildLifecycleTests(unittest.TestCase):
                     )
                 self.assertEqual(status["state"], state)
 
-    def test_clean_exit_leaves_the_status_alone(self) -> None:
+    def test_clean_exit_without_durable_completion_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = self._task_dir(tmp, "running")
             task_runner.finalize_child_lifecycle(task_dir, "standard", "codex", 0)
             status = json.loads(task_runner.status_path(task_dir).read_text(encoding="utf-8"))
-        self.assertEqual(status["state"], "running")
+        self.assertEqual(status["state"], "blocked")
+        self.assertIn("completion_refusal", status)
 
     def test_a_terminal_state_written_by_the_child_is_never_overwritten(self) -> None:
         for state in ("completed", "blocked", "failed"):

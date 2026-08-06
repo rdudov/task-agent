@@ -136,12 +136,14 @@ class WorkspaceRootTests(unittest.TestCase):
 
 
 class ClaudeAccessTests(unittest.TestCase):
-    def test_read_only_removes_bash_and_every_writing_tool(self) -> None:
+    def test_read_only_without_a_notebook_exposes_only_reading_tools(self) -> None:
         args = task_runner.claude_access_arguments(
             "read-only", {"needs_weaker_nested_sandbox": False}
         )
         self.assertIn("--tools", args)
-        self.assertEqual(args[args.index("--tools") + 1], "Read,WebFetch,WebSearch")
+        self.assertEqual(
+            args[args.index("--tools") + 1], "Read,Grep,Glob,WebFetch,WebSearch"
+        )
         self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
         self.assertNotIn("--add-dir", args)
 

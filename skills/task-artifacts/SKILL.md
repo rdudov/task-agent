@@ -37,12 +37,16 @@ Environment: <repo>, IFT/prod, secrets redacted
 
 ## <gate_id or short name>
 
-- Command: `<exact command without secrets>`
 - Result: **OK** | **FAIL** | **GAP** (explain)
 - Evidence: one-line outcome (counts, tool names, paths — no tokens)
 ```
 
-If `task_contract.json` defines `required_live_evidence`, each `id` must have a matching `##` section before marking the task done.
+Exact commands belong in structured evidence when a contract requires them.
+This human summary records the deciding result and a concise redacted
+observation. If `task_contract.json` defines `required_live_evidence`, each
+required `id` needs a matching section with a passing `Result`; a heading alone,
+or a later `FAIL`, `GAP`, or `BLOCKED`, refuses completion. Verification files
+are append-only, so the last section for a repeated gate id is authoritative.
 
 **Never** paste API keys, tokens, or `.env` values.
 
@@ -114,7 +118,7 @@ Append a verification section without hand-editing headers:
 ```bash
 skills/task-artifacts/scripts/record_verification.sh tasks/002-example \
   "agent_smoke" \
-  "Full CLI run OK; trace: Grep turn 1; no secrets in log."
+  "Full CLI run OK; trace: Grep turn 1; no secrets in log." OK
 ```
 
 ## Promotion
