@@ -115,6 +115,22 @@ Check progress:
 
 `status` includes a `progress` block when the child published a usable `progress.json`. See "Live Progress" below for what counts as usable.
 
+Ask the public engine what a task is and where it stands:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_engine.py state tasks/001-example
+.venv/bin/python skills/task-runner/scripts/task_engine.py phases tasks/001-example
+.venv/bin/python skills/task-runner/scripts/task_engine.py actuality tasks/001-example
+.venv/bin/python skills/task-runner/scripts/task_engine.py admission tasks/001-example --repo /path/to/target-repo
+```
+
+`task_engine.py` is the surface for anything downstream — a product layer, a
+transport adapter, another installation. It composes the existing owners and
+answers in JSON, so a consumer never imports a helper out of `task_runner.py`
+and never breaks when one is renamed. `state` returns identity, phase, phase
+sequence, contract gate status, completion readiness, actuality, supervision and
+any outstanding Git write result in one document.
+
 Restore supervision of a child whose watcher was lost:
 
 ```bash
@@ -130,6 +146,8 @@ A recorded pid is not, by itself, a handle on a process: the kernel recycles pid
 `status` reports `process_alive` together with `process_alive_source`, which says how the verdict was reached: `identity_match` is proof, while a `pid_only_*` source is a weaker guess. `stop` refuses outright on `identity_mismatch` rather than signalling a process group that may no longer be the child's.
 
 **Degradation.** Process identity reads `/proc`, which is Linux-specific. Where it is unavailable, `process_identity()` returns None for every pid; `process_identity_available()` tells that host apart from a dead process, and callers that can tolerate it fall back to pid-only liveness and say so in `process_alive_source`. `reattach` does not tolerate it and fails closed, because its whole job is refusing a child that only looks alive.
+
+`live_run_processes()` does tolerate it, and must. It answers "is anything still running for this task", and the caller acting on that answer is the one refusing a second run and the one refusing an overlapping repository write. Requiring proof on a host without `/proc` — macOS — would report every live run as dead, so precisely the hosts that cannot detect a concurrent run would be the hosts that admit one. Each returned process carries the `evidence` its verdict rests on, and refusal messages name it, so a weaker host is visible rather than silently equivalent.
 
 `reattach` restores a watcher for a child that is still running. It refuses when:
 
@@ -211,6 +229,95 @@ Create the bounded policy review over the final committed candidate with:
 .venv/bin/python skills/task-runner/scripts/task_runner.py review-candidate \
   tasks/001-example --repo /path/to/target-repo
 ```
+
+## Task Phases
+
+One user goal keeps one task number. Review is a phase of that task, and so is
+the rework a review asks for — neither gets a number of its own, and neither
+appears from outside as unrelated work.
+
+The phase vocabulary is this project's: `planned`, `implementation`, `review`,
+`rework`, `live_acceptance`, `blocked`, `completed`, `failed`. `dev-pipeline`
+owns the neutral lifecycle events and validates them; `task_phases.py` decides
+what they mean for a task. Both profiles produce the same vocabulary — a
+`dev-pipeline` run from its events, a `standard` run from what the run was asked
+to do and what the task has already been through — so an observer reads one
+thing regardless of how the work was executed.
+
+`phases.json` in the task directory is the durable record: the current phase and
+an append-only history, each entry naming what caused the transition. Re-entering
+the phase a task is already in appends nothing; entering a phase it held before
+does, which is why `implementation → review → rework → review → completed` reads
+as five entries under one number.
+
+Two mappings are worth stating because the obvious reading of each is wrong:
+
+- A checkpoint during rework stays `rework`. The core emits the same event
+  before and after a review, and reading it as `implementation` both times would
+  erase the rework phase at the moment it is happening.
+- `review_waiting` and `review_refused` are `blocked`, not `rework`. The review
+  could not be obtained or cannot be trusted, so the work stops for a human.
+  Sending it back around the loop would let it close having never been reviewed.
+
+An unknown event kind moves nothing. A newer core may emit a kind this project
+has not heard of, and leaving the task in the phase it is demonstrably still in
+beats inventing one.
+
+## Git Write Admission
+
+Two write-mode runs in one repository do not produce two reviewable candidates;
+they produce one working tree nobody can attribute. Before a write-mode child is
+spawned, `write_admission.py` decides whether the repository may be written, and
+records what the run actually did in an append-only ledger at
+`.runner/write-admission.jsonl`.
+
+A launch is refused when:
+
+- another task holds an open scope in the same repository and is live
+  (`live_overlapping_write`);
+- another task changed the repository and its own completion gates have not
+  closed (`unreviewed_overlapping_write`);
+- this task abandoned a scope in this repository that cannot be measured at all
+  (`unresolved_own_write_scope`).
+
+A task's *own* unreviewed change never locks it out: repairing that change is
+what the rework phase is, and it happens under the same number.
+
+The ledger shape matters, because a single mutable result field had two failures
+that independent review reproduced. A read-only or dry run wrote its own
+"changed nothing" over an outstanding "changed something", and the obligation to
+review that earlier change vanished. And a run that opened a scope and never
+closed it became an indeterminate result that blocked every task in the
+repository. Here a dry or read-only run opens no scope and appends nothing, so
+it has nothing to overwrite; an abandoned scope is resolved by measuring the
+repository now; and one that cannot be measured constrains only the task that
+abandoned it.
+
+A scope measures the repository, not the child. It records the tracked state
+before the run and after it, so anything that changed the repository in between
+is attributed to the run — including a human editing the same tree. That is
+sound under the discipline admission enforces, where only one writer holds a
+repository at a time, and it is the reason the record says *the repository
+changed* rather than *this child changed it*.
+
+Whether an outstanding change has been reviewed is not decided here. This module
+reports it and the completion owner decides. Pairing policy — who may review
+whose work — belongs to the installation that defines it.
+
+## Actuality
+
+`task_engine.py actuality` reports how long ago a task was observably touched,
+measured from the filesystem. A child's own `updated_at` is a claim: a child
+that stalls can leave a fresh timestamp in a file it wrote before it stalled,
+and one that dies cannot correct the last it wrote. The mtime of
+`progress.json`, `status.json`, `trace.md`, `phases.json` and `verification.md`
+is an observation. `.runner/` metadata is excluded deliberately, because the
+supervisor touches it on its own schedule and would report freshness the work
+does not have.
+
+`TASK_AGENT_ACTUALITY_STALE_SECONDS` sets the reporting threshold; it defaults to
+900. It is a reporting threshold, not a control — a run that publishes every few
+minutes and one that compiles for half an hour are both healthy.
 
 ### Delivery Extension Point
 

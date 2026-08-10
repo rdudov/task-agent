@@ -19,6 +19,18 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import dev_pipeline_adapter  # noqa: E402
 
+from dev_pipeline.events import EVENT_KINDS  # noqa: E402
+
+# The review and rework phases exist only where the core announces them. An
+# older pinned core emits no such event, and the projection degrades to the
+# phases it can see rather than breaking — but a test cannot synthesize an event
+# the installed core refuses to validate, so it skips instead of failing.
+CORE_HAS_REVIEW_EVENTS = "review_started" in EVENT_KINDS
+requires_review_events = unittest.skipUnless(
+    CORE_HAS_REVIEW_EVENTS,
+    "the installed dev-pipeline core emits no provider-neutral review events",
+)
+
 
 def event(
     kind: str,
@@ -417,6 +429,123 @@ class CoreCommandTests(unittest.TestCase):
             sorted(path.name for path in (task_dir / "dev-pipeline").iterdir()),
             ["adapter-cursor.json", "projected-events.jsonl", "projection-cursor.json"],
         )
+
+
+class PhaseProjectionTests(unittest.TestCase):
+    """Review and rework are phases of one task, not tasks of their own."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(__file__).resolve().parent / "_tmp_phases"
+        if self.tmp.exists():
+            subprocess.run(["rm", "-rf", str(self.tmp)], check=True)
+        self.tmp.mkdir()
+        self.addCleanup(subprocess.run, ["rm", "-rf", str(self.tmp)])
+
+    @requires_review_events
+    def test_the_accepted_sequence_is_one_task_directory(self) -> None:
+        """implementation -> review -> rework -> review -> completed.
+
+        Every event below is validated by the core's own `validate_event`, so
+        this is the neutral vocabulary as published rather than a local
+        rehearsal of it.
+        """
+        task_dir = make_task(self.tmp, status="done")
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+
+        review_payload = {
+            "strategy": "cross_provider",
+            "review_provider": "claude",
+            "artifact_digest": "sha256:abc",
+            "author_session_id": "session-author",
+        }
+        for sequence, (kind, payload) in enumerate(
+            [
+                ("attempt_started", ATTEMPT_STARTED),
+                ("run_started", RUN_STARTED),
+                ("checkpoint_completed", {"checkpoint": "build", "next_step": "review"}),
+                (
+                    "increment_ready_for_review",
+                    {"increment": "candidate", "artifact": "/c.json", "artifact_digest": "sha256:abc"},
+                ),
+                ("review_started", review_payload),
+                (
+                    "review_rework_required",
+                    {"strategy": "cross_provider", "review_provider": "claude", "artifact_digest": "sha256:abc"},
+                ),
+                ("checkpoint_completed", {"checkpoint": "repair", "next_step": "re-review"}),
+                ("review_started", review_payload),
+                (
+                    "review_approved",
+                    {
+                        "strategy": "cross_provider",
+                        "review_provider": "claude",
+                        "reviewer_session_id": "session-reviewer",
+                        "artifact_digest": "sha256:def",
+                    },
+                ),
+                ("attempt_completed", {}),
+            ],
+            start=1,
+        ):
+            projector.consume(event(kind, sequence, payload))
+
+        phases = json.loads((task_dir / "phases.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [item["phase"] for item in phases["history"]],
+            ["implementation", "review", "rework", "review", "completed"],
+        )
+        self.assertEqual(phases["phase"], "completed")
+        self.assertEqual(phases["task_ref"], task_dir.name)
+        self.assertEqual(status_of(task_dir)["phase"], "completed")
+        # One goal, one number: no second task directory appeared for the review.
+        self.assertEqual([p.name for p in self.tmp.iterdir()], [task_dir.name])
+
+    def test_each_phase_records_the_event_that_caused_it(self) -> None:
+        task_dir = make_task(self.tmp)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(
+            event(
+                "increment_ready_for_review",
+                2,
+                {"increment": "candidate", "artifact": "/c.json", "artifact_digest": "sha256:abc"},
+            )
+        )
+        phases = json.loads((task_dir / "phases.json").read_text(encoding="utf-8"))
+        self.assertEqual(phases["history"][1]["cause"]["kind"], "increment_ready_for_review")
+        self.assertEqual(phases["history"][1]["cause"]["source"], "dev-pipeline")
+        # The phase is timestamped by the event, not by when projection ran.
+        self.assertEqual(phases["history"][1]["entered_at"], "2026-07-27T12:02:00+00:00")
+
+    @requires_review_events
+    def test_an_unobtainable_review_blocks_instead_of_asking_for_rework(self) -> None:
+        task_dir = make_task(self.tmp)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(
+            event(
+                "review_waiting",
+                2,
+                {
+                    "strategy": "cross_provider",
+                    "review_provider": "claude",
+                    "reason": "reviewer runtime is unavailable",
+                },
+            )
+        )
+        status = status_of(task_dir)
+        self.assertEqual(status["state"], "blocked")
+        self.assertEqual(status["phase"], "blocked")
+        self.assertIn("reviewer runtime is unavailable", status["current_step"])
+
+    def test_a_machinery_event_does_not_move_the_phase(self) -> None:
+        task_dir = make_task(self.tmp)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(event("run_started", 2, RUN_STARTED))
+        projector.consume(event("process_started", 3, {"pid": 11}))
+        phases = json.loads((task_dir / "phases.json").read_text(encoding="utf-8"))
+        self.assertEqual([item["phase"] for item in phases["history"]], ["implementation"])
 
 
 if __name__ == "__main__":

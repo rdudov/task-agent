@@ -31,9 +31,13 @@ from task_contract import (
     completion_review_bound_materials,
     completion_review_evidence,
     completion_review_subject,
+    enforced_review_verdict,
     ensure_task_contract_file,
+    load_task_contract,
     require_review_verdict_contract,
 )
+import task_phases
+import write_admission
 
 
 def utc_now() -> str:
@@ -195,6 +199,15 @@ def write_status(task_dir: Path, state: str, current_step: str, extra: dict | No
     )
     if extra:
         payload.update(extra)
+    # A terminal state is also the end of a phase, and the phase record is what
+    # shows this one number carried the whole goal. Keeping the two in one place
+    # stops them from disagreeing about how the task ended.
+    phase = task_phases.phase_for_state(state)
+    if phase:
+        task_phases.record_phase(
+            task_dir, phase, cause={"source": "task-runner", "state": state}
+        )
+    payload["phase"] = task_phases.current_phase(task_dir)
     write_json(status_path(task_dir), payload)
 
 
@@ -1213,7 +1226,16 @@ def process_is_recorded_instance(pid: object, expected_identity: object) -> tupl
 
 
 def live_run_processes(task_dir: Path) -> list[dict]:
-    """Return identity-bound child/watcher processes for one task."""
+    """Return the child/watcher processes of one task that are still running.
+
+    An identity match is proof. A PID-only match is weaker, and on a host
+    without `/proc` — macOS is the one that matters here — it is the only
+    evidence that exists. Requiring proof there would report every live run as
+    dead, and the caller that acts on this is the one refusing a second run for
+    the same task, so it would admit a concurrent run on exactly the hosts that
+    cannot detect one. Weaker evidence still counts as alive; each entry says
+    which evidence it rests on so a caller that needs proof can insist on it.
+    """
     meta = read_json(runner_meta_path(task_dir))
     if not meta or meta.get("dry_run"):
         return []
@@ -1224,8 +1246,8 @@ def live_run_processes(task_dir: Path) -> list[dict]:
     ):
         pid = meta.get(pid_key)
         running, source = process_is_recorded_instance(pid, meta.get(identity_key))
-        if running and source == "identity_match":
-            alive.append({"role": role, "pid": pid})
+        if running:
+            alive.append({"role": role, "pid": pid, "evidence": source})
     return alive
 
 
@@ -1259,7 +1281,9 @@ def require_no_live_run(task_dir: Path, launch_token: str | None = None) -> None
     alive = live_run_processes(task_dir)
     if not alive:
         return
-    rendered = ", ".join(f"{item['role']} pid {item['pid']}" for item in alive)
+    rendered = ", ".join(
+        f"{item['role']} pid {item['pid']} ({item['evidence']})" for item in alive
+    )
     raise SystemExit(
         f"Refusing to start a second run for {task_dir.name}: {rendered} is still "
         "running under the recorded kernel identity. Stop or reattach it first."
@@ -1303,6 +1327,30 @@ def watcher_supervision_boundary(task_dir: Path, launch_token: str) -> tuple[lis
         "durability": "independent_cgroup",
         "unit": unit,
     }
+
+
+def require_write_admission(task_dir: Path, repository: Path) -> None:
+    """Refuse a write-mode launch that would collide in a Git repository.
+
+    Liveness is asked of the same supervision this project already uses, so a
+    host that can only offer PID-only evidence still blocks a concurrent write
+    rather than admitting one.
+    """
+    blockers = write_admission.admission_blockers(
+        tasks_root=task_dir.parent,
+        repository=repository,
+        requesting_task=task_dir,
+        is_live=lambda candidate: bool(live_run_processes(candidate)),
+    )
+    if not blockers:
+        return
+    rendered = "; ".join(
+        f"{Path(item['task']).name}: {item['reason']} ({item['detail']})"
+        for item in blockers
+    )
+    raise SystemExit(
+        f"Refusing to write {repository} from {task_dir.name}: {rendered}."
+    )
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -1512,11 +1560,35 @@ def cmd_start(args: argparse.Namespace) -> None:
     # the fields must still be present so the record says which host it was.
     meta.update({key: startup_meta[key] for key in required_startup_fields})
     meta.pop("launch_pending", None)
+    # The watcher has been writing to this same file since it started. Replacing
+    # it wholesale from the parent's older copy would silently drop whatever the
+    # watcher recorded in between — the open Git write scope, among others.
+    persisted = read_json(runner_meta_path(task_dir))
+    persisted.pop("launch_pending", None)
+    persisted.update(meta)
+    meta = persisted
     write_json(runner_meta_path(task_dir), meta)
     append_trace(task_dir, f"Child process started with pid {startup_meta['pid']}.")
     ownership_lock.close()
 
     print(json.dumps(meta, indent=2))
+
+
+def record_terminal_phase(task_dir: Path, state: str) -> None:
+    """Close the phase for a terminal state, whoever wrote that state.
+
+    `write_status` handles the states this runner writes itself. This covers the
+    other source: a standard child that maintains its own `status.json` and has
+    no notion of phases at all.
+    """
+    phase = task_phases.phase_for_state(state)
+    if not phase:
+        return
+    task_phases.record_phase(task_dir, phase, cause={"source": "child", "state": state})
+    status = read_json(status_path(task_dir))
+    if status:
+        status["phase"] = task_phases.current_phase(task_dir)
+        write_json(status_path(task_dir), status)
 
 
 def finalize_child_lifecycle(
@@ -1532,6 +1604,12 @@ def finalize_child_lifecycle(
     """
     task_state = read_json(status_path(task_dir)).get("state")
     if task_state in {"completed", "failed", "blocked"}:
+        # The child recorded its own terminal state, so there is nothing to
+        # correct — but the phase still has to close. A child writes
+        # `status.json` itself and knows nothing about phases, so a run that
+        # ended well would otherwise stay in the phase it was working in, and
+        # the task's own history would never show how it finished.
+        record_terminal_phase(task_dir, task_state)
         return
     if return_code == 0 and workflow != "dev-pipeline":
         ready, reason = completion_ready(task_dir)
@@ -1653,6 +1731,13 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             require_safe_claude_project_settings(
                 root, resolved_sandbox_mode or "workspace-write"
             )
+        write_target = (
+            access_directories[0]
+            if access_grant.get("grants_write") and access_directories
+            else None
+        )
+        if write_target is not None:
+            require_write_admission(task_dir, write_target)
     except (Exception, SystemExit) as exc:
         report_launch_failure(task_dir, args, exc if isinstance(exc, Exception) else RuntimeError(str(exc)))
         raise SystemExit(1)
@@ -1678,6 +1763,32 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             "watcher_started_at": utc_now(),
         },
     )
+
+    # A `standard` run publishes no lifecycle events, so the phase it enters is
+    # recorded here. A `dev-pipeline` run's phases come from the events its
+    # owner emits, and inventing one now would contradict the first of them.
+    if args.workflow == "standard":
+        entering = task_phases.phase_for_standard_start(
+            task_dir,
+            require_review_verdict=bool(getattr(args, "require_review_verdict", False))
+            or enforced_review_verdict(load_task_contract(task_dir)) is not None,
+        )
+        task_phases.record_phase(
+            task_dir,
+            entering,
+            cause={"source": "task-runner", "workflow": args.workflow, "runner": args.runner},
+        )
+        append_trace(task_dir, f"Task entered the `{entering}` phase.")
+
+    write_scope_run_id = None
+    if write_target is not None:
+        write_scope_run_id = launch_token or uuid.uuid4().hex
+        try:
+            write_admission.open_write_scope(task_dir, write_target, write_scope_run_id)
+            update_runner_meta(task_dir, {"write_scope_run_id": write_scope_run_id})
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            report_launch_failure(task_dir, args, exc)
+            raise SystemExit(1)
 
     try:
         log_handle = runner_log_path(task_dir).open("ab")
@@ -1732,6 +1843,15 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             "outcome": outcome,
         },
     )
+    if write_scope_run_id is not None:
+        # Close the scope even though the child may have failed: what the run
+        # did to the repository is a fact about the repository, not about the
+        # exit code. A scope left open here is still recoverable by measurement,
+        # but only this process knows the run it belonged to.
+        try:
+            write_admission.close_write_scope(task_dir, write_scope_run_id)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            append_trace(task_dir, f"Could not close the Git write scope: {exc}")
     finalize_child_lifecycle(task_dir, args.workflow, args.runner, return_code)
 
 

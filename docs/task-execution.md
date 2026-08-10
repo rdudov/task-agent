@@ -29,11 +29,40 @@ New runs also bind that evidence to their PID namespace. From another namespace,
 an absent host PID is unobservable rather than dead, so status reports unknown
 and start/stop/reattach fail closed.
 
+Liveness itself degrades rather than disappearing. `live_run_processes()`
+accepts pid-only evidence where the host cannot produce kernel identities,
+because the callers acting on it are the ones refusing a second run and an
+overlapping repository write — and requiring proof on a host without `/proc`
+would report every live run as dead, so the hosts unable to detect a concurrent
+run would be the hosts that admit one. Each answer names the evidence it rests
+on. `reattach` still insists on proof, because refusing a child that only looks
+alive is its entire purpose.
+
 `--repo <path>` is runner-neutral. In the standard workflow it becomes an
 explicit Codex/Claude access root or an additive Cursor Agent workspace root;
 write modes perform an exclusive random-file create/delete probe before launch
 and record the grant. Cursor retains task-agent as its primary workspace. In
 the dev-pipeline workflow the same path is the core owner's target repository.
+
+A write-mode launch is additionally admitted against the target repository, so
+two tasks never write one working tree at the same time and a change nobody has
+reviewed does not get built on. `skills/task-runner/SKILL.md` owns the rules and
+the ledger format.
+
+## Task Phases
+
+A user goal keeps one task number for its whole life. Review is a phase of that
+task and so is the rework a review asks for — under both profiles, in one
+directory. A `dev-pipeline` run's phases come from the neutral lifecycle events;
+a `standard` run's come from what the run was asked to do and what the task has
+already been through, so both present the same vocabulary to a reader.
+
+`phases.json` holds the current phase and an append-only history with the cause
+of each transition. `task_engine.py phases TASK` prints it, and
+`task_engine.py state TASK` returns it alongside identity, completion readiness,
+actuality and supervision in one JSON document — the surface a downstream
+consumer uses instead of importing internals. `skills/task-runner/SKILL.md` owns
+the vocabulary, the event mappings and the actuality threshold.
 
 ## Dev-Pipeline Workflow
 

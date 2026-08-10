@@ -39,6 +39,7 @@ from task_contract import (
     load_task_contract,
 )
 from task_runner import completion_refusal, resolve_dev_pipeline_bin
+import task_phases
 
 
 # Lifecycle kinds worth telling a human about. The template has no transport, so
@@ -242,6 +243,25 @@ def status_projection(event: dict, task_dir: Path) -> tuple[str, str]:
             "running",
             f"Increment completed: {payload['increment']}; next: {payload['next_step']}",
         )
+    if kind == "review_started":
+        return (
+            "running",
+            f"Independent review started by {payload['review_provider']} "
+            f"({payload['strategy']})",
+        )
+    if kind == "review_approved":
+        return "running", f"Review approved by {payload['review_provider']}"
+    if kind == "review_rework_required":
+        return "running", f"Review requires rework: {payload['review_provider']} did not approve"
+    if kind in {"review_waiting", "review_refused"}:
+        # Neither is a verdict this task may proceed on. The configured review
+        # did not produce a usable one, and substituting a different reviewer or
+        # counting the work as reviewed is exactly what must not happen here.
+        return "blocked", f"Review unavailable ({kind}): {payload['reason']}"
+    if kind == "live_acceptance_waiting":
+        return "running", f"Waiting on live acceptance: {payload['reason']}"
+    if kind == "live_acceptance_completed":
+        return "running", f"Live acceptance completed ({payload['strategy']})"
     if kind == "blocked_on_user_decision":
         return "blocked", f"Waiting for user decision: {payload['question']}"
     if kind == "run_failed":
@@ -283,6 +303,18 @@ def progress_projection(event: dict, current_step: str) -> tuple[str, str | None
         activity = f"Increment {payload['increment']} is waiting for review"
     elif kind == "increment_completed":
         activity = f"Working past increment {payload['increment']}; next: {payload['next_step']}"
+    elif kind == "review_started":
+        activity = f"{payload['review_provider']} is reviewing the bound candidate"
+    elif kind == "review_approved":
+        activity = f"Review approved by {payload['review_provider']}"
+    elif kind == "review_rework_required":
+        activity = "Reworking the candidate after review"
+    elif kind in {"review_waiting", "review_refused"}:
+        activity = f"Review could not be obtained: {payload['reason']}"
+    elif kind == "live_acceptance_waiting":
+        activity = f"Waiting on live acceptance: {payload['reason']}"
+    elif kind == "live_acceptance_completed":
+        activity = f"Live acceptance completed ({payload['strategy']})"
     elif kind == "blocked_on_user_decision":
         activity = f"Waiting for a user decision: {payload['question']}"
     elif kind in {"run_failed", "attempt_failed"}:
@@ -300,6 +332,15 @@ def progress_projection(event: dict, current_step: str) -> tuple[str, str | None
             f"Increment {payload['increment']} reached review"
         ),
         "increment_completed": lambda: f"Increment {payload['increment']} completed",
+        "review_approved": lambda: f"Review approved by {payload['review_provider']}",
+        "review_rework_required": lambda: (
+            f"Review returned the candidate for rework ({payload['review_provider']})"
+        ),
+        "review_waiting": lambda: f"Review unavailable: {payload['reason']}",
+        "review_refused": lambda: f"Review refused: {payload['reason']}",
+        "live_acceptance_completed": lambda: (
+            f"Live acceptance completed ({payload['strategy']})"
+        ),
         "blocked_on_user_decision": lambda: f"Blocked on: {payload['question']}",
         "run_failed": lambda: f"Run failed: {payload['reason']}",
         "attempt_failed": lambda: f"Attempt failed: {payload['reason']}",
@@ -442,9 +483,38 @@ class TaskArtifactProjector:
 
     def project(self, event: dict) -> None:
         state, step = status_projection(event, self.task_dir)
+        self.project_phase(event, state)
         self.project_status(event, state, step)
         self.project_trace(event, step)
         self.project_progress(event, step)
+
+    def project_phase(self, event: dict, state: str) -> None:
+        """Record which phase of this one task the event belongs to.
+
+        The neutral event says what the machinery did; the phase says what the
+        goal is doing. A review and the rework it asks for are phases of this
+        task directory, which is the whole reason neither of them needs a task
+        number of its own.
+
+        A terminal state wins over the event's own phase, because
+        `attempt_completed` is a completion only if the task's durable gates say
+        so, and that decision has already been made by the time this runs.
+        """
+        phase = task_phases.phase_for_state(state) or task_phases.phase_for_event(
+            event, task_phases.current_phase(self.task_dir)
+        )
+        if not phase:
+            return
+        task_phases.record_phase(
+            self.task_dir,
+            phase,
+            cause={
+                "source": "dev-pipeline",
+                "kind": event["kind"],
+                "event_id": event["event_id"],
+            },
+            entered_at=event["timestamp"],
+        )
 
     def project_status(self, event: dict, state: str, step: str) -> None:
         status_path = self.task_dir / "status.json"
@@ -452,6 +522,7 @@ class TaskArtifactProjector:
         status.update(
             {
                 "state": state,
+                "phase": task_phases.current_phase(self.task_dir),
                 "current_step": step,
                 "updated_at": event["timestamp"],
                 "dev_pipeline": {

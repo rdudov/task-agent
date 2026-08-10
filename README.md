@@ -102,7 +102,37 @@ an additional workspace/access root for Codex, Claude, or Cursor Agent while
 the task-agent checkout remains the primary workspace.
 Write modes verify writability before launch and record the result.
 
+Only one task may hold a repository in write mode at a time. A write-mode launch
+is admitted against the target repository first, and refused while another task
+is writing it or has changed it without closing its own gates.
+
 `start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity and PID namespace rather than by pid alone. An observer in another namespace reports liveness as unknown and cannot replace, stop, or reattach the host run. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
+
+## Asking What A Task Is Doing
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_engine.py state tasks/001-example
+```
+
+One JSON document: task identity and status, the phase the task is in and the
+sequence of phases it went through, contract gate status, whether completion may
+be accepted and why not, observed freshness, and what is running. `phases`,
+`actuality` and `admission --repo R` are the narrower views.
+
+This is the public surface. A product layer, a transport adapter or another
+installation asks here instead of importing internals, so nothing downstream
+breaks when a helper is renamed.
+
+**One goal, one number.** A user goal keeps a single task directory for its whole
+life. Review is a phase of that task, and so is the rework a review asks for —
+`implementation → review → rework → review → completed` is the history of one
+task, not five, and `phases.json` records it with the cause of each transition.
+Both execution profiles produce the same vocabulary.
+
+**Actuality is observed.** Freshness comes from the modification times of the
+task's artifacts, never from a timestamp a child wrote about itself: a child that
+stalls can leave a fresh timestamp behind, and one that dies cannot correct the
+last it wrote.
 
 ## Dev-Pipeline Workflow
 
@@ -122,6 +152,13 @@ the active virtual environment with an editable checkout:
 ```bash
 .venv/bin/pip install -e /path/to/dev-pipeline
 ```
+
+The pinned revision predates the core's provider-neutral review events. Task
+phases degrade rather than break on it: implementation, blocked and terminal
+phases project normally, and the review and rework phases simply never appear
+because no event announces them. Advance the pin to a core that emits
+`review_started`, `review_rework_required` and `review_approved` to see the full
+sequence.
 
 The adapter is transport-neutral. It builds the owner instruction, calls the public CLI, validates the neutral lifecycle events it emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. It binds no recipient and delivers no messages; `skills/task-runner/scripts/pipeline_notify.py` is the documented, deliberately inert seam where an application with a real transport attaches its own delivery and replay rules.
 

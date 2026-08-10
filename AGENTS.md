@@ -49,6 +49,8 @@ Before broad codebase search or live checks, use existing durable context first:
 - Delegated or review-sensitive tasks may also include `task_contract.json` for structured non-negotiable constraints, forbidden substitutions, required live evidence, and completion policy.
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.
 - Keep tasks flat in `tasks/`; express hierarchy through `Parent Task` and `Related Tasks` in `task.md`.
+- One user goal keeps one task number. Review and the rework a review asks for are phases of that same task, recorded in its own `phases.json`; do not create a separate task for either. The phase vocabulary and its event mappings are owned by `skills/task-runner/SKILL.md`.
+- Only one task may hold a Git repository in write mode at a time. A write-mode launch is admitted against the target repository before the child is spawned, and what a run did to that repository is recorded in an append-only ledger under `.runner/`.
 - Task-specific findings and sources belong in the task directory.
 - A long-running child should publish substantive live progress in `progress.json`: a `schema_version: 1` object with a concrete `activity`, `updated_at`, and optionally `recent_outcome`. `completed`, `total`, and `unit` are published only together and only when the owner actually knows the bounds. Neither owners nor readers may infer a missing total, and startup bookkeeping is not an outcome.
 - A task root may contain `USER_PREFERENCES.md` beside `INDEX.md`, using `tasks/USER_PREFERENCES.example.md` as the format. Agents read it before choosing an unspecified output representation and update it only from explicit, reusable user instructions, citing the task the instruction came from. The current request and later continuations override it. Do not turn one-off task requirements into defaults, and do not infer preferences from prose.
@@ -81,6 +83,7 @@ Files the user explicitly requested are a separate, user-facing class of output.
   launch; dev-pipeline passes it to the core owner. New supervision records also
   bind liveness to the observer's PID namespace, so a nested observer cannot
   declare an invisible host process dead or replace it.
+- Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.
 - Use `skills/skill-maintainer/` when adding, restoring, or changing skills.

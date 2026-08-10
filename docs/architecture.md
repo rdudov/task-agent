@@ -102,6 +102,40 @@ Access level is expressed once through `--sandbox-mode` and mapped per runner, b
 
 The one absolute path the runner needs is the workspace root that full access reaches. It defaults to the parent of this checkout and is overridden with `TASK_AGENT_WORKSPACE_ROOT`.
 
+## The Public Task Engine
+
+This repository is the public owner of a task's identity, phases, observation,
+completion and actuality. Everything an outside consumer needs to know about a
+task is asked through one surface, `skills/task-runner/scripts/task_engine.py`,
+which returns JSON and composes the modules that already own each decision —
+`tasks_index.py` for metadata, `task_contract.py` for the effective contract,
+`task_completion.py` for whether a completion may be accepted, `task_phases.py`
+for phases, `write_admission.py` for Git write scopes, `task_runner.py` for
+supervision. A product layer, transport adapter or another installation talks to
+that surface instead of importing a helper that can be renamed underneath it.
+
+`dev-pipeline` remains the owner of roles, gates, assurance strategy, review
+identity and the neutral lifecycle events. It is asked what happened; this
+repository decides what that means for a task.
+
+**One goal, one number.** A user goal keeps a single task directory for its whole
+life. Review is a phase of that task and so is the rework a review asks for;
+neither is a separate task, under either execution profile. `phases.json` records
+the current phase and an append-only history, so
+`implementation → review → rework → review → completed` is visible in one place
+as the history of one number. `skills/task-runner/SKILL.md` owns the vocabulary
+and the mappings.
+
+**One writer per repository.** A write-mode child is admitted to a Git repository
+only when no other task holds it — live, or with a change its own gates have not
+closed. The record of what a run did to a repository is an append-only ledger, so
+a later run cannot erase an earlier obligation and an abandoned scope cannot
+become a repository-wide blocker.
+
+**Actuality is observed, not claimed.** How fresh a task is comes from the
+modification times of its artifacts, never from a timestamp a child wrote about
+itself.
+
 ## Workflow
 
 1. A non-trivial user request becomes a task artifact under `tasks/`.
