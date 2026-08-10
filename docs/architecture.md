@@ -127,10 +127,11 @@ as the history of one number. `skills/task-runner/SKILL.md` owns the vocabulary
 and the mappings.
 
 **One writer per repository.** A write-mode child is admitted to a Git repository
-only when no other task holds it — live, or with a change its own gates have not
-closed. The record of what a run did to a repository is an append-only ledger, so
-a later run cannot erase an earlier obligation and an abandoned scope cannot
-become a repository-wide blocker.
+through one repository-locked check-and-claim operation. Before the claim it
+durably settles measurable abandoned scopes; the state fingerprint covers HEAD,
+tracked worktree bytes, staged bytes, and non-ignored untracked content. The
+append-only ledger means a later run cannot erase an earlier obligation or
+reclassify an abandoned no-op after a successor changes the tree.
 
 **Actuality is observed, not claimed.** How fresh a task is comes from the
 modification times of its artifacts, never from a timestamp a child wrote about

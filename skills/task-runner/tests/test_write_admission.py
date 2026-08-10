@@ -10,10 +10,12 @@ of the code alone:
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -74,6 +76,37 @@ class WriteScopeTests(unittest.TestCase):
             repository = make_repository(root)
             task = make_task(root, "0001-writer")
             write_admission.open_write_scope(task, repository, "run-1")
+            self.assertFalse(write_admission.close_write_scope(task, "run-1")["changed"])
+
+    def test_new_untracked_source_is_part_of_the_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-writer")
+            write_admission.open_write_scope(task, repository, "run-1")
+            (repository / "new_source.py").write_text("answer = 42\n", encoding="utf-8")
+            self.assertTrue(write_admission.close_write_scope(task, "run-1")["changed"])
+
+    def test_staged_bytes_are_part_of_the_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-writer")
+            write_admission.open_write_scope(task, repository, "run-1")
+            (repository / "source.txt").write_text("staged\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            self.assertTrue(write_admission.close_write_scope(task, "run-1")["changed"])
+
+    def test_ignored_runtime_content_is_not_part_of_the_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            (repository / ".gitignore").write_text("runtime.log\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", ".gitignore"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "ignore runtime"], check=True)
+            task = make_task(root, "0001-writer")
+            write_admission.open_write_scope(task, repository, "run-1")
+            (repository / "runtime.log").write_text("noise\n", encoding="utf-8")
             self.assertFalse(write_admission.close_write_scope(task, "run-1")["changed"])
 
     def test_closing_a_scope_that_was_never_opened_invents_nothing(self) -> None:
@@ -150,6 +183,43 @@ class FalseBlockerTests(unittest.TestCase):
             )
             self.assertEqual(blockers, [])
 
+    def test_abandoned_no_op_is_durably_settled_before_later_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            abandoned = make_task(tasks_root, "0001-abandoned")
+            writer = make_task(tasks_root, "0002-writer", completed=True)
+            requesting = make_task(tasks_root, "0003-next")
+            write_admission.open_write_scope(abandoned, repository, "run-a")
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=writer,
+                repository=repository,
+                run_id="run-b",
+                is_live=lambda task: False,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(blockers, [])
+            settled = write_admission.read_ledger(abandoned)[-1]
+            self.assertEqual(settled["record"], "closed")
+            self.assertFalse(settled["changed"])
+
+            (repository / "source.txt").write_text("later writer\n", encoding="utf-8")
+            write_admission.close_write_scope(writer, "run-b")
+            self.assertFalse(write_admission.write_results(abandoned)[-1]["changed"])
+            self.assertEqual(
+                write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=requesting,
+                    is_live=lambda task: False,
+                ),
+                [],
+            )
+
     def test_a_dry_run_leaves_no_record_at_all(self) -> None:
         """A dry run never opens a scope, so it has nothing to overwrite."""
         with tempfile.TemporaryDirectory() as raw:
@@ -195,6 +265,45 @@ class FalseBlockerTests(unittest.TestCase):
 
 
 class ConcurrentWriteTests(unittest.TestCase):
+    def test_reused_pid_does_not_keep_an_abandoned_claim_alive(self) -> None:
+        self.assertFalse(
+            write_admission._claimant_is_alive(
+                {
+                    "claimant_pid": os.getpid(),
+                    "claimant_process_marker": "a-different-process-birth",
+                }
+            )
+        )
+
+    def test_two_contenders_cannot_both_claim_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            contenders = [
+                make_task(tasks_root, "0001-first"),
+                make_task(tasks_root, "0002-second"),
+            ]
+
+            def claim(index: int):
+                return write_admission.claim_write_scope(
+                    tasks_root=tasks_root,
+                    task_dir=contenders[index],
+                    repository=repository,
+                    run_id=f"run-{index}",
+                    is_live=lambda task: False,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(claim, range(2)))
+            self.assertEqual(sum(record is not None for record, _ in outcomes), 1)
+            refused = [blockers for record, blockers in outcomes if record is None]
+            self.assertEqual(
+                [item["reason"] for item in refused[0]],
+                ["live_overlapping_write"],
+            )
+
     def test_a_live_writer_blocks_another_task_in_the_same_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

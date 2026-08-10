@@ -83,6 +83,9 @@ Files the user explicitly requested are a separate, user-facing class of output.
   launch; dev-pipeline passes it to the core owner. New supervision records also
   bind liveness to the observer's PID namespace, so a nested observer cannot
   declare an invisible host process dead or replace it.
+- Git write admission is one common-directory-locked check-and-claim operation;
+  abandoned scopes are durably settled before a successor enters, and the
+  fingerprint includes staged and non-ignored untracked content.
 - Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.

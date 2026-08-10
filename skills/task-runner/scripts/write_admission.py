@@ -18,8 +18,9 @@ that independent review reproduced:
   repository for everyone.
 
 Here a read-only or dry run opens no scope and appends nothing, so it has
-nothing to overwrite. An abandoned scope is resolved by measuring the repository
-now, and where it cannot be resolved it blocks only the task that abandoned it.
+nothing to overwrite. Before a successor is admitted, a measurable abandoned
+scope is durably closed under the repository lock. Where it cannot be resolved,
+it blocks only the task that abandoned it.
 
 Whether an outstanding change has been reviewed is not decided here. This module
 reports the outstanding change; the completion owner decides whether the task's
@@ -29,10 +30,12 @@ satisfied. Pairing policy belongs to whichever installation defines it.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -45,6 +48,7 @@ from task_contract import (
 
 
 LEDGER_NAME = "write-admission.jsonl"
+REPOSITORY_LOCK_NAME = "task-agent-write-admission.lock"
 
 OPENED = "opened"
 CLOSED = "closed"
@@ -63,11 +67,12 @@ def ledger_path(task_dir: Path) -> Path:
 
 
 def git_write_state(repository: Path) -> dict[str, Any]:
-    """Tracked-byte identity of one repository right now.
+    """Publishable Git-visible identity of one repository right now.
 
     HEAD alone would miss uncommitted work and the dirty baseline alone would
-    miss a commit, so identity is both. Both come from the existing Git-state
-    owner rather than a second parser.
+    miss a commit. The index binds staged bytes, while non-ignored untracked
+    paths bind their path, type, executable bit and content digest. Ignored
+    host/runtime files are deliberately outside the publishable state.
     """
     identity = git_repository_identity(repository)
     root = Path(identity["worktree"])
@@ -75,17 +80,74 @@ def git_write_state(repository: Path) -> dict[str, Any]:
         ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
     ).strip()
     baseline = capture_preexisting_tracked_dirty_baseline(root)
+    index = subprocess.check_output(
+        ["git", "-C", str(root), "ls-files", "--stage", "-z", "--"]
+    )
+    untracked = subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(root),
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+        ]
+    )
+    untracked_entries = [
+        _worktree_entry(root, raw.decode("utf-8", errors="surrogateescape"))
+        for raw in sorted(set(part for part in untracked.split(b"\0") if part))
+    ]
     return {
         "repository": str(root),
         "common_dir": identity["common_dir"],
         "head": head,
         "tracked_content_digest": baseline["digest"],
+        "index_digest": "sha256:" + hashlib.sha256(index).hexdigest(),
+        "untracked_entries_digest": state_digest({"entries": untracked_entries}),
+    }
+
+
+def _worktree_entry(repository: Path, relative: str) -> dict[str, Any]:
+    path = repository / relative
+    if path.is_symlink():
+        content = os.readlink(path).encode("utf-8", errors="surrogateescape")
+        state = "symlink"
+        executable = False
+    elif path.is_file():
+        content = path.read_bytes()
+        state = "present"
+        executable = bool(path.stat().st_mode & 0o111)
+    else:
+        content = b""
+        state = "missing"
+        executable = False
+    return {
+        "path": relative,
+        "state": state,
+        "digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+        "executable": executable,
     }
 
 
 def state_digest(state: dict[str, Any]) -> str:
     canonical = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+@contextmanager
+def repository_lock(repository: Path):
+    """Serialize claims and closes for one Git common directory."""
+    identity = git_repository_identity(repository)
+    path = Path(identity["common_dir"]) / REPOSITORY_LOCK_NAME
+    handle = path.open("a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
 
 
 def _append(task_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
@@ -122,7 +184,13 @@ def read_ledger(task_dir: Path) -> list[dict[str, Any]]:
     return records
 
 
-def open_write_scope(task_dir: Path, repository: Path, run_id: str) -> dict[str, Any]:
+def open_write_scope(
+    task_dir: Path,
+    repository: Path,
+    run_id: str,
+    *,
+    claimant_pid: int | None = None,
+) -> dict[str, Any]:
     """Record that this task is about to write `repository` under `run_id`."""
     return _append(
         task_dir,
@@ -132,6 +200,7 @@ def open_write_scope(task_dir: Path, repository: Path, run_id: str) -> dict[str,
             "run_id": run_id,
             "opened_at": utc_now(),
             "before": git_write_state(repository),
+            **_claimant_fields(claimant_pid),
         },
     )
 
@@ -147,28 +216,37 @@ def close_write_scope(task_dir: Path, run_id: str) -> dict[str, Any] | None:
     if scope is None:
         return None
     before = scope["before"]
-    after = git_write_state(Path(before["repository"]))
-    if before.get("common_dir") != after.get("common_dir"):
-        raise ValueError("write scope repository identity changed during the run")
-    return _append(
-        task_dir,
-        {
-            "schema_version": 1,
-            "record": CLOSED,
-            "run_id": run_id,
-            "closed_at": utc_now(),
-            "changed": _changed(before, after),
-            "before": before,
-            "after": after,
-        },
-    )
+    repository = Path(before["repository"])
+    with repository_lock(repository):
+        scope = _open_scope_for_run(task_dir, run_id)
+        if scope is None:
+            return None
+        before = scope["before"]
+        after = git_write_state(repository)
+        if before.get("common_dir") != after.get("common_dir"):
+            raise ValueError("write scope repository identity changed during the run")
+        return _append(
+            task_dir,
+            {
+                "schema_version": 1,
+                "record": CLOSED,
+                "run_id": run_id,
+                "closed_at": utc_now(),
+                "changed": _changed(before, after),
+                "before": before,
+                "after": after,
+            },
+        )
 
 
 def _changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
-    return (
-        before.get("head") != after.get("head")
-        or before.get("tracked_content_digest") != after.get("tracked_content_digest")
+    compared = (
+        "head",
+        "tracked_content_digest",
+        "index_digest",
+        "untracked_entries_digest",
     )
+    return any(before.get(key) != after.get(key) for key in compared if key in before)
 
 
 def _open_scope_for_run(task_dir: Path, run_id: str) -> dict[str, Any] | None:
@@ -227,12 +305,72 @@ def resolve_abandoned_scope(scope: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_results(task_dir: Path) -> list[dict[str, Any]]:
-    """Every determinate result this task produced, abandoned scopes included."""
-    results = [record for record in read_ledger(task_dir) if record.get("record") == CLOSED]
-    for scope in unclosed_scopes(task_dir):
-        resolution = resolve_abandoned_scope(scope)
-        if resolution.get("resolved"):
-            results.append(
+    """Every durable determinate result this task produced."""
+    return [record for record in read_ledger(task_dir) if record.get("record") == CLOSED]
+
+
+def _claimant_is_alive(scope: dict[str, Any]) -> bool:
+    pid = scope.get("claimant_pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    recorded = scope.get("claimant_process_marker")
+    return recorded is None or recorded == _process_marker(pid)
+
+
+def _claimant_fields(pid: int | None) -> dict[str, Any]:
+    if pid is None:
+        return {}
+    marker = _process_marker(pid)
+    return {
+        "claimant_pid": pid,
+        **({"claimant_process_marker": marker} if marker is not None else {}),
+    }
+
+
+def _process_marker(pid: int) -> str | None:
+    """Best available process-birth marker; pid-only remains the portable floor."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = raw.rsplit(")", 1)[1].split()
+        return f"proc-start:{fields[19]}"
+    except (OSError, UnicodeError, IndexError):
+        pass
+    try:
+        started = subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return f"ps-start:{started}" if started else None
+
+
+def settle_abandoned_scopes(
+    *,
+    tasks_root: Path,
+    common_dir: str,
+    is_live: Callable[[Path], bool],
+) -> None:
+    """Durably close measurable abandoned scopes before a successor claims."""
+    for task in sorted(p for p in tasks_root.iterdir() if p.is_dir()):
+        task = task.resolve()
+        for scope in unclosed_scopes(task):
+            if scope["before"].get("common_dir") != common_dir:
+                continue
+            if is_live(task) or _claimant_is_alive(scope):
+                continue
+            resolution = resolve_abandoned_scope(scope)
+            if not resolution.get("resolved"):
+                continue
+            _append(
+                task,
                 {
                     "schema_version": 1,
                     "record": CLOSED,
@@ -242,9 +380,43 @@ def write_results(task_dir: Path) -> list[dict[str, Any]]:
                     "before": resolution["before"],
                     "after": resolution["after"],
                     "resolution": "measured_after_abandonment",
-                }
+                },
             )
-    return results
+
+
+def claim_write_scope(
+    *,
+    tasks_root: Path,
+    task_dir: Path,
+    repository: Path,
+    run_id: str,
+    is_live: Callable[[Path], bool],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Atomically settle, recheck and claim one repository write scope."""
+    with repository_lock(repository):
+        common_dir = git_write_state(repository)["common_dir"]
+        settle_abandoned_scopes(
+            tasks_root=tasks_root,
+            common_dir=common_dir,
+            is_live=is_live,
+        )
+        blockers = admission_blockers(
+            tasks_root=tasks_root,
+            repository=repository,
+            requesting_task=task_dir,
+            is_live=is_live,
+        )
+        if blockers:
+            return None, blockers
+        return (
+            open_write_scope(
+                task_dir,
+                repository,
+                run_id,
+                claimant_pid=os.getpid(),
+            ),
+            [],
+        )
 
 
 def outstanding_write_results(task_dir: Path) -> list[dict[str, Any]]:
@@ -282,7 +454,11 @@ def admission_blockers(
         in_repository = [
             scope for scope in scopes if scope["before"].get("common_dir") == common_dir
         ]
-        if in_repository and is_live(task) and task != requesting:
+        if (
+            in_repository
+            and any(is_live(task) or _claimant_is_alive(scope) for scope in in_repository)
+            and task != requesting
+        ):
             blockers.append(
                 {
                     "task": str(task),
@@ -307,6 +483,25 @@ def admission_blockers(
             # repository: repairing that change is what the rework phase is,
             # and it happens under this same number.
             continue
+        for scope in in_repository:
+            if is_live(task) or _claimant_is_alive(scope):
+                continue
+            resolution = resolve_abandoned_scope(scope)
+            if not resolution.get("resolved") or not resolution.get("changed"):
+                continue
+            ready, _reason = completion_ready(task)
+            if not ready:
+                blockers.append(
+                    {
+                        "task": str(task),
+                        "reason": UNREVIEWED_OVERLAPPING_WRITE,
+                        "detail": (
+                            "this abandoned scope changed the repository and has not "
+                            "closed its own gates"
+                        ),
+                        "write_result_digest": state_digest(resolution["after"]),
+                    }
+                )
         for result in outstanding_write_results(task):
             if result["before"].get("common_dir") != common_dir:
                 continue

@@ -267,9 +267,10 @@ beats inventing one.
 
 Two write-mode runs in one repository do not produce two reviewable candidates;
 they produce one working tree nobody can attribute. Before a write-mode child is
-spawned, `write_admission.py` decides whether the repository may be written, and
-records what the run actually did in an append-only ledger at
-`.runner/write-admission.jsonl`.
+spawned, `write_admission.py` takes a lock in the Git common directory, durably
+settles measurable abandoned scopes, rechecks every blocker, and appends the
+opening claim before releasing that same lock. It records what the run actually
+did in an append-only ledger at `.runner/write-admission.jsonl`.
 
 A launch is refused when:
 
@@ -289,9 +290,12 @@ that independent review reproduced. A read-only or dry run wrote its own
 review that earlier change vanished. And a run that opened a scope and never
 closed it became an indeterminate result that blocked every task in the
 repository. Here a dry or read-only run opens no scope and appends nothing, so
-it has nothing to overwrite; an abandoned scope is resolved by measuring the
-repository now; and one that cannot be measured constrains only the task that
-abandoned it.
+it has nothing to overwrite; an abandoned scope is measured and durably closed
+under the repository lock before a successor is admitted; and one that cannot
+be measured constrains only the task that abandoned it. Repository state binds
+HEAD, tracked worktree bytes, staged bytes, and non-ignored untracked
+path/type/content identity. Ignored runtime files are outside that publishable
+state.
 
 A scope measures the repository, not the child. It records the tracked state
 before the run and after it, so anything that changed the repository in between

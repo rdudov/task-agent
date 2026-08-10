@@ -1329,21 +1329,22 @@ def watcher_supervision_boundary(task_dir: Path, launch_token: str) -> tuple[lis
     }
 
 
-def require_write_admission(task_dir: Path, repository: Path) -> None:
-    """Refuse a write-mode launch that would collide in a Git repository.
+def claim_write_admission(task_dir: Path, repository: Path, run_id: str) -> dict:
+    """Atomically claim a write-mode launch in a Git repository.
 
     Liveness is asked of the same supervision this project already uses, so a
     host that can only offer PID-only evidence still blocks a concurrent write
     rather than admitting one.
     """
-    blockers = write_admission.admission_blockers(
+    claim, blockers = write_admission.claim_write_scope(
         tasks_root=task_dir.parent,
+        task_dir=task_dir,
         repository=repository,
-        requesting_task=task_dir,
+        run_id=run_id,
         is_live=lambda candidate: bool(live_run_processes(candidate)),
     )
-    if not blockers:
-        return
+    if not blockers and claim is not None:
+        return claim
     rendered = "; ".join(
         f"{Path(item['task']).name}: {item['reason']} ({item['detail']})"
         for item in blockers
@@ -1736,8 +1737,6 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             if access_grant.get("grants_write") and access_directories
             else None
         )
-        if write_target is not None:
-            require_write_admission(task_dir, write_target)
     except (Exception, SystemExit) as exc:
         report_launch_failure(task_dir, args, exc if isinstance(exc, Exception) else RuntimeError(str(exc)))
         raise SystemExit(1)
@@ -1784,10 +1783,14 @@ def cmd_run_child(args: argparse.Namespace) -> None:
     if write_target is not None:
         write_scope_run_id = launch_token or uuid.uuid4().hex
         try:
-            write_admission.open_write_scope(task_dir, write_target, write_scope_run_id)
+            claim_write_admission(task_dir, write_target, write_scope_run_id)
             update_runner_meta(task_dir, {"write_scope_run_id": write_scope_run_id})
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            report_launch_failure(task_dir, args, exc)
+        except (Exception, SystemExit) as exc:
+            report_launch_failure(
+                task_dir,
+                args,
+                exc if isinstance(exc, Exception) else RuntimeError(str(exc)),
+            )
             raise SystemExit(1)
 
     try:
