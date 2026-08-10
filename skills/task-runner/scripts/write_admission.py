@@ -18,9 +18,11 @@ that independent review reproduced:
   repository for everyone.
 
 Here a read-only or dry run opens no scope and appends nothing, so it has
-nothing to overwrite. Before a successor is admitted, a measurable abandoned
-scope is durably closed under the repository lock. Where it cannot be resolved,
-it blocks only the task that abandoned it.
+nothing to overwrite. Before a successor is admitted, an abandoned scope is
+durably closed under the repository lock only when the repository still equals
+its opening fingerprint, which proves that scope was a no-op. Unknown liveness
+or a divergent repository is ambiguous, not evidence to freeze as a verdict;
+such a scope blocks only the task that abandoned it.
 
 Whether an outstanding change has been reviewed is not decided here. This module
 reports the outstanding change; the completion owner decides whether the task's
@@ -212,13 +214,13 @@ def close_write_scope(task_dir: Path, run_id: str) -> dict[str, Any] | None:
     was never opened would invent a result. A repository whose identity changed
     under the run is a refusal for the same reason.
     """
-    scope = _open_scope_for_run(task_dir, run_id)
+    scope = _open_scope_for_close(task_dir, run_id)
     if scope is None:
         return None
     before = scope["before"]
     repository = Path(before["repository"])
     with repository_lock(repository):
-        scope = _open_scope_for_run(task_dir, run_id)
+        scope = _open_scope_for_close(task_dir, run_id)
         if scope is None:
             return None
         before = scope["before"]
@@ -260,6 +262,25 @@ def _open_scope_for_run(task_dir: Path, run_id: str) -> dict[str, Any] | None:
     return None
 
 
+def _open_scope_for_close(task_dir: Path, run_id: str) -> dict[str, Any] | None:
+    """Find the real opening even after an observer's synthetic settlement.
+
+    A real close is terminal. A `measured_after_abandonment` close is another
+    observer's inference; if the original writer later closes honestly, that
+    arrival proves the inference was premature and its result must be appended.
+    """
+    for record in reversed(read_ledger(task_dir)):
+        if record.get("run_id") != run_id:
+            continue
+        if record.get("record") == CLOSED:
+            if record.get("resolution") == "measured_after_abandonment":
+                continue
+            return None
+        if record.get("record") == OPENED and isinstance(record.get("before"), dict):
+            return record
+    return None
+
+
 def unclosed_scopes(task_dir: Path) -> list[dict[str, Any]]:
     """Scopes this task opened and never closed, newest last."""
     closed = {
@@ -277,12 +298,12 @@ def unclosed_scopes(task_dir: Path) -> list[dict[str, Any]]:
 
 
 def resolve_abandoned_scope(scope: dict[str, Any]) -> dict[str, Any]:
-    """Decide what an abandoned scope did by measuring the repository now.
+    """Prove an abandoned scope was a no-op, or leave attribution unresolved.
 
-    A run that died without closing its scope still either changed the
-    repository or did not, and the repository can still be asked. Only where it
-    cannot be asked at all — the worktree is gone, or Git refuses — does the
-    scope stay unresolved, and then it constrains its own task and no other.
+    The current tree can prove a no-op only while it still equals the opening
+    fingerprint. Once it differs, this module cannot tell whether the abandoned
+    run or an unrelated writer caused the difference, so freezing either answer
+    in the durable ledger would manufacture attribution.
     """
     before = scope["before"]
     try:
@@ -295,9 +316,17 @@ def resolve_abandoned_scope(scope: dict[str, Any]) -> dict[str, Any]:
             "reason": "repository identity changed since the scope was opened",
             "before": before,
         }
+    if _changed(before, after):
+        return {
+            "resolved": False,
+            "ambiguous": True,
+            "reason": "repository diverged after the scope opened; change attribution is unknown",
+            "before": before,
+            "after": after,
+        }
     return {
         "resolved": True,
-        "changed": _changed(before, after),
+        "changed": False,
         "before": before,
         "after": after,
         "measured_at": utc_now(),
@@ -309,10 +338,15 @@ def write_results(task_dir: Path) -> list[dict[str, Any]]:
     return [record for record in read_ledger(task_dir) if record.get("record") == CLOSED]
 
 
-def _claimant_is_alive(scope: dict[str, Any]) -> bool:
+def _claimant_liveness(scope: dict[str, Any]) -> bool | None:
+    """True/False when observable; None when a negative is not evidence."""
     pid = scope.get("claimant_pid")
     if not isinstance(pid, int) or pid <= 0:
         return False
+    recorded_namespace = scope.get("claimant_pid_namespace")
+    current_namespace = _pid_namespace_identity()
+    if recorded_namespace and recorded_namespace != current_namespace:
+        return None
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -320,7 +354,12 @@ def _claimant_is_alive(scope: dict[str, Any]) -> bool:
     except PermissionError:
         return True
     recorded = scope.get("claimant_process_marker")
-    return recorded is None or recorded == _process_marker(pid)
+    if recorded is None:
+        return True
+    current = _process_marker(pid)
+    if current is None:
+        return None if _process_marker(os.getpid()) is not None else True
+    return recorded == current
 
 
 def _claimant_fields(pid: int | None) -> dict[str, Any]:
@@ -329,8 +368,20 @@ def _claimant_fields(pid: int | None) -> dict[str, Any]:
     marker = _process_marker(pid)
     return {
         "claimant_pid": pid,
+        **(
+            {"claimant_pid_namespace": namespace}
+            if (namespace := _pid_namespace_identity()) is not None
+            else {}
+        ),
         **({"claimant_process_marker": marker} if marker is not None else {}),
     }
+
+
+def _pid_namespace_identity() -> str | None:
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
 
 
 def _process_marker(pid: int) -> str | None:
@@ -356,15 +407,15 @@ def settle_abandoned_scopes(
     *,
     tasks_root: Path,
     common_dir: str,
-    is_live: Callable[[Path], bool],
+    is_live: Callable[[Path], bool | None],
 ) -> None:
-    """Durably close measurable abandoned scopes before a successor claims."""
+    """Durably close only provable abandoned no-ops before a successor claims."""
     for task in sorted(p for p in tasks_root.iterdir() if p.is_dir()):
         task = task.resolve()
         for scope in unclosed_scopes(task):
             if scope["before"].get("common_dir") != common_dir:
                 continue
-            if is_live(task) or _claimant_is_alive(scope):
+            if _scope_liveness(task, scope, is_live) is not False:
                 continue
             resolution = resolve_abandoned_scope(scope)
             if not resolution.get("resolved"):
@@ -390,7 +441,7 @@ def claim_write_scope(
     task_dir: Path,
     repository: Path,
     run_id: str,
-    is_live: Callable[[Path], bool],
+    is_live: Callable[[Path], bool | None],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """Atomically settle, recheck and claim one repository write scope."""
     with repository_lock(repository):
@@ -438,7 +489,7 @@ def admission_blockers(
     tasks_root: Path,
     repository: Path,
     requesting_task: Path,
-    is_live: Callable[[Path], bool],
+    is_live: Callable[[Path], bool | None],
 ) -> list[dict[str, Any]]:
     """Why this task may not open a write scope in this repository right now.
 
@@ -456,7 +507,7 @@ def admission_blockers(
         ]
         if (
             in_repository
-            and any(is_live(task) or _claimant_is_alive(scope) for scope in in_repository)
+            and any(_scope_liveness(task, scope, is_live) is True for scope in in_repository)
             and task != requesting
         ):
             blockers.append(
@@ -484,7 +535,7 @@ def admission_blockers(
             # and it happens under this same number.
             continue
         for scope in in_repository:
-            if is_live(task) or _claimant_is_alive(scope):
+            if _scope_liveness(task, scope, is_live) is not False:
                 continue
             resolution = resolve_abandoned_scope(scope)
             if not resolution.get("resolved") or not resolution.get("changed"):
@@ -514,3 +565,19 @@ def admission_blockers(
                 }
             )
     return blockers
+
+
+def _scope_liveness(
+    task: Path,
+    scope: dict[str, Any],
+    is_live: Callable[[Path], bool | None],
+) -> bool | None:
+    task_liveness = is_live(task)
+    if task_liveness is True:
+        return True
+    claimant_liveness = _claimant_liveness(scope)
+    if claimant_liveness is True:
+        return True
+    if task_liveness is None or claimant_liveness is None:
+        return None
+    return False

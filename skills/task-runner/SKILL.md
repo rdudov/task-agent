@@ -268,7 +268,7 @@ beats inventing one.
 Two write-mode runs in one repository do not produce two reviewable candidates;
 they produce one working tree nobody can attribute. Before a write-mode child is
 spawned, `write_admission.py` takes a lock in the Git common directory, durably
-settles measurable abandoned scopes, rechecks every blocker, and appends the
+settles provable abandoned no-ops, rechecks every blocker, and appends the
 opening claim before releasing that same lock. It records what the run actually
 did in an append-only ledger at `.runner/write-admission.jsonl`.
 
@@ -278,8 +278,8 @@ A launch is refused when:
   (`live_overlapping_write`);
 - another task changed the repository and its own completion gates have not
   closed (`unreviewed_overlapping_write`);
-- this task abandoned a scope in this repository that cannot be measured at all
-  (`unresolved_own_write_scope`).
+- this task abandoned a scope in this repository whose liveness or change
+  attribution cannot be established (`unresolved_own_write_scope`).
 
 A task's *own* unreviewed change never locks it out: repairing that change is
 what the rework phase is, and it happens under the same number.
@@ -290,9 +290,13 @@ that independent review reproduced. A read-only or dry run wrote its own
 review that earlier change vanished. And a run that opened a scope and never
 closed it became an indeterminate result that blocked every task in the
 repository. Here a dry or read-only run opens no scope and appends nothing, so
-it has nothing to overwrite; an abandoned scope is measured and durably closed
-under the repository lock before a successor is admitted; and one that cannot
-be measured constrains only the task that abandoned it. Repository state binds
+it has nothing to overwrite. An abandoned scope is durably closed as a no-op
+only while the repository still matches its opening fingerprint. A different
+PID namespace, unresolvable process identity, missing repository, or divergent
+fingerprint is ambiguous rather than evidence of death or authorship; it
+constrains only the task that abandoned it. If the original writer later
+delivers its real close, that record supersedes an observer's earlier synthetic
+settlement. Repository state binds
 HEAD, tracked worktree bytes, staged bytes, and non-ignored untracked
 path/type/content identity. Ignored runtime files are outside that publishable
 state.

@@ -220,6 +220,81 @@ class FalseBlockerTests(unittest.TestCase):
                 [],
             )
 
+    def test_real_close_after_synthetic_settlement_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            original = make_task(tasks_root, "0001-original")
+            successor = make_task(tasks_root, "0002-successor")
+            write_admission.open_write_scope(original, repository, "run-a")
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=successor,
+                repository=repository,
+                run_id="run-b",
+                is_live=lambda task: False,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(blockers, [])
+            self.assertEqual(
+                write_admission.read_ledger(original)[-1]["resolution"],
+                "measured_after_abandonment",
+            )
+
+            (repository / "new_feature.py").write_text("value = 1\n", encoding="utf-8")
+            real_close = write_admission.close_write_scope(original, "run-a")
+            self.assertIsNotNone(real_close)
+            self.assertTrue(real_close["changed"])
+            self.assertNotIn("resolution", real_close)
+
+    def test_divergent_abandoned_scope_is_not_frozen_as_somebody_elses_change(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            abandoned = make_task(tasks_root, "0001-abandoned")
+            successor = make_task(tasks_root, "0002-successor", completed=True)
+            requesting = make_task(tasks_root, "0003-next")
+            write_admission.open_write_scope(abandoned, repository, "run-a")
+            (repository / "source.txt").write_text("unrelated edit\n", encoding="utf-8")
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=successor,
+                repository=repository,
+                run_id="run-b",
+                is_live=lambda task: False,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(blockers, [])
+            self.assertEqual(
+                [record["record"] for record in write_admission.read_ledger(abandoned)],
+                ["opened"],
+            )
+
+            (repository / "source.txt").write_text("first\n", encoding="utf-8")
+            write_admission.close_write_scope(successor, "run-b")
+            self.assertEqual(
+                write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=requesting,
+                    is_live=lambda task: False,
+                ),
+                [],
+            )
+            own = write_admission.admission_blockers(
+                tasks_root=tasks_root,
+                repository=repository,
+                requesting_task=abandoned,
+                is_live=lambda task: False,
+            )
+            self.assertEqual([item["reason"] for item in own], [])
+
     def test_a_dry_run_leaves_no_record_at_all(self) -> None:
         """A dry run never opens a scope, so it has nothing to overwrite."""
         with tempfile.TemporaryDirectory() as raw:
@@ -267,13 +342,46 @@ class FalseBlockerTests(unittest.TestCase):
 class ConcurrentWriteTests(unittest.TestCase):
     def test_reused_pid_does_not_keep_an_abandoned_claim_alive(self) -> None:
         self.assertFalse(
-            write_admission._claimant_is_alive(
+            write_admission._claimant_liveness(
                 {
                     "claimant_pid": os.getpid(),
                     "claimant_process_marker": "a-different-process-birth",
                 }
             )
         )
+
+    def test_foreign_pid_namespace_is_unknown_and_is_not_settled(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = make_task(tasks_root, "0001-writer")
+            successor = make_task(tasks_root, "0002-successor")
+            write_admission.open_write_scope(
+                writer, repository, "run-a", claimant_pid=os.getpid()
+            )
+            records = write_admission.read_ledger(writer)
+            records[0]["claimant_pid_namespace"] = "pid:[foreign]"
+            write_admission.ledger_path(writer).write_text(
+                json.dumps(records[0]) + "\n", encoding="utf-8"
+            )
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=successor,
+                repository=repository,
+                run_id="run-b",
+                is_live=lambda task: None if task == writer.resolve() else False,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(blockers, [])
+            self.assertEqual(len(write_admission.read_ledger(writer)), 1)
+
+            (repository / "new_feature.py").write_text("value = 1\n", encoding="utf-8")
+            close = write_admission.close_write_scope(writer, "run-a")
+            self.assertIsNotNone(close)
+            self.assertTrue(close["changed"])
 
     def test_two_contenders_cannot_both_claim_the_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -1336,12 +1336,22 @@ def claim_write_admission(task_dir: Path, repository: Path, run_id: str) -> dict
     host that can only offer PID-only evidence still blocks a concurrent write
     rather than admitting one.
     """
+    def admission_liveness(candidate: Path) -> bool | None:
+        meta = read_json(runner_meta_path(candidate))
+        if (
+            not runner_pid_namespace_visible(meta)
+            and not meta.get("finished_at")
+            and any(isinstance(meta.get(key), int) for key in ("pid", "watcher_pid"))
+        ):
+            return None
+        return bool(live_run_processes(candidate))
+
     claim, blockers = write_admission.claim_write_scope(
         tasks_root=task_dir.parent,
         task_dir=task_dir,
         repository=repository,
         run_id=run_id,
-        is_live=lambda candidate: bool(live_run_processes(candidate)),
+        is_live=admission_liveness,
     )
     if not blockers and claim is not None:
         return claim

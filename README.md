@@ -106,7 +106,10 @@ Only one task may hold a repository in write mode at a time. A write-mode launch
 uses one Git-repository-locked check-and-claim operation, and is refused while
 another task is writing there or has changed it without closing its own gates.
 The claim binds staged and non-ignored untracked content as well as tracked
-worktree state; abandoned scopes are durably settled before a successor enters.
+worktree state. An abandoned scope is durably settled only when the unchanged
+fingerprint proves it was a no-op; unknown liveness or attribution stays
+unresolved on its owning task instead of becoming another task's permanent
+verdict.
 
 `start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity and PID namespace rather than by pid alone. An observer in another namespace reports liveness as unknown and cannot replace, stop, or reattach the host run. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
 
