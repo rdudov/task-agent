@@ -127,13 +127,14 @@ as the history of one number. `skills/task-runner/SKILL.md` owns the vocabulary
 and the mappings.
 
 **One writer per repository.** A write-mode child is admitted to a Git repository
-through one repository-locked check-and-claim operation. Before the claim it
-durably settles only an abandoned scope whose unchanged fingerprint proves a
-no-op; unknown PID visibility or divergent repository state remains unresolved
-on the owning task. The state fingerprint covers HEAD, tracked worktree bytes,
-staged bytes, and non-ignored untracked content. The append-only ledger means a
-later run cannot erase an earlier obligation, and a late authoritative close
-supersedes an observer's earlier synthetic settlement.
+through one repository-locked check-and-claim operation. Unknown PID visibility
+refuses a foreign writer. A dead abandoned scope is durably settled when its
+unchanged fingerprint proves a no-op; divergent work remains a recomputed
+obligation for other tasks, but its owner can adopt the scope and enter rework
+under the same number. The state fingerprint covers HEAD, tracked worktree
+bytes, staged bytes, and non-ignored untracked content. The append-only ledger
+means a later run cannot erase an earlier obligation, and a late authoritative
+close supersedes an observer's earlier synthetic settlement.
 
 **Actuality is observed, not claimed.** How fresh a task is comes from the
 modification times of its artifacts, never from a timestamp a child wrote about

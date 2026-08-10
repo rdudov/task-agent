@@ -250,7 +250,7 @@ class FalseBlockerTests(unittest.TestCase):
             self.assertTrue(real_close["changed"])
             self.assertNotIn("resolution", real_close)
 
-    def test_divergent_abandoned_scope_is_not_frozen_as_somebody_elses_change(self) -> None:
+    def test_divergent_abandoned_scope_blocks_others_until_reverted(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository = make_repository(root)
@@ -269,15 +269,17 @@ class FalseBlockerTests(unittest.TestCase):
                 run_id="run-b",
                 is_live=lambda task: False,
             )
-            self.assertIsNotNone(claim)
-            self.assertEqual(blockers, [])
+            self.assertIsNone(claim)
+            self.assertEqual(
+                [item["reason"] for item in blockers],
+                ["unreviewed_overlapping_write"],
+            )
             self.assertEqual(
                 [record["record"] for record in write_admission.read_ledger(abandoned)],
                 ["opened"],
             )
 
             (repository / "source.txt").write_text("first\n", encoding="utf-8")
-            write_admission.close_write_scope(successor, "run-b")
             self.assertEqual(
                 write_admission.admission_blockers(
                     tasks_root=tasks_root,
@@ -294,6 +296,75 @@ class FalseBlockerTests(unittest.TestCase):
                 is_live=lambda task: False,
             )
             self.assertEqual([item["reason"] for item in own], [])
+
+    def test_abandoned_change_clears_for_others_when_owner_gates_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            owner = make_task(tasks_root, "0001-owner", completed=True)
+            other = make_task(tasks_root, "0002-other")
+            write_admission.open_write_scope(owner, repository, "run-a")
+            (repository / "new_feature.py").write_text("value = 1\n", encoding="utf-8")
+            self.assertEqual(
+                write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=other,
+                    is_live=lambda task: False,
+                ),
+                [],
+            )
+
+    def test_owner_adopts_abandoned_change_and_enters_rework(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            owner = make_task(tasks_root, "0001-owner")
+            write_admission.open_write_scope(owner, repository, "run-a")
+            (repository / "new_feature.py").write_text("value = 1\n", encoding="utf-8")
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=owner,
+                repository=repository,
+                run_id="run-rework",
+                is_live=lambda task: False,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(blockers, [])
+            adopted = write_admission.read_ledger(owner)[-2]
+            self.assertEqual(adopted["resolution"], "adopted_by_owner_rework")
+            self.assertTrue(adopted["changed"])
+
+    def test_owner_cannot_rework_over_a_still_live_older_claimant(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            owner = make_task(tasks_root, "0001-owner")
+            write_admission.open_write_scope(
+                owner, repository, "run-a", claimant_pid=os.getpid()
+            )
+            (repository / "new_feature.py").write_text("value = 1\n", encoding="utf-8")
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=owner,
+                repository=repository,
+                run_id="run-rework",
+                is_live=lambda task: True,
+            )
+            self.assertIsNone(claim)
+            self.assertEqual(
+                [item["reason"] for item in blockers],
+                ["unresolved_own_write_scope"],
+            )
+            self.assertEqual(len(write_admission.read_ledger(owner)), 1)
 
     def test_a_dry_run_leaves_no_record_at_all(self) -> None:
         """A dry run never opens a scope, so it has nothing to overwrite."""
@@ -374,8 +445,11 @@ class ConcurrentWriteTests(unittest.TestCase):
                 run_id="run-b",
                 is_live=lambda task: None if task == writer.resolve() else False,
             )
-            self.assertIsNotNone(claim)
-            self.assertEqual(blockers, [])
+            self.assertIsNone(claim)
+            self.assertEqual(
+                [item["reason"] for item in blockers],
+                ["live_overlapping_write"],
+            )
             self.assertEqual(len(write_admission.read_ledger(writer)), 1)
 
             (repository / "new_feature.py").write_text("value = 1\n", encoding="utf-8")

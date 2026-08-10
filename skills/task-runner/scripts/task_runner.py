@@ -1329,6 +1329,18 @@ def watcher_supervision_boundary(task_dir: Path, launch_token: str) -> tuple[lis
     }
 
 
+def admission_liveness(candidate: Path) -> bool | None:
+    """Tri-state supervision answer shared by claim and public observation."""
+    meta = read_json(runner_meta_path(candidate))
+    if (
+        not runner_pid_namespace_visible(meta)
+        and not meta.get("finished_at")
+        and any(isinstance(meta.get(key), int) for key in ("pid", "watcher_pid"))
+    ):
+        return None
+    return bool(live_run_processes(candidate))
+
+
 def claim_write_admission(task_dir: Path, repository: Path, run_id: str) -> dict:
     """Atomically claim a write-mode launch in a Git repository.
 
@@ -1336,15 +1348,6 @@ def claim_write_admission(task_dir: Path, repository: Path, run_id: str) -> dict
     host that can only offer PID-only evidence still blocks a concurrent write
     rather than admitting one.
     """
-    def admission_liveness(candidate: Path) -> bool | None:
-        meta = read_json(runner_meta_path(candidate))
-        if (
-            not runner_pid_namespace_visible(meta)
-            and not meta.get("finished_at")
-            and any(isinstance(meta.get(key), int) for key in ("pid", "watcher_pid"))
-        ):
-            return None
-        return bool(live_run_processes(candidate))
 
     claim, blockers = write_admission.claim_write_scope(
         tasks_root=task_dir.parent,

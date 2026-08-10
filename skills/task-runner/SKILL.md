@@ -274,12 +274,12 @@ did in an append-only ledger at `.runner/write-admission.jsonl`.
 
 A launch is refused when:
 
-- another task holds an open scope in the same repository and is live
-  (`live_overlapping_write`);
+- another task holds an open scope in the same repository and is live or cannot
+  be proven absent (`live_overlapping_write`);
 - another task changed the repository and its own completion gates have not
   closed (`unreviewed_overlapping_write`);
-- this task abandoned a scope in this repository whose liveness or change
-  attribution cannot be established (`unresolved_own_write_scope`).
+- this task has an older scope whose claimant may still be live or whose
+  repository can no longer be measured (`unresolved_own_write_scope`).
 
 A task's *own* unreviewed change never locks it out: repairing that change is
 what the rework phase is, and it happens under the same number.
@@ -291,12 +291,14 @@ review that earlier change vanished. And a run that opened a scope and never
 closed it became an indeterminate result that blocked every task in the
 repository. Here a dry or read-only run opens no scope and appends nothing, so
 it has nothing to overwrite. An abandoned scope is durably closed as a no-op
-only while the repository still matches its opening fingerprint. A different
-PID namespace, unresolvable process identity, missing repository, or divergent
-fingerprint is ambiguous rather than evidence of death or authorship; it
-constrains only the task that abandoned it. If the original writer later
-delivers its real close, that record supersedes an observer's earlier synthetic
-settlement. Repository state binds
+only while the repository still matches its opening fingerprint. A foreign
+claimant with unknown liveness refuses another writer without being settled as
+dead. A dead scope with a divergent fingerprint is a recomputed obligation for
+other tasks, cleared by a revert or the owner's completed gates; the owner may
+adopt that state under the same repository lock and continue rework under its
+existing number. An unmeasurable repository still refuses the owner. If the
+original writer later delivers its real close, that record supersedes an
+observer's earlier synthetic settlement. Repository state binds
 HEAD, tracked worktree bytes, staged bytes, and non-ignored untracked
 path/type/content identity. Ignored runtime files are outside that publishable
 state.

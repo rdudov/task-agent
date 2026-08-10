@@ -21,8 +21,11 @@ Here a read-only or dry run opens no scope and appends nothing, so it has
 nothing to overwrite. Before a successor is admitted, an abandoned scope is
 durably closed under the repository lock only when the repository still equals
 its opening fingerprint, which proves that scope was a no-op. Unknown liveness
-or a divergent repository is ambiguous, not evidence to freeze as a verdict;
-such a scope blocks only the task that abandoned it.
+is not permission for a second writer. A divergent abandoned scope remains a
+recomputed obligation for other tasks, so restoring the opening fingerprint or
+satisfying the owning task's gates clears it. The owning task may adopt that
+ambiguous change under the repository lock and enter rework under the same
+number.
 
 Whether an outstanding change has been reviewed is not decided here. This module
 reports the outstanding change; the completion owner decides whether the task's
@@ -58,6 +61,11 @@ CLOSED = "closed"
 LIVE_OVERLAPPING_WRITE = "live_overlapping_write"
 UNREVIEWED_OVERLAPPING_WRITE = "unreviewed_overlapping_write"
 UNRESOLVED_OWN_WRITE_SCOPE = "unresolved_own_write_scope"
+
+SYNTHETIC_RESOLUTIONS = {
+    "measured_after_abandonment",
+    "adopted_by_owner_rework",
+}
 
 
 def utc_now() -> str:
@@ -273,7 +281,7 @@ def _open_scope_for_close(task_dir: Path, run_id: str) -> dict[str, Any] | None:
         if record.get("run_id") != run_id:
             continue
         if record.get("record") == CLOSED:
-            if record.get("resolution") == "measured_after_abandonment":
+            if record.get("resolution") in SYNTHETIC_RESOLUTIONS:
                 continue
             return None
         if record.get("record") == OPENED and isinstance(record.get("before"), dict):
@@ -435,6 +443,47 @@ def settle_abandoned_scopes(
             )
 
 
+def reconcile_owner_scopes(
+    *,
+    task_dir: Path,
+    common_dir: str,
+) -> None:
+    """Close dead scopes so their owner can enter same-number rework.
+
+    Task-level liveness describes the new supervised run and cannot identify an
+    older scope under the same task number. The claimant identity recorded on
+    that scope can. Unknown or live claimants stay open and refuse admission; a
+    dead claimant is either a provable no-op or is conservatively adopted by its
+    own task as changed. The resulting obligation remains on that task.
+    """
+    for scope in unclosed_scopes(task_dir):
+        if scope["before"].get("common_dir") != common_dir:
+            continue
+        if _claimant_liveness(scope) is not False:
+            continue
+        resolution = resolve_abandoned_scope(scope)
+        if not resolution.get("resolved") and not resolution.get("ambiguous"):
+            continue
+        changed = bool(resolution.get("ambiguous"))
+        _append(
+            task_dir,
+            {
+                "schema_version": 1,
+                "record": CLOSED,
+                "run_id": scope.get("run_id"),
+                "closed_at": resolution.get("measured_at", utc_now()),
+                "changed": changed,
+                "before": resolution["before"],
+                "after": resolution["after"],
+                "resolution": (
+                    "adopted_by_owner_rework"
+                    if changed
+                    else "measured_after_abandonment"
+                ),
+            },
+        )
+
+
 def claim_write_scope(
     *,
     tasks_root: Path,
@@ -446,6 +495,7 @@ def claim_write_scope(
     """Atomically settle, recheck and claim one repository write scope."""
     with repository_lock(repository):
         common_dir = git_write_state(repository)["common_dir"]
+        reconcile_owner_scopes(task_dir=task_dir, common_dir=common_dir)
         settle_abandoned_scopes(
             tasks_root=tasks_root,
             common_dir=common_dir,
@@ -505,23 +555,43 @@ def admission_blockers(
         in_repository = [
             scope for scope in scopes if scope["before"].get("common_dir") == common_dir
         ]
-        if (
-            in_repository
-            and any(_scope_liveness(task, scope, is_live) is True for scope in in_repository)
-            and task != requesting
-        ):
+        liveness = [
+            (scope, _scope_liveness(task, scope, is_live))
+            for scope in in_repository
+        ]
+        foreign_live = [state for _scope, state in liveness if state is not False]
+        if in_repository and foreign_live and task != requesting:
+            unknown = any(state is None for state in foreign_live)
             blockers.append(
                 {
                     "task": str(task),
                     "reason": LIVE_OVERLAPPING_WRITE,
-                    "detail": "another task is writing this repository right now",
+                    "detail": (
+                        "another task's writer cannot be proven absent"
+                        if unknown
+                        else "another task is writing this repository right now"
+                    ),
                 }
             )
             continue
         if task == requesting:
             for scope in in_repository:
+                claimant_liveness = _claimant_liveness(scope)
+                if claimant_liveness is not False:
+                    blockers.append(
+                        {
+                            "task": str(task),
+                            "reason": UNRESOLVED_OWN_WRITE_SCOPE,
+                            "detail": (
+                                "the older scope's claimant cannot be proven absent"
+                                if claimant_liveness is None
+                                else "the older scope's claimant is still live"
+                            ),
+                        }
+                    )
+                    continue
                 resolution = resolve_abandoned_scope(scope)
-                if not resolution.get("resolved"):
+                if not resolution.get("resolved") and not resolution.get("ambiguous"):
                     blockers.append(
                         {
                             "task": str(task),
@@ -538,7 +608,7 @@ def admission_blockers(
             if _scope_liveness(task, scope, is_live) is not False:
                 continue
             resolution = resolve_abandoned_scope(scope)
-            if not resolution.get("resolved") or not resolution.get("changed"):
+            if not resolution.get("ambiguous"):
                 continue
             ready, _reason = completion_ready(task)
             if not ready:

@@ -35,6 +35,7 @@ import write_admission
 from task_completion import completion_ready, task_reference, task_status
 from task_contract import contract_gate_status, load_task_contract
 from task_runner import (
+    admission_liveness,
     live_run_processes,
     read_json,
     resolve_task_dir,
@@ -173,7 +174,7 @@ def admission(task_dir: Path, repository: Path) -> dict[str, Any]:
         tasks_root=task_dir.parent,
         repository=repository,
         requesting_task=task_dir,
-        is_live=lambda candidate: bool(live_run_processes(candidate)),
+        is_live=admission_liveness,
     )
     return {
         "schema_version": 1,

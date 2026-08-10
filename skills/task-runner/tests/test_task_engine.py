@@ -136,6 +136,18 @@ class StateDocumentTests(unittest.TestCase):
             )
             self.assertEqual(len(view["history"]), 5)
 
+    def test_admission_uses_the_runners_tri_state_liveness_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            task_dir = make_task(root / "tasks", "0001-requesting")
+            repository = root / "repo"
+            repository.mkdir()
+            with mock.patch.object(
+                task_engine.write_admission, "admission_blockers", return_value=[]
+            ) as blockers:
+                task_engine.admission(task_dir, repository)
+            self.assertIs(blockers.call_args.kwargs["is_live"], task_engine.admission_liveness)
+
 
 class SupervisionEvidenceTests(unittest.TestCase):
     """A host that cannot produce a kernel process identity still has live runs.
