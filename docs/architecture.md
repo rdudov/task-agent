@@ -131,9 +131,12 @@ through one repository-locked check-and-claim operation. Unknown PID visibility
 refuses a foreign writer. A dead abandoned scope is durably settled when its
 unchanged fingerprint proves a no-op; divergent work remains a recomputed
 obligation for other tasks, but its owner can enter rework under the same number
-without freezing ambiguous attribution. A matching terminal runner record can
-settle that exact scope across PID namespaces; another run's record cannot. The
-state fingerprint covers HEAD, tracked worktree
+without freezing ambiguous attribution. Before dry-run or real current-run
+metadata replaces the old record, the launcher transfers a matching prior
+terminal record into the append-only admission ledger. That exact run-scoped evidence can settle its
+scope across PID namespaces; another run's record cannot. Terminal pre-child
+launch failure also releases the pending launch claim, so retry remains a real
+product path. The state fingerprint covers HEAD, tracked worktree
 bytes, staged bytes, and non-ignored untracked content. The append-only ledger
 means a later run cannot erase an earlier obligation, and a late authoritative
 close supersedes an observer's earlier synthetic settlement.

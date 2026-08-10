@@ -87,9 +87,12 @@ Files the user explicitly requested are a separate, user-facing class of output.
   only provable abandoned no-ops are durably settled before a successor enters,
   unknown liveness refuses a foreign writer, abandoned divergent work remains a
   recomputed obligation for other tasks, and the owner can enter same-number
-  rework without freezing ambiguous attribution. A matching terminal runner
-  record recovers its exact scope across PID namespaces; the fingerprint
-  includes staged and non-ignored untracked content.
+  rework without freezing ambiguous attribution. Before a dry run or real start
+  replaces the single-current-run metadata, it transfers a matching prior
+  terminal record into the append-only admission ledger; that exact run-scoped
+  evidence recovers its scope across PID namespaces. A terminal launch failure releases
+  its pending launch claim. The fingerprint includes staged and non-ignored
+  untracked content.
 - Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.

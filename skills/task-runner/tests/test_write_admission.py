@@ -551,6 +551,67 @@ class ConcurrentWriteTests(unittest.TestCase):
                 "measured_after_abandonment",
             )
 
+    def test_terminal_evidence_survives_runner_metadata_replacement_for_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = make_task(tasks_root, "0001-writer")
+            write_admission.open_write_scope(
+                writer, repository, "run-a", claimant_pid=os.getpid()
+            )
+            opened = write_admission.read_ledger(writer)[0]
+            opened["claimant_pid_namespace"] = "pid:[foreign]"
+            write_admission.ledger_path(writer).write_text(
+                json.dumps(opened) + "\n", encoding="utf-8"
+            )
+
+            evidence = write_admission.preserve_terminal_scope_evidence(
+                writer,
+                {
+                    "write_scope_run_id": "run-a",
+                    "finished_at": "2026-08-10T00:00:00+00:00",
+                    "outcome": "failed",
+                },
+            )
+            self.assertIsNotNone(evidence)
+            (writer / ".runner" / "runner.json").write_text(
+                json.dumps({"started_at": "later-run"}), encoding="utf-8"
+            )
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=writer,
+                repository=repository,
+                run_id="run-b",
+                is_live=lambda task: None,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(blockers, [])
+            self.assertEqual(
+                [record["record"] for record in write_admission.read_ledger(writer)],
+                ["opened", "claimant_terminal", "closed", "opened"],
+            )
+
+    def test_terminal_metadata_cannot_be_transferred_to_another_runs_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-writer")
+            write_admission.open_write_scope(task, repository, "run-a")
+            self.assertIsNone(
+                write_admission.preserve_terminal_scope_evidence(
+                    task,
+                    {
+                        "write_scope_run_id": "run-b",
+                        "finished_at": "2026-08-10T00:00:00+00:00",
+                        "outcome": "failed",
+                    },
+                )
+            )
+            self.assertEqual(len(write_admission.read_ledger(task)), 1)
+
     def test_terminal_record_for_another_run_does_not_settle_foreign_namespace(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

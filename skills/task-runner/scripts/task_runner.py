@@ -172,6 +172,15 @@ def update_runner_meta(task_dir: Path, extra: dict) -> dict:
     return payload
 
 
+def finish_runner_meta(task_dir: Path, extra: dict) -> dict:
+    """Record a terminal launcher outcome and release its pending claim."""
+    payload = read_json(runner_meta_path(task_dir))
+    payload.update(extra)
+    payload.pop("launch_pending", None)
+    write_json(runner_meta_path(task_dir), payload)
+    return payload
+
+
 def append_trace(task_dir: Path, message: str) -> None:
     path = trace_path(task_dir)
     if not path.exists():
@@ -1454,6 +1463,14 @@ def cmd_start(args: argparse.Namespace) -> None:
     if resolved_sandbox_mode:
         meta["sandbox_mode"] = resolved_sandbox_mode
 
+    # Preserve the exact previous run's terminal write-scope evidence before
+    # either a dry run or a real start replaces the single-current-run metadata
+    # file. The admission ledger is append-only, so a later real watcher can
+    # consume this evidence instead of the owner destroying its own recovery.
+    write_admission.preserve_terminal_scope_evidence(
+        task_dir, read_json(runner_meta_path(task_dir))
+    )
+
     if args.dry_run:
         meta["dry_run"] = True
         write_json(runner_meta_path(task_dir), meta)
@@ -1508,8 +1525,14 @@ def cmd_start(args: argparse.Namespace) -> None:
         The watcher records its own terminal state when it can; this is the
         parent's backstop for when it could not.
         """
-        if meta_extra:
-            update_runner_meta(task_dir, meta_extra)
+        terminal_extra = dict(meta_extra or {})
+        current_meta = read_json(runner_meta_path(task_dir))
+        terminal_extra.setdefault("launch_error", detail)
+        terminal_extra.setdefault("finished_at", current_meta.get("finished_at") or utc_now())
+        terminal_extra.setdefault(
+            "outcome", current_meta.get("outcome") or "watcher_failed_before_start"
+        )
+        finish_runner_meta(task_dir, terminal_extra)
         if read_json(status_path(task_dir)).get("state") not in {"completed", "failed", "blocked"}:
             write_status(
                 task_dir,
@@ -1674,7 +1697,7 @@ def report_launch_failure(task_dir: Path, args: argparse.Namespace, exc: Excepti
     Everything before the child exists shares this path, because a refusal that
     leaves the task reading `running` is worse than the refusal it reports.
     """
-    update_runner_meta(
+    finish_runner_meta(
         task_dir,
         {
             "launch_error": str(exc),

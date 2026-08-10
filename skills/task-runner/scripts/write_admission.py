@@ -17,8 +17,10 @@ that independent review reproduced:
   that blocked *every* task in the repository, so one no-op could stop the
   repository for everyone.
 
-Here a read-only or dry run opens no scope and appends nothing, so it has
-nothing to overwrite. Before a successor is admitted, an abandoned scope is
+Here a read-only or dry run opens no scope and appends no result of its own, so
+it has nothing to overwrite. A dry run may transfer an exact previous run's
+terminal evidence before replacing current-run metadata. Before a successor is
+admitted, an abandoned scope is
 durably closed under the repository lock only when the repository still equals
 its opening fingerprint, which proves that scope was a no-op. Unknown liveness
 is not permission for a second writer. A matching terminal runner record can
@@ -59,6 +61,7 @@ REPOSITORY_LOCK_NAME = "task-agent-write-admission.lock"
 
 OPENED = "opened"
 CLOSED = "closed"
+CLAIMANT_TERMINAL = "claimant_terminal"
 
 LIVE_OVERLAPPING_WRITE = "live_overlapping_write"
 UNREVIEWED_OVERLAPPING_WRITE = "unreviewed_overlapping_write"
@@ -193,7 +196,11 @@ def read_ledger(task_dir: Path) -> list[dict[str, Any]]:
             value = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(value, dict) and value.get("record") in {OPENED, CLOSED}:
+        if isinstance(value, dict) and value.get("record") in {
+            OPENED,
+            CLOSED,
+            CLAIMANT_TERMINAL,
+        }:
             records.append(value)
     return records
 
@@ -251,6 +258,48 @@ def close_write_scope(task_dir: Path, run_id: str) -> dict[str, Any] | None:
                 "after": after,
             },
         )
+
+
+def preserve_terminal_scope_evidence(
+    task_dir: Path, runner_meta: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Transfer an exact prior run's terminal evidence before metadata replacement.
+
+    `runner.json` describes only the current run and is replaced by `start`.
+    The write-admission ledger is append-only and keyed by run id, so it is the
+    durable home for the previous run's evidence once a successor launch begins.
+    Nothing is appended unless the metadata names an actually open scope and a
+    terminal outcome for that same run.
+    """
+    if not isinstance(runner_meta, dict):
+        return None
+    run_id = runner_meta.get("write_scope_run_id")
+    finished_at = runner_meta.get("finished_at")
+    outcome = runner_meta.get("outcome")
+    if not all(
+        isinstance(value, str) and bool(value.strip())
+        for value in (run_id, finished_at, outcome)
+    ):
+        return None
+    if _open_scope_for_run(task_dir, run_id) is None:
+        return None
+    if any(
+        record.get("record") == CLAIMANT_TERMINAL
+        and record.get("run_id") == run_id
+        for record in read_ledger(task_dir)
+    ):
+        return None
+    return _append(
+        task_dir,
+        {
+            "schema_version": 1,
+            "record": CLAIMANT_TERMINAL,
+            "run_id": run_id,
+            "recorded_at": utc_now(),
+            "finished_at": finished_at,
+            "outcome": outcome,
+        },
+    )
 
 
 def _changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
@@ -384,19 +433,30 @@ def _scope_claimant_liveness(task: Path, scope: dict[str, Any]) -> bool | None:
     own terminal outcome durably. Requiring the matching run id prevents a
     later run's terminal metadata from settling an older claimant.
     """
-    if _scope_has_terminal_runner_record(task, scope):
+    if _scope_has_terminal_evidence(task, scope):
         return False
     return _claimant_liveness(scope)
 
 
-def _scope_has_terminal_runner_record(task: Path, scope: dict[str, Any]) -> bool:
+def _scope_has_terminal_evidence(task: Path, scope: dict[str, Any]) -> bool:
+    run_id = scope.get("run_id")
+    if any(
+        record.get("record") == CLAIMANT_TERMINAL
+        and record.get("run_id") == run_id
+        and isinstance(record.get("finished_at"), str)
+        and bool(record["finished_at"].strip())
+        and isinstance(record.get("outcome"), str)
+        and bool(record["outcome"].strip())
+        for record in read_ledger(task)
+    ):
+        return True
     try:
         meta = json.loads((task / ".runner" / "runner.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     return (
         isinstance(meta, dict)
-        and meta.get("write_scope_run_id") == scope.get("run_id")
+        and meta.get("write_scope_run_id") == run_id
         and isinstance(meta.get("finished_at"), str)
         and bool(meta["finished_at"].strip())
         and isinstance(meta.get("outcome"), str)
@@ -672,7 +732,7 @@ def _scope_liveness(
     scope: dict[str, Any],
     is_live: Callable[[Path], bool | None],
 ) -> bool | None:
-    if _scope_has_terminal_runner_record(task, scope):
+    if _scope_has_terminal_evidence(task, scope):
         return False
     task_liveness = is_live(task)
     if task_liveness is True:

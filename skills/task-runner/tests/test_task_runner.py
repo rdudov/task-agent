@@ -77,6 +77,25 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
                 task_runner.require_no_live_run(task)
         self.assertIn("Refusing to start a second run", str(raised.exception))
 
+    def test_terminal_launch_failure_releases_launch_pending_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw) / "tasks" / "001-example"
+            (task / ".runner").mkdir(parents=True)
+            (task / "task.md").write_text("---\nstatus: in_progress\n---\n", encoding="utf-8")
+            (task / "plan.md").write_text("# Plan\n", encoding="utf-8")
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {"launch_pending": {"token": "old"}, "runner": "agent"},
+            )
+            args = argparse.Namespace(runner="agent", workflow="standard")
+            with contextlib.redirect_stdout(io.StringIO()):
+                task_runner.report_launch_failure(task, args, RuntimeError("no child"))
+
+            meta = task_runner.read_json(task_runner.runner_meta_path(task))
+            self.assertNotIn("launch_pending", meta)
+            self.assertEqual(meta["outcome"], "failed_to_launch")
+            task_runner.require_no_live_run(task)
+
     def test_supervision_boundary_records_systemd_or_explicit_fallback(self) -> None:
         task = Path("/tmp/001-example")
         with mock.patch.object(task_runner, "host_systemd_scope_available", return_value=False):

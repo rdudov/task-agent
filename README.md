@@ -108,9 +108,14 @@ another task is writing there or has changed it without closing its own gates.
 The claim binds staged and non-ignored untracked content as well as tracked
 worktree state. Unknown liveness refuses a foreign writer rather than granting
 permission. A dead abandoned scope is durably settled when the unchanged
-fingerprint proves a no-op. A matching terminal `runner.json` record can recover
-that exact scope across PID namespaces; another run's terminal record cannot.
-Divergent work remains a recomputed obligation for other tasks until it is
+fingerprint proves a no-op. Before either a dry run or a real `start` replaces
+the previous `runner.json`,
+it transfers that run's matching terminal write-scope evidence into the
+append-only admission ledger. That exact evidence can recover the scope across
+PID namespaces after runner metadata replacement; another run's terminal record
+cannot. A launch that ends before a child exists releases `launch_pending`, so
+the terminal failure does not itself prevent a retry. Divergent work remains a
+recomputed obligation for other tasks until it is
 reverted or the owner's gates pass, while the owner may enter same-number rework
 without freezing the ambiguous attribution.
 

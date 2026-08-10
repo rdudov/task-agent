@@ -289,13 +289,17 @@ that independent review reproduced. A read-only or dry run wrote its own
 "changed nothing" over an outstanding "changed something", and the obligation to
 review that earlier change vanished. And a run that opened a scope and never
 closed it became an indeterminate result that blocked every task in the
-repository. Here a dry or read-only run opens no scope and appends nothing, so
-it has nothing to overwrite. An abandoned scope is durably closed as a no-op
+repository. Here a dry or read-only run opens no scope and appends no result of
+its own, so it has nothing to overwrite; a dry run may only transfer an exact
+previous run's terminal evidence before replacing current-run metadata. An
+abandoned scope is durably closed as a no-op
 only while the repository still matches its opening fingerprint. A foreign
 claimant with unknown liveness refuses another writer without being settled as
-dead. If that exact run's own `runner.json` later records its matching
-`write_scope_run_id` and a terminal outcome, the scope becomes settleable even
-across PID namespaces; a terminal record for any other run does not count. A
+dead. If that exact run's own `runner.json` records its matching
+`write_scope_run_id` and a terminal outcome, the next dry run or real `start`
+transfers that evidence into the append-only admission ledger before replacing
+current-run metadata. The scope therefore remains settleable across PID namespaces for its
+owner or a successor; a terminal record for any other run does not count. A
 dead scope with a divergent fingerprint is a recomputed obligation for other
 tasks, cleared by a revert or the owner's completed gates; the owner may
 continue rework under its existing number while the old ambiguity remains
@@ -306,6 +310,10 @@ observer's earlier synthetic settlement. Repository state binds
 HEAD, tracked worktree bytes, staged bytes, and non-ignored untracked
 path/type/content identity. Ignored runtime files are outside that publishable
 state.
+
+A launch failure before the child exists is terminal launcher state. It removes
+`launch_pending` when it records `failed_to_launch`, so a retry is not refused by
+the dead launch's ownership token.
 
 A scope measures the repository, not the child. It records the tracked state
 before the run and after it, so anything that changed the repository in between
