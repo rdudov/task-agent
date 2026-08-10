@@ -334,5 +334,35 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             self.assertEqual(payload["runner"]["process_visibility"], "different_pid_namespace")
 
 
+class TaskNumberWidthTests(unittest.TestCase):
+    """A task number is as many digits as `tasks_index.py` allocated, not three.
+
+    A pattern pinned to three digits does not fail loudly on `1000-slug`: it
+    never matches, so the number stops being a way to name a task and the task
+    simply does not start.
+    """
+
+    def test_resolve_task_dir_follows_a_four_digit_number(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            tasks = repo / "tasks"
+            tasks.mkdir()
+            renamed = tasks / "1000-new-title"
+            renamed.mkdir()
+
+            with mock.patch.object(task_runner, "repo_root", return_value=repo):
+                self.assertEqual(
+                    task_runner.resolve_task_dir(str(tasks / "1000-old-title")),
+                    renamed.resolve(),
+                )
+
+    def test_a_directory_named_after_a_date_carries_no_task_number(self) -> None:
+        # The three digits also refused an archive named after its date, and
+        # `tasks_index.py` refuses such a name explicitly for the same reason.
+        self.assertIsNone(task_runner.task_number_prefix("2026-05-26-openclaw"))
+        self.assertEqual(task_runner.task_number_prefix("1000-slug"), "1000")
+        self.assertEqual(task_runner.task_number_prefix("123-slug"), "123")
+
+
 if __name__ == "__main__":
     unittest.main()

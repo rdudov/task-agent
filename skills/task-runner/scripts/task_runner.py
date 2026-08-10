@@ -61,6 +61,26 @@ def workspace_root() -> Path:
     return repo_root().parent
 
 
+# A task number is however many digits `tasks_index.py` allocated, not three.
+# A pattern pinned to three digits does not fail loudly on `1000-slug` -- it
+# simply never matches, so the number stops being a way to name a task at all.
+#
+# What the three digits also did, by accident, was refuse an unpacked archive
+# named after its date: `2026-05-26-openclaw-...` would otherwise hand back
+# `2026` and glob every other date-named directory. `tasks_index.py` refuses a
+# date-shaped name explicitly for the same reason, and so does this.
+TASK_NUMBER_RE = re.compile(r"^(\d+)-")
+DATE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-|$)")
+
+
+def task_number_prefix(name: str) -> str | None:
+    """The task number a directory name carries, or None if it carries none."""
+    if DATE_NAME_RE.match(name):
+        return None
+    match = TASK_NUMBER_RE.match(name)
+    return match.group(1) if match else None
+
+
 def resolve_task_dir(task_path: str) -> Path:
     path = Path(task_path)
     if not path.is_absolute():
@@ -68,12 +88,12 @@ def resolve_task_dir(task_path: str) -> Path:
     if path.exists():
         return path.resolve()
 
-    match = re.match(r"^(\d{3})-.*$", path.name)
-    if not match:
+    number = task_number_prefix(path.name)
+    if not number:
         return path.resolve(strict=False)
 
     tasks_dir = repo_root() / "tasks"
-    candidates = sorted(tasks_dir.glob(f"{match.group(1)}-*"))
+    candidates = sorted(tasks_dir.glob(f"{number}-*"))
     if len(candidates) == 1:
         return candidates[0].resolve()
 
