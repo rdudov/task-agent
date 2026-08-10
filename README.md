@@ -108,9 +108,11 @@ another task is writing there or has changed it without closing its own gates.
 The claim binds staged and non-ignored untracked content as well as tracked
 worktree state. Unknown liveness refuses a foreign writer rather than granting
 permission. A dead abandoned scope is durably settled when the unchanged
-fingerprint proves a no-op; divergent work remains a recomputed obligation for
-other tasks until it is reverted or the owner's gates pass, while the owner may
-adopt it and enter same-number rework.
+fingerprint proves a no-op. A matching terminal `runner.json` record can recover
+that exact scope across PID namespaces; another run's terminal record cannot.
+Divergent work remains a recomputed obligation for other tasks until it is
+reverted or the owner's gates pass, while the owner may enter same-number rework
+without freezing the ambiguous attribution.
 
 `start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity and PID namespace rather than by pid alone. An observer in another namespace reports liveness as unknown and cannot replace, stop, or reattach the host run. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
 

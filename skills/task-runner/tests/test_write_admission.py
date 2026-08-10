@@ -250,6 +250,31 @@ class FalseBlockerTests(unittest.TestCase):
             self.assertTrue(real_close["changed"])
             self.assertNotIn("resolution", real_close)
 
+    def test_real_close_supersedes_legacy_owner_adoption_record(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-original")
+            opened = write_admission.open_write_scope(task, repository, "run-a")
+            write_admission._append(
+                task,
+                {
+                    "schema_version": 1,
+                    "record": "closed",
+                    "run_id": "run-a",
+                    "closed_at": "2026-08-10T00:00:00+00:00",
+                    "changed": True,
+                    "before": opened["before"],
+                    "after": write_admission.git_write_state(repository),
+                    "resolution": "adopted_by_owner_rework",
+                },
+            )
+            (repository / "new_feature.py").write_text("value = 1\n", encoding="utf-8")
+            real_close = write_admission.close_write_scope(task, "run-a")
+            self.assertIsNotNone(real_close)
+            self.assertTrue(real_close["changed"])
+            self.assertNotIn("resolution", real_close)
+
     def test_divergent_abandoned_scope_blocks_others_until_reverted(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -317,7 +342,7 @@ class FalseBlockerTests(unittest.TestCase):
                 [],
             )
 
-    def test_owner_adopts_abandoned_change_and_enters_rework(self) -> None:
+    def test_owner_enters_rework_without_freezing_ambiguous_attribution(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository = make_repository(root)
@@ -336,9 +361,37 @@ class FalseBlockerTests(unittest.TestCase):
             )
             self.assertIsNotNone(claim)
             self.assertEqual(blockers, [])
-            adopted = write_admission.read_ledger(owner)[-2]
-            self.assertEqual(adopted["resolution"], "adopted_by_owner_rework")
-            self.assertTrue(adopted["changed"])
+            self.assertEqual(
+                [record["record"] for record in write_admission.read_ledger(owner)],
+                ["opened", "opened"],
+            )
+            self.assertFalse(
+                write_admission.close_write_scope(owner, "run-rework")["changed"]
+            )
+
+            other = make_task(tasks_root, "0002-other")
+            self.assertEqual(
+                [
+                    item["reason"]
+                    for item in write_admission.admission_blockers(
+                        tasks_root=tasks_root,
+                        repository=repository,
+                        requesting_task=other,
+                        is_live=lambda task: False,
+                    )
+                ],
+                ["unreviewed_overlapping_write"],
+            )
+            (repository / "new_feature.py").unlink()
+            self.assertEqual(
+                write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=other,
+                    is_live=lambda task: False,
+                ),
+                [],
+            )
 
     def test_owner_cannot_rework_over_a_still_live_older_claimant(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -456,6 +509,88 @@ class ConcurrentWriteTests(unittest.TestCase):
             close = write_admission.close_write_scope(writer, "run-a")
             self.assertIsNotNone(close)
             self.assertTrue(close["changed"])
+
+    def test_matching_terminal_runner_record_recovers_foreign_namespace_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = make_task(tasks_root, "0001-writer")
+            successor = make_task(tasks_root, "0002-successor")
+            write_admission.open_write_scope(
+                writer, repository, "run-a", claimant_pid=os.getpid()
+            )
+            record = write_admission.read_ledger(writer)[0]
+            record["claimant_pid_namespace"] = "pid:[foreign]"
+            write_admission.ledger_path(writer).write_text(
+                json.dumps(record) + "\n", encoding="utf-8"
+            )
+            (writer / ".runner" / "runner.json").write_text(
+                json.dumps(
+                    {
+                        "write_scope_run_id": "run-a",
+                        "finished_at": "2026-08-10T00:00:00+00:00",
+                        "outcome": "failed",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=successor,
+                repository=repository,
+                run_id="run-b",
+                is_live=lambda task: None if task == writer.resolve() else False,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(blockers, [])
+            self.assertEqual(
+                write_admission.read_ledger(writer)[-1]["resolution"],
+                "measured_after_abandonment",
+            )
+
+    def test_terminal_record_for_another_run_does_not_settle_foreign_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = make_task(tasks_root, "0001-writer")
+            successor = make_task(tasks_root, "0002-successor")
+            write_admission.open_write_scope(
+                writer, repository, "run-a", claimant_pid=os.getpid()
+            )
+            record = write_admission.read_ledger(writer)[0]
+            record["claimant_pid_namespace"] = "pid:[foreign]"
+            write_admission.ledger_path(writer).write_text(
+                json.dumps(record) + "\n", encoding="utf-8"
+            )
+            (writer / ".runner" / "runner.json").write_text(
+                json.dumps(
+                    {
+                        "write_scope_run_id": "newer-run",
+                        "finished_at": "2026-08-10T00:00:00+00:00",
+                        "outcome": "succeeded",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=successor,
+                repository=repository,
+                run_id="run-b",
+                is_live=lambda task: None if task == writer.resolve() else False,
+            )
+            self.assertIsNone(claim)
+            self.assertEqual(
+                [item["reason"] for item in blockers],
+                ["live_overlapping_write"],
+            )
+            self.assertEqual(len(write_admission.read_ledger(writer)), 1)
 
     def test_two_contenders_cannot_both_claim_the_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

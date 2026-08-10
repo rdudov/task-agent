@@ -21,11 +21,13 @@ Here a read-only or dry run opens no scope and appends nothing, so it has
 nothing to overwrite. Before a successor is admitted, an abandoned scope is
 durably closed under the repository lock only when the repository still equals
 its opening fingerprint, which proves that scope was a no-op. Unknown liveness
-is not permission for a second writer. A divergent abandoned scope remains a
-recomputed obligation for other tasks, so restoring the opening fingerprint or
-satisfying the owning task's gates clears it. The owning task may adopt that
-ambiguous change under the repository lock and enter rework under the same
-number.
+is not permission for a second writer. A matching terminal runner record can
+settle its own scope even when a later observer cannot see the claimant's PID
+namespace; this is run-owned evidence, not a negative PID lookup. A divergent
+abandoned scope remains a recomputed obligation for other tasks, so restoring
+the opening fingerprint or satisfying the owning task's gates clears it. The
+owning task may enter rework under the same number while that old scope remains
+recomputed rather than freezing ambiguous attribution.
 
 Whether an outstanding change has been reviewed is not decided here. This module
 reports the outstanding change; the completion owner decides whether the task's
@@ -64,6 +66,8 @@ UNRESOLVED_OWN_WRITE_SCOPE = "unresolved_own_write_scope"
 
 SYNTHETIC_RESOLUTIONS = {
     "measured_after_abandonment",
+    # Read compatibility for e054b03 ledgers. New code no longer writes this
+    # frozen attribution, but a late real close must still supersede one.
     "adopted_by_owner_rework",
 }
 
@@ -349,6 +353,8 @@ def write_results(task_dir: Path) -> list[dict[str, Any]]:
 def _claimant_liveness(scope: dict[str, Any]) -> bool | None:
     """True/False when observable; None when a negative is not evidence."""
     pid = scope.get("claimant_pid")
+    # Production claims always record a pid. Treating an absent pid as dead
+    # preserves settlement of ledgers written by older or synthetic callers.
     if not isinstance(pid, int) or pid <= 0:
         return False
     recorded_namespace = scope.get("claimant_pid_namespace")
@@ -368,6 +374,34 @@ def _claimant_liveness(scope: dict[str, Any]) -> bool | None:
     if current is None:
         return None if _process_marker(os.getpid()) is not None else True
     return recorded == current
+
+
+def _scope_claimant_liveness(task: Path, scope: dict[str, Any]) -> bool | None:
+    """Use matching run-owned terminal evidence before observer liveness.
+
+    A foreign PID namespace makes an observer's negative lookup inconclusive.
+    The runner that owned this exact write scope can nevertheless record its
+    own terminal outcome durably. Requiring the matching run id prevents a
+    later run's terminal metadata from settling an older claimant.
+    """
+    if _scope_has_terminal_runner_record(task, scope):
+        return False
+    return _claimant_liveness(scope)
+
+
+def _scope_has_terminal_runner_record(task: Path, scope: dict[str, Any]) -> bool:
+    try:
+        meta = json.loads((task / ".runner" / "runner.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(meta, dict)
+        and meta.get("write_scope_run_id") == scope.get("run_id")
+        and isinstance(meta.get("finished_at"), str)
+        and bool(meta["finished_at"].strip())
+        and isinstance(meta.get("outcome"), str)
+        and bool(meta["outcome"].strip())
+    )
 
 
 def _claimant_fields(pid: int | None) -> dict[str, Any]:
@@ -453,18 +487,18 @@ def reconcile_owner_scopes(
     Task-level liveness describes the new supervised run and cannot identify an
     older scope under the same task number. The claimant identity recorded on
     that scope can. Unknown or live claimants stay open and refuse admission; a
-    dead claimant is either a provable no-op or is conservatively adopted by its
-    own task as changed. The resulting obligation remains on that task.
+    dead claimant is durably closed only when the current fingerprint proves a
+    no-op. Divergent attribution stays open and recomputed for other tasks while
+    its owner enters rework under the same number.
     """
     for scope in unclosed_scopes(task_dir):
         if scope["before"].get("common_dir") != common_dir:
             continue
-        if _claimant_liveness(scope) is not False:
+        if _scope_claimant_liveness(task_dir, scope) is not False:
             continue
         resolution = resolve_abandoned_scope(scope)
-        if not resolution.get("resolved") and not resolution.get("ambiguous"):
+        if not resolution.get("resolved"):
             continue
-        changed = bool(resolution.get("ambiguous"))
         _append(
             task_dir,
             {
@@ -472,14 +506,10 @@ def reconcile_owner_scopes(
                 "record": CLOSED,
                 "run_id": scope.get("run_id"),
                 "closed_at": resolution.get("measured_at", utc_now()),
-                "changed": changed,
+                "changed": False,
                 "before": resolution["before"],
                 "after": resolution["after"],
-                "resolution": (
-                    "adopted_by_owner_rework"
-                    if changed
-                    else "measured_after_abandonment"
-                ),
+                "resolution": "measured_after_abandonment",
             },
         )
 
@@ -495,7 +525,6 @@ def claim_write_scope(
     """Atomically settle, recheck and claim one repository write scope."""
     with repository_lock(repository):
         common_dir = git_write_state(repository)["common_dir"]
-        reconcile_owner_scopes(task_dir=task_dir, common_dir=common_dir)
         settle_abandoned_scopes(
             tasks_root=tasks_root,
             common_dir=common_dir,
@@ -509,6 +538,7 @@ def claim_write_scope(
         )
         if blockers:
             return None, blockers
+        reconcile_owner_scopes(task_dir=task_dir, common_dir=common_dir)
         return (
             open_write_scope(
                 task_dir,
@@ -576,7 +606,7 @@ def admission_blockers(
             continue
         if task == requesting:
             for scope in in_repository:
-                claimant_liveness = _claimant_liveness(scope)
+                claimant_liveness = _scope_claimant_liveness(task, scope)
                 if claimant_liveness is not False:
                     blockers.append(
                         {
@@ -642,6 +672,8 @@ def _scope_liveness(
     scope: dict[str, Any],
     is_live: Callable[[Path], bool | None],
 ) -> bool | None:
+    if _scope_has_terminal_runner_record(task, scope):
+        return False
     task_liveness = is_live(task)
     if task_liveness is True:
         return True

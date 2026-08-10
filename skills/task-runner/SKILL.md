@@ -293,10 +293,14 @@ repository. Here a dry or read-only run opens no scope and appends nothing, so
 it has nothing to overwrite. An abandoned scope is durably closed as a no-op
 only while the repository still matches its opening fingerprint. A foreign
 claimant with unknown liveness refuses another writer without being settled as
-dead. A dead scope with a divergent fingerprint is a recomputed obligation for
-other tasks, cleared by a revert or the owner's completed gates; the owner may
-adopt that state under the same repository lock and continue rework under its
-existing number. An unmeasurable repository still refuses the owner. If the
+dead. If that exact run's own `runner.json` later records its matching
+`write_scope_run_id` and a terminal outcome, the scope becomes settleable even
+across PID namespaces; a terminal record for any other run does not count. A
+dead scope with a divergent fingerprint is a recomputed obligation for other
+tasks, cleared by a revert or the owner's completed gates; the owner may
+continue rework under its existing number while the old ambiguity remains
+recomputed rather than durably attributed. An unmeasurable repository still
+refuses the owner. If the
 original writer later delivers its real close, that record supersedes an
 observer's earlier synthetic settlement. Repository state binds
 HEAD, tracked worktree bytes, staged bytes, and non-ignored untracked
