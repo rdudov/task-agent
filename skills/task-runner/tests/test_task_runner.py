@@ -212,6 +212,20 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         command = self._dev_pipeline_command(model="gpt-5.4")
         self.assertEqual(command[command.index("--model") + 1], "gpt-5.4")
 
+    def test_dev_pipeline_command_passes_automatic_assurance_inputs(self) -> None:
+        command = self._dev_pipeline_command(
+            assurance_config="/tmp/example-task/dev-pipeline/assurance.json",
+            review_packet="/tmp/example-task/dev-pipeline/review-packet.json",
+        )
+        self.assertEqual(
+            command[command.index("--assurance-config") + 1],
+            "/tmp/example-task/dev-pipeline/assurance.json",
+        )
+        self.assertEqual(
+            command[command.index("--review-packet") + 1],
+            "/tmp/example-task/dev-pipeline/review-packet.json",
+        )
+
     def test_resolve_sandbox_mode_defaults_dev_pipeline_to_danger_full_access(self) -> None:
         for runner in ("codex", "claude"):
             with self.subTest(runner=runner):

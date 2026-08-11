@@ -352,6 +352,8 @@ class CoreCommandTests(unittest.TestCase):
             model=None,
             owner_runtime="codex",
             sandbox="workspace-write",
+            assurance_config=None,
+            review_packet=None,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -378,6 +380,25 @@ class CoreCommandTests(unittest.TestCase):
         )
         self.assertIn("--artifact", command)
         self.assertIn(str(task_dir / "task_contract.json"), command)
+
+    def test_assurance_inputs_reach_the_public_owner_command(self) -> None:
+        task_dir = make_task(self.tmp)
+        assurance = task_dir / "assurance.json"
+        packet = task_dir / "review-packet.json"
+        assurance.write_text("{}", encoding="utf-8")
+        packet.write_text("{}", encoding="utf-8")
+        instruction = dev_pipeline_adapter.prepare_owner_instruction(task_dir)
+        command = dev_pipeline_adapter.build_core_command(
+            self._args(task_dir, assurance_config=assurance, review_packet=packet),
+            task_dir,
+            instruction,
+        )
+        self.assertEqual(
+            command[command.index("--assurance-config") + 1], str(assurance.resolve())
+        )
+        self.assertEqual(
+            command[command.index("--review-packet") + 1], str(packet.resolve())
+        )
 
     def test_core_state_must_stay_inside_the_task(self) -> None:
         task_dir = make_task(self.tmp)

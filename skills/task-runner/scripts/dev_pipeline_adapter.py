@@ -678,6 +678,10 @@ def build_core_command(args: argparse.Namespace, task_dir: Path, instruction: Pa
             command.extend(["--retry-reason", args.retry_reason])
     if args.model:
         command.extend(["--model", args.model])
+    if args.assurance_config:
+        command.extend(["--assurance-config", str(args.assurance_config.resolve())])
+    if args.review_packet:
+        command.extend(["--review-packet", str(args.review_packet.resolve())])
     return command
 
 
@@ -710,6 +714,8 @@ def main(argv: list[str] | None = None) -> int:
         "--retry-reason", choices=("native_unavailable", "intentional_replacement")
     )
     parser.add_argument("--model")
+    parser.add_argument("--assurance-config", type=Path)
+    parser.add_argument("--review-packet", type=Path)
     parser.add_argument("--application", help="Versioned installation adapter module:attribute.")
     parser.add_argument("--destination", help="Opaque installation-owned delivery destination.")
     parser.add_argument(

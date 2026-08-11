@@ -44,6 +44,12 @@ write modes perform an exclusive random-file create/delete probe before launch
 and record the grant. Cursor retains task-agent as its primary workspace. In
 the dev-pipeline workflow the same path is the core owner's target repository.
 
+An installation can bind automatic review/rework by passing both
+`--assurance-config` and `--review-packet` to the ordinary task-runner `start`
+entrypoint. Both paths survive detached watcher construction and reach the same
+`dev-pipeline owner` process. Task-agent treats them as opaque installation
+policy and never selects or substitutes a reviewer itself.
+
 A write-mode launch is additionally admitted against the target repository, so
 two tasks never write one working tree at the same time and a change nobody has
 reviewed does not get built on. `skills/task-runner/SKILL.md` owns the rules and

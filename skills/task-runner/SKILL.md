@@ -196,6 +196,14 @@ Startup and bookkeeping are not progress. "Preparing the task directory" tells a
 
 It supports `--runner codex` and `--runner claude`, because those are the owner runtimes the dev-pipeline core drives. `--operation start|resume|retry` chooses the lifecycle operation; a retry needs a new `--state-dir` and the previous one, so the earlier attempt stays immutable.
 
+An installation that requires automatic assurance supplies both
+`--assurance-config` and `--review-packet` to the normal `start` entrypoint.
+The runner preserves the two paths across the detached watcher boundary and the
+adapter forwards them to the same public `dev-pipeline owner` process. The
+installation chooses the assurance strategy and reviewer; task-agent does not
+invent either, and omission retains dev-pipeline's explicit unassured
+compatibility path.
+
 This workflow depends on the separate public `rdudov/dev-pipeline` project. The
 tested commit is pinned in both requirements files, so the documented virtualenv
 install provides the CLI. An editable local checkout can replace it during core

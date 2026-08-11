@@ -943,6 +943,8 @@ def build_workflow_command(
     retry_reason: str | None = None,
     application: str | None = None,
     destination: str | None = None,
+    assurance_config: str | None = None,
+    review_packet: str | None = None,
 ) -> list[str] | None:
     """Return the command for a workflow that runs through a dedicated script.
 
@@ -964,6 +966,8 @@ def build_workflow_command(
             retry_reason,
             application,
             destination,
+            assurance_config,
+            review_packet,
         )
     raise SystemExit(f"Unsupported workflow: {workflow}")
 
@@ -977,6 +981,8 @@ DEV_PIPELINE_OPTIONS = (
     "retry_reason",
     "application",
     "destination",
+    "assurance_config",
+    "review_packet",
 )
 
 DEV_PIPELINE_BIN_ENV = "TASK_AGENT_DEV_PIPELINE_BIN"
@@ -1045,6 +1051,8 @@ def build_dev_pipeline_command(
     retry_reason: str | None,
     application: str | None = None,
     destination: str | None = None,
+    assurance_config: str | None = None,
+    review_packet: str | None = None,
 ) -> list[str]:
     """Build the adapter invocation for the dev-pipeline workflow.
 
@@ -1088,6 +1096,10 @@ def build_dev_pipeline_command(
         command.extend(["--application", application])
     if destination:
         command.extend(["--destination", destination])
+    if assurance_config:
+        command.extend(["--assurance-config", assurance_config])
+    if review_packet:
+        command.extend(["--review-packet", review_packet])
     return command
 
 
@@ -2569,6 +2581,14 @@ def parse_args() -> argparse.Namespace:
         choices=["native_unavailable", "intentional_replacement"],
         help="Why a dev-pipeline retry replaces the previous attempt.",
     )
+    start_parser.add_argument(
+        "--assurance-config",
+        help="Installation assurance configuration forwarded to dev-pipeline.",
+    )
+    start_parser.add_argument(
+        "--review-packet",
+        help="Digest-bound review packet for automatic assurance handoff.",
+    )
     start_parser.add_argument("--dry-run", action="store_true", help="Prepare artifacts without launching the child process.")
     start_parser.set_defaults(func=cmd_start)
 
@@ -2603,6 +2623,8 @@ def parse_args() -> argparse.Namespace:
         choices=["native_unavailable", "intentional_replacement"],
         help=argparse.SUPPRESS,
     )
+    run_child_parser.add_argument("--assurance-config", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--review-packet", help=argparse.SUPPRESS)
     run_child_parser.set_defaults(func=cmd_run_child)
 
     monitor_parser = subparsers.add_parser("_monitor-existing", help=argparse.SUPPRESS)
