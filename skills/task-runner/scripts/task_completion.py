@@ -37,11 +37,32 @@ except ImportError:
     )
 
 
-TASKS_INDEX_PATH = (
-    Path(shutil.which("task-agent-tasks-index") or "task-agent-tasks-index")
-    if __package__
-    else Path(__file__).resolve().parents[2] / "task-creator" / "scripts" / "tasks_index.py"
-)
+def resolve_tasks_index_path(
+    module_file: str | Path = __file__, executable: str | Path = sys.executable
+) -> Path:
+    """Find the metadata CLI from either a source tree or an installed runtime."""
+    source_path = (
+        Path(module_file).resolve().parents[2]
+        / "task-creator"
+        / "scripts"
+        / "tasks_index.py"
+    )
+    if source_path.is_file():
+        return source_path
+
+    interpreter_entrypoint = Path(executable).parent / "task-agent-tasks-index"
+    if interpreter_entrypoint.is_file():
+        return interpreter_entrypoint
+
+    discovered_entrypoint = shutil.which("task-agent-tasks-index")
+    return (
+        Path(discovered_entrypoint)
+        if discovered_entrypoint is not None
+        else interpreter_entrypoint
+    )
+
+
+TASKS_INDEX_PATH = resolve_tasks_index_path()
 _tasks_index_module = None
 
 

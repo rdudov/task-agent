@@ -249,6 +249,29 @@ class ApplicationAdapterTests(unittest.TestCase):
             self.assertEqual(task_completion.task_status(task), "completed")
             self.assertTrue((root / ".state" / "tasks-index.db").is_file())
 
+    def test_installed_completion_metadata_finds_the_interpreter_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            module = (
+                root
+                / "lib"
+                / "python3.12"
+                / "site-packages"
+                / "task_agent"
+                / "task_completion.py"
+            )
+            entrypoint = root / "bin" / "task-agent-tasks-index"
+            module.parent.mkdir(parents=True)
+            entrypoint.parent.mkdir(parents=True)
+            module.touch()
+            entrypoint.touch()
+
+            resolved = task_completion.resolve_tasks_index_path(
+                module, root / "bin" / "python"
+            )
+
+            self.assertEqual(resolved, entrypoint)
+
     def test_optional_completion_preparation_is_additive_to_v1(self) -> None:
         adapter = application_adapter.DefaultApplicationV1()
         self.assertEqual(
