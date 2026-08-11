@@ -377,6 +377,10 @@ attempt: owner start/resume, independent review, same-session rework, live
 acceptance, and an escalated phase blocker may each carry a fresh run identity.
 An arbitrary event that changes run identity without one of those boundaries is
 still refused.
+On adapter restart, the authoritative core ledger is replayed through the same
+validator before a new core command runs. Previously consumed event IDs are
+no-ops; a missed event is projected and offered to transport once, while an
+invalid sequence or identity still refuses continuation.
 
 - `--destination` is opaque. Only its digest may be persisted; never put the
   raw recipient into runner metadata, task artifacts, source, or docs.

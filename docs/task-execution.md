@@ -138,6 +138,10 @@ start/resume, independent review, same-session rework, live acceptance, or an
 escalated phase blocker—and rejects a foreign run identity on ordinary events.
 This lets automatic cross-provider phases remain one attempt without weakening
 the projector's identity check.
+Before a restarted adapter invokes the core, it replays that state directory's
+authoritative lifecycle ledger through the same cursor. This closes a crash
+between the core's durable append and adapter projection without synthesizing
+events or skipping delivery; repeats remain idempotent by event ID.
 
 The dependency comes from the public `rdudov/dev-pipeline` repository and is
 pinned by commit in both requirements files. The normal README installation is

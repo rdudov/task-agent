@@ -381,6 +381,53 @@ class EventOrderingTests(unittest.TestCase):
         self.assertIn("`run_started`", trace_of(task_dir))
         self.assertEqual(status_of(task_dir)["dev_pipeline"]["last_sequence"], 2)
 
+    @requires_review_events
+    def test_restart_replays_core_events_missed_after_adapter_failure(self) -> None:
+        task_dir = make_task(self.tmp)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(event("run_started", 2, RUN_STARTED))
+
+        core_state = task_dir / "dev-pipeline" / "core-state"
+        core_state.mkdir()
+        missing = [
+            event("attempt_started", 1, ATTEMPT_STARTED),
+            event("run_started", 2, RUN_STARTED),
+            event(
+                "review_started",
+                3,
+                {
+                    "strategy": "cross_provider",
+                    "review_provider": "claude",
+                    "artifact_digest": "sha256:abc",
+                    "author_session_id": "session-author",
+                },
+                run_id="run_review",
+            ),
+            event(
+                "review_waiting",
+                4,
+                {
+                    "strategy": "cross_provider",
+                    "review_provider": "claude",
+                    "reason": "provider pipe closed",
+                },
+                run_id="run_review",
+            ),
+        ]
+        (core_state / "events.jsonl").write_text(
+            "".join(json.dumps(item) + "\n" for item in missing), encoding="utf-8"
+        )
+
+        dev_pipeline_adapter.recover_core_ledger(projector, core_state)
+
+        cursor = json.loads(projector.cursor_path.read_text(encoding="utf-8"))
+        self.assertEqual(cursor["last_sequence"], 4)
+        self.assertEqual(cursor["run_id"], "run_review")
+        self.assertEqual(trace_of(task_dir).count("`attempt_started`"), 1)
+        self.assertEqual(trace_of(task_dir).count("`review_started`"), 1)
+        self.assertIn("provider pipe closed", status_of(task_dir)["current_step"])
+
 
 class CoreCommandTests(unittest.TestCase):
     def setUp(self) -> None:

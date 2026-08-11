@@ -665,6 +665,15 @@ def consume_lines(projector: TaskArtifactProjector, lines: Iterable[str]) -> Non
             projector.consume(json.loads(line))
 
 
+def recover_core_ledger(projector: TaskArtifactProjector, core_state: Path) -> None:
+    """Project authoritative core events missed by an interrupted adapter."""
+    ledger = core_state / "events.jsonl"
+    if not ledger.exists():
+        return
+    with ledger.open(encoding="utf-8") as handle:
+        consume_lines(projector, handle)
+
+
 def build_core_command(args: argparse.Namespace, task_dir: Path, instruction: Path) -> list[str]:
     core_state = core_state_dir(task_dir, args.state_dir)
     command = [
@@ -704,10 +713,12 @@ def build_core_command(args: argparse.Namespace, task_dir: Path, instruction: Pa
 def run(args: argparse.Namespace) -> int:
     task_dir = args.task_dir.resolve()
     instruction = prepare_owner_instruction(task_dir)
+    core_state = core_state_dir(task_dir, args.state_dir)
     command = build_core_command(args, task_dir, instruction)
     projector = TaskArtifactProjector(
         task_dir, application=args.application, destination=args.destination
     )
+    recover_core_ledger(projector, core_state)
     process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
     assert process.stdout is not None
     consume_lines(projector, process.stdout)
