@@ -53,7 +53,12 @@ policy and never selects or substitutes a reviewer itself.
 A write-mode launch is additionally admitted against the target repository, so
 two tasks never write one working tree at the same time and a change nobody has
 reviewed does not get built on. `skills/task-runner/SKILL.md` owns the rules and
-the ledger format.
+the ledger format. Successful completion is preserved in that append-only ledger
+against the exact write-scope run IDs it covered, including bounded recovery of
+a terminal scope whose watcher did not close it. A legitimate later commit can
+therefore stale a current review packet without retroactively turning the older
+completed task into an admission blocker; later rework has new run IDs and must
+close its own gates.
 
 ## Task Phases
 

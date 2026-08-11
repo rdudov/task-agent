@@ -50,17 +50,19 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from .task_completion import completion_ready
+    from .task_completion import completion_ready, task_status
     from .task_contract import (
         capture_preexisting_tracked_dirty_baseline,
         git_repository_identity,
     )
+    from . import task_phases
 except ImportError:
-    from task_completion import completion_ready
+    from task_completion import completion_ready, task_status
     from task_contract import (
         capture_preexisting_tracked_dirty_baseline,
         git_repository_identity,
     )
+    import task_phases
 
 
 LEDGER_NAME = "write-admission.jsonl"
@@ -69,6 +71,7 @@ REPOSITORY_LOCK_NAME = "task-agent-write-admission.lock"
 OPENED = "opened"
 CLOSED = "closed"
 CLAIMANT_TERMINAL = "claimant_terminal"
+COMPLETION_ACCEPTED = "completion_accepted"
 
 LIVE_OVERLAPPING_WRITE = "live_overlapping_write"
 UNREVIEWED_OVERLAPPING_WRITE = "unreviewed_overlapping_write"
@@ -207,6 +210,7 @@ def read_ledger(task_dir: Path) -> list[dict[str, Any]]:
             OPENED,
             CLOSED,
             CLAIMANT_TERMINAL,
+            COMPLETION_ACCEPTED,
         }:
             records.append(value)
     return records
@@ -404,6 +408,119 @@ def resolve_abandoned_scope(scope: dict[str, Any]) -> dict[str, Any]:
 def write_results(task_dir: Path) -> list[dict[str, Any]]:
     """Every durable determinate result this task produced."""
     return [record for record in read_ledger(task_dir) if record.get("record") == CLOSED]
+
+
+def accepted_write_run_ids(task_dir: Path) -> set[str]:
+    """Write-scope runs covered by a durable successful completion decision."""
+    accepted: set[str] = set()
+    for record in read_ledger(task_dir):
+        if record.get("record") != COMPLETION_ACCEPTED:
+            continue
+        run_ids = record.get("accepted_run_ids")
+        if isinstance(run_ids, list):
+            accepted.update(
+                run_id for run_id in run_ids if isinstance(run_id, str) and run_id
+            )
+    return accepted
+
+
+def record_completion_acceptance(
+    task_dir: Path,
+    *,
+    source: str = "completion_ready",
+    additional_scope_evidence: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Bind the task's accepted completion to its existing write scopes.
+
+    A completion review binds the candidate that existed when the task closed.
+    Re-evaluating that review against a later task's HEAD would turn legitimate
+    repository history into a retroactive refusal. The append-only receipt
+    records only the run IDs already covered at acceptance; later same-task
+    rework therefore creates a new obligation instead of inheriting approval.
+    ``additional_scope_evidence`` is reserved for a terminal abandoned scope
+    whose repository change can no longer be measured after a successor
+    advances HEAD; a live or incomplete scope never reaches that compatibility
+    path, and the digest binds the durable completion evidence rather than
+    misattributing the successor's current repository state to the old task.
+    """
+    accepted = accepted_write_run_ids(task_dir)
+    results = [
+        result
+        for result in write_results(task_dir)
+        if result.get("changed") is True
+        and isinstance(result.get("run_id"), str)
+        and result["run_id"] not in accepted
+    ]
+    run_ids = [result["run_id"] for result in results]
+    scope_evidence = additional_scope_evidence or {}
+    run_ids.extend(
+        run_id
+        for run_id in scope_evidence
+        if run_id and run_id not in accepted and run_id not in run_ids
+    )
+    if not run_ids:
+        return None
+    return _append(
+        task_dir,
+        {
+            "schema_version": 1,
+            "record": COMPLETION_ACCEPTED,
+            "accepted_at": utc_now(),
+            "source": source,
+            "accepted_run_ids": run_ids,
+            "write_result_digests": [state_digest(result["after"]) for result in results],
+            "additional_scope_evidence": [
+                {
+                    "run_id": run_id,
+                    "completion_evidence_digest": scope_evidence[run_id],
+                }
+                for run_id in run_ids
+                if run_id in scope_evidence
+            ],
+        },
+    )
+
+
+def _durable_terminal_completion(task_dir: Path) -> bool:
+    """Whether the pre-receipt runtime already durably accepted completion.
+
+    Older ledgers predate ``completion_accepted``. Backfill is deliberately
+    narrower than completed frontmatter: both canonical runtime projections
+    must also be terminal, because editing metadata alone never proved gates.
+    """
+    try:
+        status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        task_status(task_dir) == "completed"
+        and isinstance(status, dict)
+        and status.get("state") == "completed"
+        and task_phases.current_phase(task_dir) == task_phases.COMPLETED
+    )
+
+
+def _completion_evidence_digest(task_dir: Path) -> str:
+    """Bind the durable acceptance evidence available for a legacy scope."""
+    paths = [
+        task_dir / "task.md",
+        task_dir / "status.json",
+        task_dir / task_phases.PHASES_FILE,
+        task_dir / "dev-pipeline" / "contract-review" / "completion-review-subject.json",
+    ]
+    evidence = []
+    for path in paths:
+        try:
+            content = path.read_bytes()
+        except OSError:
+            continue
+        evidence.append(
+            {
+                "path": str(path.relative_to(task_dir)),
+                "digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+            }
+        )
+    return state_digest({"completion_evidence": evidence})
 
 
 def _claimant_liveness(scope: dict[str, Any]) -> bool | None:
@@ -624,11 +741,22 @@ def outstanding_write_results(task_dir: Path) -> list[dict[str, Any]]:
     state authorizes completion has satisfied whatever review its contract
     requires, and its change is no longer outstanding.
     """
-    changes = [result for result in write_results(task_dir) if result.get("changed") is True]
+    accepted = accepted_write_run_ids(task_dir)
+    changes = [
+        result
+        for result in write_results(task_dir)
+        if result.get("changed") is True and result.get("run_id") not in accepted
+    ]
     if not changes:
         return []
     ready, _reason = completion_ready(task_dir)
-    return [] if ready else changes
+    if ready:
+        record_completion_acceptance(task_dir)
+        return []
+    if _durable_terminal_completion(task_dir):
+        record_completion_acceptance(task_dir, source="terminal_completion_backfill")
+        return []
+    return changes
 
 
 def admission_blockers(
@@ -707,19 +835,36 @@ def admission_blockers(
             resolution = resolve_abandoned_scope(scope)
             if not resolution.get("ambiguous"):
                 continue
+            run_id = scope.get("run_id")
+            if isinstance(run_id, str) and run_id in accepted_write_run_ids(task):
+                continue
             ready, _reason = completion_ready(task)
-            if not ready:
-                blockers.append(
-                    {
-                        "task": str(task),
-                        "reason": UNREVIEWED_OVERLAPPING_WRITE,
-                        "detail": (
-                            "this abandoned scope changed the repository and has not "
-                            "closed its own gates"
-                        ),
-                        "write_result_digest": state_digest(resolution["after"]),
-                    }
+            if ready or _durable_terminal_completion(task):
+                record_completion_acceptance(
+                    task,
+                    source=(
+                        "completion_ready"
+                        if ready
+                        else "terminal_completion_backfill"
+                    ),
+                    additional_scope_evidence=(
+                        {run_id: _completion_evidence_digest(task)}
+                        if isinstance(run_id, str)
+                        else {}
+                    ),
                 )
+                continue
+            blockers.append(
+                {
+                    "task": str(task),
+                    "reason": UNREVIEWED_OVERLAPPING_WRITE,
+                    "detail": (
+                        "this abandoned scope changed the repository and has not "
+                        "closed its own gates"
+                    ),
+                    "write_result_digest": state_digest(resolution["after"]),
+                }
+            )
         for result in outstanding_write_results(task):
             if result["before"].get("common_dir") != common_dir:
                 continue

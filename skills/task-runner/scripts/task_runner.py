@@ -1978,6 +1978,7 @@ def finalize_child_lifecycle(
                 )
                 append_trace(task_dir, refusal["summary"])
                 return
+            write_admission.record_completion_acceptance(task_dir)
         record_terminal_phase(task_dir, task_state)
         return
     if workflow == "dev-pipeline" and task_state == "waiting":
@@ -1989,6 +1990,7 @@ def finalize_child_lifecycle(
     if return_code == 0 and workflow != "dev-pipeline":
         ready, reason = completion_ready(task_dir, workflow=workflow)
         if ready:
+            write_admission.record_completion_acceptance(task_dir)
             return
         refusal = completion_refusal(task_dir, reason)
         write_status(

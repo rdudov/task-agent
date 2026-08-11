@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 
 def _load(name: str):
@@ -30,6 +31,7 @@ def _load(name: str):
 
 
 write_admission = _load("write_admission")
+task_phases = _load("task_phases")
 
 
 def make_repository(root: Path) -> Path:
@@ -744,6 +746,163 @@ class ConcurrentWriteTests(unittest.TestCase):
             self.assertEqual(
                 [item["reason"] for item in blockers], ["unreviewed_overlapping_write"]
             )
+
+    def test_completion_receipt_survives_a_later_repository_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-reviewed", completed=True)
+            write_admission.open_write_scope(task, repository, "run-a")
+            (repository / "source.txt").write_text("accepted A\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task A"], check=True)
+            write_admission.close_write_scope(task, "run-a")
+
+            with mock.patch.object(write_admission, "completion_ready", return_value=(True, "")):
+                self.assertEqual(write_admission.outstanding_write_results(task), [])
+            receipt = write_admission.read_ledger(task)[-1]
+            self.assertEqual(receipt["record"], "completion_accepted")
+            self.assertEqual(receipt["accepted_run_ids"], ["run-a"])
+
+            (repository / "source.txt").write_text("legitimate B\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task B"], check=True)
+            with mock.patch.object(
+                write_admission,
+                "completion_ready",
+                return_value=(False, "completion review subject is stale"),
+            ):
+                self.assertEqual(write_admission.outstanding_write_results(task), [])
+
+            write_admission.open_write_scope(task, repository, "run-b")
+            (repository / "source.txt").write_text("rework C\n", encoding="utf-8")
+            write_admission.close_write_scope(task, "run-b")
+            with mock.patch.object(
+                write_admission, "completion_ready", return_value=(False, "rework open")
+            ):
+                outstanding = write_admission.outstanding_write_results(task)
+            self.assertEqual([result["run_id"] for result in outstanding], ["run-b"])
+
+    def test_completed_reviewed_task_a_does_not_block_legitimate_task_b(self) -> None:
+        """A pre-receipt completed task keeps its historical accepted state."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            reviewed = make_task(tasks_root, "0001-reviewed", completed=True)
+            successor = make_task(tasks_root, "0002-successor")
+            write_admission.open_write_scope(reviewed, repository, "run-a")
+            (repository / "source.txt").write_text("accepted A\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task A"], check=True)
+            write_admission.close_write_scope(reviewed, "run-a")
+            (reviewed / "status.json").write_text(
+                json.dumps({"state": "completed"}), encoding="utf-8"
+            )
+            task_phases.record_phase(reviewed, task_phases.COMPLETED)
+
+            (repository / "source.txt").write_text("legitimate B\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task B"], check=True)
+            with mock.patch.object(
+                write_admission,
+                "completion_ready",
+                return_value=(False, "completion review subject is stale"),
+            ):
+                blockers = write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=successor,
+                    is_live=lambda task: False,
+                )
+            self.assertEqual(blockers, [])
+            self.assertEqual(
+                write_admission.read_ledger(reviewed)[-1]["source"],
+                "terminal_completion_backfill",
+            )
+
+    def test_completed_frontmatter_alone_does_not_clear_a_write(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-metadata-only", completed=True)
+            write_admission.open_write_scope(task, repository, "run-a")
+            (repository / "source.txt").write_text("unreviewed\n", encoding="utf-8")
+            write_admission.close_write_scope(task, "run-a")
+            with mock.patch.object(
+                write_admission, "completion_ready", return_value=(False, "not ready")
+            ):
+                self.assertEqual(len(write_admission.outstanding_write_results(task)), 1)
+
+    def test_completed_frontmatter_alone_does_not_clear_an_ambiguous_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            task = make_task(tasks_root, "0001-metadata-only", completed=True)
+            successor = make_task(tasks_root, "0002-successor")
+            write_admission.open_write_scope(task, repository, "run-a")
+            (repository / "source.txt").write_text("unreviewed\n", encoding="utf-8")
+
+            with mock.patch.object(
+                write_admission, "completion_ready", return_value=(False, "not ready")
+            ):
+                blockers = write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=successor,
+                    is_live=lambda task: False,
+                )
+
+            self.assertEqual(
+                [item["reason"] for item in blockers],
+                ["unreviewed_overlapping_write"],
+            )
+            self.assertEqual(
+                [record["record"] for record in write_admission.read_ledger(task)],
+                ["opened"],
+            )
+
+    def test_completed_reviewed_task_clears_a_terminal_ambiguous_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            reviewed = make_task(tasks_root, "0001-reviewed", completed=True)
+            successor = make_task(tasks_root, "0002-successor")
+            write_admission.open_write_scope(reviewed, repository, "run-a")
+            (repository / "source.txt").write_text("accepted A\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task A"], check=True)
+            (reviewed / "status.json").write_text(
+                json.dumps({"state": "completed"}), encoding="utf-8"
+            )
+            task_phases.record_phase(reviewed, task_phases.COMPLETED)
+            (repository / "source.txt").write_text("legitimate B\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task B"], check=True)
+
+            with mock.patch.object(
+                write_admission,
+                "completion_ready",
+                return_value=(False, "completion review subject is stale"),
+            ):
+                blockers = write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=successor,
+                    is_live=lambda task: False,
+                )
+            self.assertEqual(blockers, [])
+            receipt = write_admission.read_ledger(reviewed)[-1]
+            self.assertEqual(receipt["record"], "completion_accepted")
+            self.assertEqual(receipt["accepted_run_ids"], ["run-a"])
+            evidence = receipt["additional_scope_evidence"]
+            self.assertEqual([item["run_id"] for item in evidence], ["run-a"])
+            self.assertRegex(evidence[0]["completion_evidence_digest"], r"^sha256:[0-9a-f]{64}$")
 
     def test_a_task_own_unreviewed_change_does_not_lock_it_out_of_rework(self) -> None:
         """Repairing your own reviewed change is the rework phase, not a collision."""

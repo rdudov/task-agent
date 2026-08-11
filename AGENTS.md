@@ -92,7 +92,9 @@ Files the user explicitly requested are a separate, user-facing class of output.
   terminal record into the append-only admission ledger; that exact run-scoped
   evidence recovers its scope across PID namespaces. A terminal launch failure releases
   its pending launch claim. The fingerprint includes staged and non-ignored
-  untracked content.
+  untracked content. Successful completion appends the exact write-scope run IDs
+  whose gates closed, so later repository history cannot retroactively invalidate
+  an accepted task while later same-task rework remains a new obligation.
 - Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.

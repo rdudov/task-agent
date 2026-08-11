@@ -236,6 +236,14 @@ policy families have an approved digest-bound review. A refused completion is
 only that the run ended after that published lower bound and does not invent a
 stopping point.
 
+When that decision accepts a task that changed a Git repository, write admission
+appends a `completion_accepted` receipt naming the write-scope run IDs covered by
+that completion. A later task advancing the same repository does not
+retroactively stale those accepted scopes; later rework under the original task
+creates new scope IDs and therefore new obligations. Pre-receipt ledgers,
+including a terminal abandoned scope, are backfilled only when task metadata,
+runtime status, and phase all durably say `completed`.
+
 The bounded reviewer decides only the two prose policy families against the
 exact candidate. Required live evidence remains a separate completion gate: a
 pre-terminal policy review must not require a future delivery/completion receipt

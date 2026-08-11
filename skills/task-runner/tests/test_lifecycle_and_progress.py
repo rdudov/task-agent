@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def _load_task_runner_module():
@@ -86,6 +87,22 @@ class ChildLifecycleTests(unittest.TestCase):
         self.assertEqual(status["state"], "blocked")
         self.assertIn("completion_refusal", status)
 
+    def test_clean_standard_completion_records_write_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task_dir(tmp, "running")
+            with (
+                mock.patch.object(
+                    task_runner, "completion_ready", return_value=(True, "")
+                ),
+                mock.patch.object(
+                    task_runner.write_admission, "record_completion_acceptance"
+                ) as record,
+            ):
+                task_runner.finalize_child_lifecycle(
+                    task_dir, "standard", "codex", 0
+                )
+            record.assert_called_once_with(task_dir)
+
     def test_a_child_written_completed_state_still_needs_durable_gates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = self._task_dir(tmp, "completed")
@@ -95,6 +112,23 @@ class ChildLifecycleTests(unittest.TestCase):
             )
         self.assertEqual(status["state"], "blocked")
         self.assertIn("completion_refusal", status)
+
+    def test_child_written_completed_state_records_write_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task_dir(tmp, "completed")
+            with (
+                mock.patch.object(
+                    task_runner, "completion_ready", return_value=(True, "")
+                ),
+                mock.patch.object(
+                    task_runner.write_admission, "record_completion_acceptance"
+                ) as record,
+            ):
+                task_runner.finalize_child_lifecycle(
+                    task_dir, "dev-pipeline", "codex", 0
+                )
+            record.assert_called_once_with(task_dir)
+            self.assertEqual(task_runner.task_phases.current_phase(task_dir), "completed")
 
     def test_a_child_written_refusal_or_failure_is_never_overwritten(self) -> None:
         for state in ("blocked", "failed"):
