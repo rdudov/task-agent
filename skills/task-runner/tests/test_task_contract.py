@@ -3,11 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from task_contract import (
+    COMPLETION_REVIEW_QUESTION,
     parse_task_markdown_contract,
     render_task_contract_overlay,
     unsatisfied_review_verdict,
     verification_gate_result,
 )
+
+
+def test_completion_review_does_not_predeclare_future_live_evidence() -> None:
+    assert "Judge the two prose policy families only" in COMPLETION_REVIEW_QUESTION
+    assert "do not require a future terminal delivery receipt" in COMPLETION_REVIEW_QUESTION
 
 
 def test_parse_task_markdown_contract_extracts_hard_constraints_and_evidence(tmp_path: Path) -> None:

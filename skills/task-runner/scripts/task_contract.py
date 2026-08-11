@@ -244,7 +244,10 @@ COMPLETION_REVIEW_QUESTION = (
     "Does the delivered candidate satisfy every non_negotiable_constraint and avoid "
     "every forbidden_substitution in the effective_contract embedded in the review "
     "subject? Review implementation behavior; approval is forbidden for a contract-only "
-    "or readability-only review."
+    "or readability-only review. Judge the two prose policy families only. Required live "
+    "evidence is enforced separately by the completion predicate: do not require a future "
+    "terminal delivery receipt or completion transition from this pre-terminal reviewer, "
+    "and do not treat their honest pending state as a policy-family violation."
 )
 COMPLETION_REVIEW_EXCLUSIONS = [
     "Behavior outside the effective contract and exact delivered candidate."

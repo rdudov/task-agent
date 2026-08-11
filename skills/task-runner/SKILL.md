@@ -236,6 +236,11 @@ policy families have an approved digest-bound review. A refused completion is
 only that the run ended after that published lower bound and does not invent a
 stopping point.
 
+The bounded reviewer decides only the two prose policy families against the
+exact candidate. Required live evidence remains a separate completion gate: a
+pre-terminal policy review must not require a future delivery/completion receipt
+or turn that honest pending state into a policy-family refusal.
+
 Create the bounded policy review over the final committed candidate with:
 
 ```bash
