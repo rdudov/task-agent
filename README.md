@@ -211,6 +211,13 @@ again. A failed preparation never changes task status. Existing v1 applications
 without the declaration keep the original ordering and still close metadata in
 their owner workflow.
 
+When that deferred predicate or the application preparation refuses, the
+adapter preserves that exact reason in `status.json` and marks the refusal as an
+automatic-finalization branch. It does not replace the preparation blocker with
+the earlier full-predicate status check. Installation transports can therefore
+explain the actual blocker without directing a user to perform metadata closure
+that the registered finalizer owns.
+
 The same adapter can return a launch memory policy for `--memory-limit`, attach
 native-session arguments to a standard `start|resume|retry`, classify the
 supervised exit as an exact quota wait for its scheduler, and add

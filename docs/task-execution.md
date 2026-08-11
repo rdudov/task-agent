@@ -83,6 +83,13 @@ The runner decides nothing about the pipeline itself. `skills/task-runner/script
 
 The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed; a validated quota-wait event is a durable pause and is not rewritten as that failure. Standard and dev-pipeline finalizers share the durable status, plan, live-evidence, and explicit-verdict checks, even when the child wrote `completed` itself. Enforced policy families additionally need an approved digest-bound review for dev-pipeline; standard tasks do not manufacture that profile-specific review surface. That reviewer decides only the two prose policy families against the exact candidate. Live-evidence gates remain owned by the completion predicate, so a pre-terminal policy reviewer neither requires a future delivery/completion receipt nor converts its honest pending state into a policy-family failure.
 
+For a registered completion-preparation application, a precondition or
+transport refusal is projected with its original reason and an
+`automatic_finalization` marker. The subsequent full predicate must not mask it
+with the still-deferred task status. This lets an installation keep recovery
+with the continuous owner instead of instructing the user to close canonical
+metadata by hand.
+
 The detached watcher's terminal `outcome` is derived after that finalization:
 `succeeded` requires an accepted completed state, a clean exit refused by the
 durable gate is `rejected_completion_contract`, and a validated quota pause is

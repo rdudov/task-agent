@@ -365,8 +365,49 @@ class CompletionGateTests(unittest.TestCase):
             projector.consume(event("attempt_completed", 2))
         complete.assert_not_called()
         self.assertEqual(status_of(task_dir)["state"], "blocked")
+        self.assertEqual(
+            status_of(task_dir)["completion_refusal"]["reason"],
+            "application completion preparation refused: transport refused",
+        )
+        self.assertIs(
+            status_of(task_dir)["completion_refusal"]["automatic_finalization"],
+            True,
+        )
         self.assertEqual(dev_pipeline_adapter.task_reference(task_dir), "1")
         self.assertIn("status: in_progress", (task_dir / "task.md").read_text(encoding="utf-8"))
+
+    def test_preparation_precondition_reason_survives_full_status_projection(self) -> None:
+        task_dir = make_task(self.tmp, status="in_progress")
+        (task_dir / "plan.md").write_text(
+            "# Plan\n\n1. [in_progress] Finish preparation\n", encoding="utf-8"
+        )
+        (task_dir / "task_contract.json").write_text(
+            json.dumps({"required_live_evidence": [{"id": "delivery-receipt"}]}),
+            encoding="utf-8",
+        )
+
+        class PreparingApplication(application_adapter.DefaultApplicationV1):
+            completion_preparation_evidence_ids = ("delivery-receipt",)
+
+            def prepare_completion(self, request):
+                raise AssertionError("preparation must not run before the plan is ready")
+
+        module = types.ModuleType("precondition_refusing_application")
+        module.adapter = PreparingApplication()
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(
+            task_dir, application=f"{module.__name__}:adapter", destination="bound"
+        )
+
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(event("attempt_completed", 2))
+
+        refusal = status_of(task_dir)["completion_refusal"]
+        self.assertEqual(refusal["reason"], "plan.md still has unfinished steps")
+        self.assertIs(refusal["automatic_finalization"], True)
+        self.assertIn("plan.md still has unfinished steps", status_of(task_dir)["current_step"])
+        self.assertNotIn("frontmatter status", status_of(task_dir)["current_step"])
 
     def test_completion_preparation_does_not_run_while_other_gates_fail(self) -> None:
         task_dir = make_task(self.tmp, status="done")

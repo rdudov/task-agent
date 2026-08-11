@@ -464,8 +464,8 @@ class TaskArtifactProjector:
                     ) from exc
                 if event["event_id"] in projected:
                     continue
-                self.prepare_completion(event)
-                self.project(event)
+                preparation_refusal = self.prepare_completion(event)
+                self.project(event, preparation_refusal=preparation_refusal)
                 projected.add(event["event_id"])
                 write_json(
                     self.projection_cursor_path,
@@ -480,7 +480,7 @@ class TaskArtifactProjector:
                     },
                 )
 
-    def prepare_completion(self, event: dict) -> None:
+    def prepare_completion(self, event: dict) -> str | None:
         """Let an installation establish declared terminal evidence first.
 
         The hook is reached only when the ordinary completion predicate would
@@ -491,10 +491,10 @@ class TaskArtifactProjector:
         leaves metadata non-complete and remains blocked.
         """
         if event["kind"] != "attempt_completed":
-            return
+            return None
         declared_ids = completion_preparation_evidence_ids(self.application)
         if not declared_ids:
-            return
+            return None
         contract = load_task_contract(self.task_dir)
         enforced_ids = {
             str(item["id"]).strip()
@@ -505,8 +505,8 @@ class TaskArtifactProjector:
             evidence_id for evidence_id in declared_ids if evidence_id in enforced_ids
         )
         if not evidence_ids:
-            return
-        ready, _reason = completion_ready(
+            return None
+        ready, reason = completion_ready(
             self.task_dir,
             workflow="dev-pipeline",
             application=self.application_spec,
@@ -514,7 +514,7 @@ class TaskArtifactProjector:
             defer_task_status=True,
         )
         if not ready:
-            return
+            return reason
         result = self.application.prepare_completion(
             CompletionPreparationRequestV1(
                 task_dir=self.task_dir,
@@ -527,6 +527,8 @@ class TaskArtifactProjector:
         if result.delivered:
             complete_task_metadata(self.task_dir)
             self.append_trace(f"Prepared completion evidence before finalization: {result.detail}")
+            return None
+        return "application completion preparation refused: " + result.detail
 
     def consume(self, raw_event: dict) -> bool:
         """Record and project one event. Returns False for a repeat."""
@@ -612,10 +614,15 @@ class TaskArtifactProjector:
                 f"Delivered dev-pipeline `{event['kind']}` notification: {result.detail}"
             )
 
-    def project(self, event: dict) -> None:
+    def project(self, event: dict, *, preparation_refusal: str | None = None) -> None:
         state, step = status_projection(event, self.task_dir)
+        if event["kind"] == "attempt_completed" and preparation_refusal is not None:
+            refusal = completion_refusal(self.task_dir, preparation_refusal)
+            state, step = "blocked", refusal["summary"]
         self.project_phase(event, state)
-        self.project_status(event, state, step)
+        self.project_status(
+            event, state, step, preparation_refusal=preparation_refusal
+        )
         self.project_trace(event, step)
         self.project_progress(event, step)
 
@@ -647,7 +654,14 @@ class TaskArtifactProjector:
             entered_at=event["timestamp"],
         )
 
-    def project_status(self, event: dict, state: str, step: str) -> None:
+    def project_status(
+        self,
+        event: dict,
+        state: str,
+        step: str,
+        *,
+        preparation_refusal: str | None = None,
+    ) -> None:
         status_path = self.task_dir / "status.json"
         status = read_json(status_path)
         status.update(
@@ -665,8 +679,14 @@ class TaskArtifactProjector:
             }
         )
         if event["kind"] == "attempt_completed" and state == "blocked":
-            _ready, reason = contract_completion_ready(self.task_dir)
-            status["completion_refusal"] = completion_refusal(self.task_dir, reason)
+            if preparation_refusal is None:
+                _ready, reason = contract_completion_ready(self.task_dir)
+            else:
+                reason = preparation_refusal
+            refusal = completion_refusal(self.task_dir, reason)
+            if preparation_refusal is not None:
+                refusal["automatic_finalization"] = True
+            status["completion_refusal"] = refusal
         else:
             status.pop("completion_refusal", None)
         write_json(status_path, status)

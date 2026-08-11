@@ -429,7 +429,12 @@ invalid sequence or identity still refuses continuation.
   canonical `task-agent-tasks-index set-status` command, then immediately
   evaluates the complete predicate; failure or partial work leaves metadata
   non-complete and remains a refused completion. Applications without the hook
-  retain the old order and their owner closes metadata as before.
+  retain the old order and their owner closes metadata as before. When this
+  hook's deferred precondition or preparation itself refuses, projection carries
+  that exact reason and marks the refusal `automatic_finalization`; it must not
+  recompute a full predicate whose still-deferred status check masks the
+  blocker. Installation messages use that marker to keep recovery with the
+  owner and must not ask the user to run the finalizer-owned metadata transition.
 
 A validated dev-pipeline quota-wait event remains a durable waiting state after
 the adapter process exits. Every child-written `completed` state is rechecked
