@@ -62,7 +62,10 @@ task-agent-engine @ git+https://github.com/rdudov/task-agent.git@<40-character-c
 That install exposes `task-agent`, `task-agent-engine`, and
 `task-agent-tasks-index`. Installed completion finds that metadata entrypoint
 beside its active Python interpreter even when an application adapter loads the
-engine as top-level modules. `TASK_AGENT_ROOT` selects the installation workspace
+engine as top-level modules. A post-preparation metadata-owner failure is
+projected as a durable refusal instead of aborting projection, allowing an
+installation to correct any terminal statement already sent. `TASK_AGENT_ROOT`
+selects the installation workspace
 for relative task paths; absolute task paths need no workspace convention.
 
 Create a task:

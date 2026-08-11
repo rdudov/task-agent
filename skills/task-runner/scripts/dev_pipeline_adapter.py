@@ -515,20 +515,29 @@ class TaskArtifactProjector:
         )
         if not ready:
             return reason
-        result = self.application.prepare_completion(
-            CompletionPreparationRequestV1(
-                task_dir=self.task_dir,
-                workflow="dev-pipeline",
-                event_id=event["event_id"],
-                destination=self.destination,
-                evidence_ids=evidence_ids,
+        try:
+            result = self.application.prepare_completion(
+                CompletionPreparationRequestV1(
+                    task_dir=self.task_dir,
+                    workflow="dev-pipeline",
+                    event_id=event["event_id"],
+                    destination=self.destination,
+                    evidence_ids=evidence_ids,
+                )
             )
-        )
-        if result.delivered:
-            complete_task_metadata(self.task_dir)
-            self.append_trace(f"Prepared completion evidence before finalization: {result.detail}")
-            return None
-        return "application completion preparation refused: " + result.detail
+            if result.delivered:
+                complete_task_metadata(self.task_dir)
+                self.append_trace(
+                    f"Prepared completion evidence before finalization: {result.detail}"
+                )
+                return None
+            return "application completion preparation refused: " + result.detail
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            self.append_trace(
+                "Automatic completion finalization failed after preparation: " + detail
+            )
+            return "automatic completion finalization failed: " + detail
 
     def consume(self, raw_event: dict) -> bool:
         """Record and project one event. Returns False for a repeat."""

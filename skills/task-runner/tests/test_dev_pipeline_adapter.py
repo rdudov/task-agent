@@ -340,6 +340,60 @@ class CompletionGateTests(unittest.TestCase):
         complete.assert_called_once_with(task_dir)
         self.assertEqual(status_of(task_dir)["state"], "completed")
 
+    def test_metadata_owner_failure_is_projected_instead_of_crashing(self) -> None:
+        task_dir = make_task(self.tmp, status="in_progress")
+        (task_dir / "task_contract.json").write_text(
+            json.dumps({"required_live_evidence": [{"id": "delivery-receipt"}]}),
+            encoding="utf-8",
+        )
+
+        class PreparingApplication(application_adapter.DefaultApplicationV1):
+            completion_preparation_evidence_ids = ("delivery-receipt",)
+
+            def prepare_completion(self, request):
+                with (request.task_dir / "verification.md").open(
+                    "a", encoding="utf-8"
+                ) as handle:
+                    handle.write(
+                        "# Verification\n\n## delivery-receipt\n"
+                        "- Result: **PASS**\n- Evidence: delivered first\n"
+                    )
+                return application_adapter.DeliveryResultV1(
+                    True, "receipt persisted"
+                )
+
+        module = types.ModuleType("failing_metadata_owner_application")
+        module.adapter = PreparingApplication()
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(
+            task_dir, application=f"{module.__name__}:adapter", destination="bound"
+        )
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        with mock.patch.object(
+            dev_pipeline_adapter,
+            "complete_task_metadata",
+            side_effect=RuntimeError("canonical owner unavailable"),
+        ):
+            projector.consume(event("attempt_completed", 2))
+
+        status = status_of(task_dir)
+        self.assertEqual(status["state"], "blocked")
+        self.assertEqual(
+            status["completion_refusal"]["reason"],
+            "automatic completion finalization failed: canonical owner unavailable",
+        )
+        self.assertIs(
+            status["completion_refusal"]["automatic_finalization"], True
+        )
+        projection = json.loads(
+            (task_dir / "dev-pipeline" / "projection-cursor.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn("event_attempt_completed_2", projection["projected_event_ids"])
+        self.assertIn("canonical owner unavailable", trace_of(task_dir))
+
     def test_failed_preparation_leaves_in_progress_task_open(self) -> None:
         task_dir = make_task(self.tmp, status="in_progress")
         (task_dir / "task_contract.json").write_text(

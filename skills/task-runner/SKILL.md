@@ -439,6 +439,10 @@ invalid sequence or identity still refuses continuation.
   recompute a full predicate whose still-deferred status check masks the
   blocker. Installation messages use that marker to keep recovery with the
   owner and must not ask the user to run the finalizer-owned metadata transition.
+  An exception after preparation, including canonical metadata-owner refusal,
+  becomes the same durable automatic-finalization refusal: projection advances
+  and the installation receives the rejected terminal event so it can correct
+  any completion statement already sent during preparation.
 
 A validated dev-pipeline quota-wait event remains a durable waiting state after
 the adapter process exits. Every child-written `completed` state is rechecked
