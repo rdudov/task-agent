@@ -184,7 +184,7 @@ class SupervisionEvidenceTests(unittest.TestCase):
             )
             self.assertEqual(task_runner.live_run_processes(task_dir), [])
 
-    def test_a_child_that_wrote_its_own_terminal_status_still_closes_the_phase(self) -> None:
+    def test_a_child_written_completed_status_still_runs_the_durable_gate(self) -> None:
         """A standard child maintains `status.json` and knows nothing of phases.
 
         A live run found this: the task reached `completed` and the phase stayed
@@ -198,16 +198,15 @@ class SupervisionEvidenceTests(unittest.TestCase):
                 {"state": "completed", "current_step": "child wrote this itself"},
             )
             task_runner.finalize_child_lifecycle(task_dir, "standard", "claude", 0)
-            self.assertEqual(task_phases.current_phase(task_dir), "completed")
+            self.assertEqual(task_phases.current_phase(task_dir), "blocked")
             self.assertEqual(
-                task_phases.phase_sequence(task_dir), ["implementation", "completed"]
+                task_phases.phase_sequence(task_dir), ["implementation", "blocked"]
             )
             status = json.loads(
                 task_runner.status_path(task_dir).read_text(encoding="utf-8")
             )
-            self.assertEqual(status["phase"], "completed")
-            # The state the child recorded is its own; nothing here rewrites it.
-            self.assertEqual(status["current_step"], "child wrote this itself")
+            self.assertEqual(status["phase"], "blocked")
+            self.assertIn("frontmatter status", status["current_step"])
 
     def test_a_dry_run_holds_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

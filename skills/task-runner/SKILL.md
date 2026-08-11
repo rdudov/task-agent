@@ -371,7 +371,9 @@ validation/order, artifact projection, and completion refusal.
   installation may parse a structured exact reset, arm its own durable
   scheduler, and return `waiting_for_quota`; it may not invent a reset time or
   replace the native session.
-- `deliver_event` receives notable neutral lifecycle events after validation.
+- `deliver_event` receives notable neutral lifecycle events after validation,
+  including independent-review start, required rework, review refusal, and an
+  exact quota wait.
   Recipient binding, delivery receipts, deduplication, replay, and Telegram are
   installation concerns.
 - `recover_transport` receives the durable validated event-log path when the
@@ -380,6 +382,15 @@ validation/order, artifact projection, and completion refusal.
 - `completion_problems` can enforce cross-family verdict binding and the
   delivery policy of one installation. Problems join the shared completion
   refusal; prose or a child-written `completed` state cannot override them.
+
+A validated dev-pipeline quota-wait event remains a durable waiting state after
+the adapter process exits. Every child-written `completed` state is rechecked
+through the full engine predicate plus the registered application policy before
+the runner accepts it. The delivered-candidate policy-family review is specific
+to dev-pipeline; standard tasks use their authored evidence and verdict gates.
+The watcher records `succeeded` only after that acceptance; a clean exit refused
+by the gate records `rejected_completion_contract`, and a quota pause records
+`waiting_for_quota`.
 
 With no registered application the default v1 implementation is inert, adds no
 completion policy, and refuses standard `resume|retry` because their native

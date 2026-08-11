@@ -186,11 +186,12 @@ class DetachedWatcherTests(unittest.TestCase):
                 "the detached watcher never finished",
             )
             status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
-            self.assertEqual(status["state"], "completed")
+            self.assertEqual(status["state"], "blocked")
+            self.assertIn("completion_refusal", status)
             runner_meta = json.loads(
                 (task_dir / ".runner" / "runner.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(runner_meta["outcome"], "succeeded")
+            self.assertEqual(runner_meta["outcome"], "rejected_completion_contract")
             self.assertEqual(runner_meta["exit_code"], 0)
 
     def test_a_child_that_dies_without_a_terminal_state_is_recorded_as_failed(self) -> None:

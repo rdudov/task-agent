@@ -133,7 +133,9 @@ Its six decisions are deliberately narrower than lifecycle ownership:
 - `standard_run_finished` receives the supervised exit and log, so an
   installation can recognize an exact reset, arm its scheduler, and publish a
   durable `waiting_for_quota` disposition without replacing the session;
-- `deliver_event` transports a neutral event to the opaque `--destination`;
+- `deliver_event` transports notable neutral events—including review start,
+  required rework, review refusal, and exact quota waiting—to the opaque
+  `--destination`;
 - `recover_transport` gives that transport the durable validated event log so
   it can reconcile installation-owned receipts after an adapter restart;
 - `completion_problems` adds installation-specific pairing and delivery gates.
@@ -149,6 +151,12 @@ native child, the watcher binds those values back to the parent's prepared
 record and reuses that record exactly; an absent session or mismatched binding
 fails closed instead of selecting the default application or starting a new
 session.
+
+A validated dev-pipeline quota wait remains a durable waiting state after the
+adapter process exits. Every child-written `completed` state is rechecked
+through the full engine predicate plus the registered application policy.
+Standard tasks use their authored evidence and verdict gates; the
+delivered-candidate policy-family review remains a dev-pipeline-only surface.
 
 **One goal, one number.** A user goal keeps a single task directory for its whole
 life. Review is a phase of that task and so is the rework a review asks for;

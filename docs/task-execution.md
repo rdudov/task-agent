@@ -75,7 +75,12 @@ the vocabulary, the event mappings and the actuality threshold.
 
 The runner decides nothing about the pipeline itself. `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration: it renders the owner instruction from `task.md`, calls the public CLI, validates the neutral lifecycle events the core emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. The core interprets owner-runtime behavior; the adapter only projects what the core reports.
 
-The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed. Standard and dev-pipeline finalizers share one completion decision: YAML frontmatter must be `completed`, `plan.md` must have no `[pending]` or `[in_progress]`, every required evidence gate's latest section must record `OK`, `PASS`, or `PASSED`, any required author verdict must be unambiguous, and enforced policy families need an approved digest-bound review.
+The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed; a validated quota-wait event is a durable pause and is not rewritten as that failure. Standard and dev-pipeline finalizers share the durable status, plan, live-evidence, and explicit-verdict checks, even when the child wrote `completed` itself. Enforced policy families additionally need an approved digest-bound review for dev-pipeline; standard tasks do not manufacture that profile-specific review surface.
+
+The detached watcher's terminal `outcome` is derived after that finalization:
+`succeeded` requires an accepted completed state, a clean exit refused by the
+durable gate is `rejected_completion_contract`, and a validated quota pause is
+`waiting_for_quota`. Exit code zero alone is never recorded as success.
 
 The owner instruction states these conditions explicitly. Generate the bounded
 policy review over a final committed candidate with `task_runner.py
@@ -86,7 +91,8 @@ close the task.
 The adapter itself carries no transport policy. A caller registers application
 API v1 with `--application module:attribute` and supplies an opaque
 `--destination`; notable lifecycle events then reach the application's
-`deliver_event` method. The public template's default application is inert.
+`deliver_event` method. Review start, required rework, review refusal, and exact
+quota waiting are notable transitions rather than silent internal events. The public template's default application is inert.
 Recipient binding, deduplication, replay, and document receipts remain owned by
 the installation, while the public adapter still validates and orders the
 events before offering them. On adapter startup `recover_transport` receives

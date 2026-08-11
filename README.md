@@ -188,7 +188,8 @@ The engine is transport-neutral, but its extension point is now explicit and
 versioned. `--application package.module:object` loads application API v1;
 `--destination` passes an opaque installation-owned value that is hashed in
 runner metadata and never stored in clear text. Notable neutral lifecycle
-events are offered to `deliver_event`. The default application is inert, so a
+events—including independent-review start, required rework, review refusal,
+and an exact quota wait—are offered to `deliver_event`. The default application is inert, so a
 plain template still sends nothing. On restart, `recover_transport` gives the
 application the durable validated event log so its own receipt policy can
 reconcile delivery without the engine guessing whether a resend is safe.
@@ -199,7 +200,8 @@ supervised exit as an exact quota wait for its scheduler, and add
 installation-specific completion problems such as cross-family verdict binding
 or an unresolved document receipt. The public runner still owns the process,
 session-state persistence, event ordering, artifact projection, and completion
-refusal. An application owns only its resource values, transport receipts,
+refusal. A child-written terminal state is rechecked through the same durable
+engine gate before acceptance. An application owns only its resource values, transport receipts,
 pairing rules, and scheduler. API v1 is importable as
 `task_agent.application_adapter`; session state refuses secret-bearing keys.
 For standard runs the parent forwards the registration, operation, and opaque

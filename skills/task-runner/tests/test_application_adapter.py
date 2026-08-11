@@ -255,6 +255,94 @@ class ApplicationAdapterTests(unittest.TestCase):
             self.assertEqual(delivered.destination, "opaque-installation-value")
             self.assertEqual(self.module.adapter.recovery.event_log_path, projector.event_path)
 
+    def test_review_and_rework_transitions_reach_registered_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            (task / "status.json").write_text(
+                '{"current_step": "review transition"}', encoding="utf-8"
+            )
+            projector = dev_pipeline_adapter.TaskArtifactProjector(
+                task, application=self.spec, destination="opaque-installation-value"
+            )
+            for index, (kind, payload) in enumerate(
+                (
+                    (
+                        "review_started",
+                        {
+                            "strategy": "cross_provider",
+                            "review_provider": "claude",
+                            "artifact_digest": "sha256:abc",
+                            "author_session_id": "author-1",
+                        },
+                    ),
+                    (
+                        "review_rework_required",
+                        {
+                            "strategy": "cross_provider",
+                            "review_provider": "claude",
+                            "artifact_digest": "sha256:abc",
+                        },
+                    ),
+                ),
+                start=1,
+            ):
+                projector.offer_to_delivery(
+                    {
+                        "kind": kind,
+                        "event_id": f"event-{index}",
+                        "payload": payload,
+                    }
+                )
+            self.assertEqual(
+                [item.kind for item in self.module.adapter.events[-2:]],
+                ["review_started", "review_rework_required"],
+            )
+
+    def test_dev_pipeline_quota_wait_survives_adapter_process_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            (task / "status.json").write_text(
+                '{"state": "waiting", "current_step": "waiting for quota"}',
+                encoding="utf-8",
+            )
+            task_runner.finalize_child_lifecycle(
+                task,
+                "dev-pipeline",
+                "claude",
+                0,
+                destination="opaque-installation-value",
+            )
+            status = json.loads(task_runner.status_path(task).read_text(encoding="utf-8"))
+            self.assertEqual(status["state"], "waiting")
+            self.assertEqual(status["current_step"], "waiting for quota")
+
+    def test_child_written_completed_state_still_runs_engine_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            task_text = (task / "task.md").read_text(encoding="utf-8")
+            (task / "task.md").write_text(
+                task_text.replace('status: "completed"', 'status: "planned"'),
+                encoding="utf-8",
+            )
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {"workflow": "standard", "application": {"spec": self.spec}},
+            )
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed", "current_step": "child says completed"},
+            )
+            task_runner.finalize_child_lifecycle(
+                task,
+                "standard",
+                "claude",
+                0,
+                destination="opaque-installation-value",
+            )
+            status = json.loads(task_runner.status_path(task).read_text(encoding="utf-8"))
+            self.assertEqual(status["state"], "blocked")
+            self.assertIn("frontmatter status", status["current_step"])
+
     def test_standard_exit_hook_can_preserve_exact_quota_wait(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task = self._task(Path(raw))

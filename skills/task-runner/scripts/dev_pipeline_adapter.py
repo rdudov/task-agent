@@ -58,6 +58,11 @@ NOTIFIABLE = frozenset(
         "checkpoint_completed",
         "increment_ready_for_review",
         "increment_completed",
+        "review_started",
+        "review_rework_required",
+        "review_waiting",
+        "review_refused",
+        "run_waiting_for_quota",
         "blocked_on_user_decision",
         "attempt_failed",
         "attempt_completed",
@@ -270,6 +275,11 @@ def status_projection(event: dict, task_dir: Path) -> tuple[str, str]:
         return "running", f"Waiting on live acceptance: {payload['reason']}"
     if kind == "live_acceptance_completed":
         return "running", f"Live acceptance completed ({payload['strategy']})"
+    if kind == "run_waiting_for_quota":
+        return (
+            "waiting",
+            f"Claude usage limit exhausted; native resume waits until {payload['resets_at']}",
+        )
     if kind == "blocked_on_user_decision":
         return "blocked", f"Waiting for user decision: {payload['question']}"
     if kind == "run_failed":

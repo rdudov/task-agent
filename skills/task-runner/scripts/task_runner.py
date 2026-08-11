@@ -1911,7 +1911,7 @@ def finalize_child_lifecycle(
         # ended well would otherwise stay in the phase it was working in, and
         # the task's own history would never show how it finished.
         if task_state == "completed":
-            ready, reason = application_completion_ready(task_dir, workflow=workflow)
+            ready, reason = completion_ready(task_dir, workflow=workflow)
             if not ready:
                 refusal = completion_refusal(task_dir, reason)
                 write_status(
@@ -1929,8 +1929,14 @@ def finalize_child_lifecycle(
                 return
         record_terminal_phase(task_dir, task_state)
         return
+    if workflow == "dev-pipeline" and task_state == "waiting":
+        # A validated lifecycle event, not the adapter process exit, owns this
+        # durable pause. The registered installation has already been offered
+        # the event and may arm its scheduler; do not rewrite the pause as a
+        # missing terminal event after the adapter exits.
+        return
     if return_code == 0 and workflow != "dev-pipeline":
-        ready, reason = completion_ready(task_dir)
+        ready, reason = completion_ready(task_dir, workflow=workflow)
         if ready:
             return
         refusal = completion_refusal(task_dir, reason)
@@ -2163,15 +2169,6 @@ def cmd_run_child(args: argparse.Namespace) -> None:
     )
 
     return_code = process.wait()
-    outcome = "succeeded" if return_code == 0 else "failed"
-    update_runner_meta(
-        task_dir,
-        {
-            "exit_code": return_code,
-            "finished_at": utc_now(),
-            "outcome": outcome,
-        },
-    )
     if write_scope_run_id is not None:
         # Close the scope even though the child may have failed: what the run
         # did to the repository is a fact about the repository, not about the
@@ -2187,6 +2184,23 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         args.runner,
         return_code,
         destination=getattr(args, "destination", None),
+    )
+    terminal_state = read_json(status_path(task_dir)).get("state")
+    if terminal_state in {"waiting", "waiting_for_quota"}:
+        outcome = "waiting_for_quota"
+    elif terminal_state == "completed" and return_code == 0:
+        outcome = "succeeded"
+    elif terminal_state == "blocked" and return_code == 0:
+        outcome = "rejected_completion_contract"
+    else:
+        outcome = "failed"
+    update_runner_meta(
+        task_dir,
+        {
+            "exit_code": return_code,
+            "finished_at": utc_now(),
+            "outcome": outcome,
+        },
     )
 
 

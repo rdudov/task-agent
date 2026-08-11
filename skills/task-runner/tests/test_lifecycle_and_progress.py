@@ -67,8 +67,8 @@ class ChildLifecycleTests(unittest.TestCase):
         self.assertIn("without a terminal lifecycle event", status["current_step"])
         self.assertIn("Rejected the dev-pipeline process exit", trace)
 
-    def test_a_dev_pipeline_terminal_state_from_events_is_kept(self) -> None:
-        for state in ("completed", "blocked", "failed"):
+    def test_a_dev_pipeline_terminal_refusal_or_failure_is_kept(self) -> None:
+        for state in ("blocked", "failed"):
             with self.subTest(state=state):
                 with tempfile.TemporaryDirectory() as tmp:
                     task_dir = self._task_dir(tmp, state)
@@ -86,8 +86,18 @@ class ChildLifecycleTests(unittest.TestCase):
         self.assertEqual(status["state"], "blocked")
         self.assertIn("completion_refusal", status)
 
-    def test_a_terminal_state_written_by_the_child_is_never_overwritten(self) -> None:
-        for state in ("completed", "blocked", "failed"):
+    def test_a_child_written_completed_state_still_needs_durable_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task_dir(tmp, "completed")
+            task_runner.finalize_child_lifecycle(task_dir, "standard", "codex", 5)
+            status = json.loads(
+                task_runner.status_path(task_dir).read_text(encoding="utf-8")
+            )
+        self.assertEqual(status["state"], "blocked")
+        self.assertIn("completion_refusal", status)
+
+    def test_a_child_written_refusal_or_failure_is_never_overwritten(self) -> None:
+        for state in ("blocked", "failed"):
             with self.subTest(state=state):
                 with tempfile.TemporaryDirectory() as tmp:
                     task_dir = self._task_dir(tmp, state)

@@ -79,6 +79,20 @@ def task_status(task_dir: Path) -> str:
         return "unknown"
 
 
+def completion_workflow(task_dir: Path, explicit: str | None = None) -> str | None:
+    """Resolve which profile owns the caller's completion policy boundary."""
+    if explicit in {"standard", "dev-pipeline"}:
+        return explicit
+    try:
+        metadata = json.loads(
+            (task_dir / ".runner" / "runner.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    workflow = metadata.get("workflow") if isinstance(metadata, dict) else None
+    return workflow if workflow in {"standard", "dev-pipeline"} else None
+
+
 def _application_registration(task_dir: Path) -> tuple[str | None, str | None]:
     try:
         metadata = json.loads(
@@ -155,7 +169,14 @@ def completion_ready(
     if verdict_problems:
         return False, f"required review verdict is not established: {'; '.join(verdict_problems)}"
 
-    unestablished = unsatisfied_policy_families(contract, task_dir)
-    if unestablished:
-        return False, f"contract policy families are not established: {'; '.join(unestablished)}"
+    # The delivered-candidate policy-family review is a dev-pipeline surface.
+    # Standard tasks use their authored live-evidence and verdict gates and do
+    # not manufacture another workflow's review directory.
+    if completion_workflow(task_dir, workflow) != "standard":
+        unestablished = unsatisfied_policy_families(contract, task_dir)
+        if unestablished:
+            return False, (
+                "contract policy families are not established: "
+                + "; ".join(unestablished)
+            )
     return application_completion_ready(task_dir, workflow, application)
