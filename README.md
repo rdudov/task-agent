@@ -166,12 +166,12 @@ the active virtual environment with an editable checkout:
 .venv/bin/pip install -e /path/to/dev-pipeline
 ```
 
-The pinned revision predates the core's provider-neutral review events. Task
-phases degrade rather than break on it: implementation, blocked and terminal
-phases project normally, and the review and rework phases simply never appear
-because no event announces them. Advance the pin to a core that emits
-`review_started`, `review_rework_required` and `review_approved` to see the full
-sequence.
+The pinned revision includes the core's provider-neutral assurance contract and
+review events. A configured review uses `review_started` and
+`review_rework_required` for visible review/rework phase transitions;
+`review_approved` keeps the task in review until the following lifecycle event
+advances it. Older installed cores still degrade compatibly by omitting phases
+for events they do not emit.
 
 The adapter is transport-neutral. It builds the owner instruction, calls the public CLI, validates the neutral lifecycle events it emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. It binds no recipient and delivers no messages; `skills/task-runner/scripts/pipeline_notify.py` is the documented, deliberately inert seam where an application with a real transport attaches its own delivery and replay rules.
 
