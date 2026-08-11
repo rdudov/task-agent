@@ -145,8 +145,11 @@ Its six decisions are deliberately narrower than lifecycle ownership:
   evidence ids, so one installation can prepare different terminal evidence
   sets without weakening tasks that do not require them.
   This additive v1 capability runs only after every non-deferred completion
-  condition passes; its durable evidence is then consumed by the ordinary full
-  predicate. A missing hook changes no existing application's behavior.
+  condition other than terminal task status passes. If preparation succeeds,
+  the engine invokes the canonical task-index command to persist `completed`
+  and then consumes both metadata and evidence through the ordinary full
+  predicate. Preparation failure leaves metadata non-complete. A missing hook
+  changes no existing application's behavior.
 
 The engine persists the session state and destination hash, never the raw
 destination. It owns process supervision, event ordering, task artifacts, and

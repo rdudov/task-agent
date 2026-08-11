@@ -234,6 +234,21 @@ class ApplicationAdapterTests(unittest.TestCase):
             self.assertFalse(ready)
             self.assertIn("installation delivery receipt", reason)
 
+    def test_completion_metadata_uses_the_canonical_tasks_index_command(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            task = root / "tasks" / "001-example"
+            task.mkdir(parents=True)
+            (task / "task.md").write_text(
+                "---\nid: 1\nslug: example\ntitle: Example\n"
+                "date: 2026-08-11\nstatus: in_progress\nprojects: []\ntrips: []\n"
+                "---\n# Example\n",
+                encoding="utf-8",
+            )
+            task_completion.complete_task_metadata(task)
+            self.assertEqual(task_completion.task_status(task), "completed")
+            self.assertTrue((root / ".state" / "tasks-index.db").is_file())
+
     def test_optional_completion_preparation_is_additive_to_v1(self) -> None:
         adapter = application_adapter.DefaultApplicationV1()
         self.assertEqual(

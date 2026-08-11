@@ -32,7 +32,12 @@ try:
         completion_preparation_evidence_ids,
         load_application,
     )
-    from .task_completion import TASKS_INDEX_PATH, completion_ready, task_reference
+    from .task_completion import (
+        TASKS_INDEX_PATH,
+        complete_task_metadata,
+        completion_ready,
+        task_reference,
+    )
     from .task_contract import (
         PASSING_EVIDENCE_RESULTS,
         enforced_live_evidence,
@@ -50,7 +55,12 @@ except ImportError:
         completion_preparation_evidence_ids,
         load_application,
     )
-    from task_completion import TASKS_INDEX_PATH, completion_ready, task_reference
+    from task_completion import (
+        TASKS_INDEX_PATH,
+        complete_task_metadata,
+        completion_ready,
+        task_reference,
+    )
     from task_contract import (
         PASSING_EVIDENCE_RESULTS,
         enforced_live_evidence,
@@ -474,9 +484,11 @@ class TaskArtifactProjector:
         """Let an installation establish declared terminal evidence first.
 
         The hook is reached only when the ordinary completion predicate would
-        pass with exactly the application's declared evidence deferred.  Its
-        durable effects are then checked by the full predicate during normal
-        projection; a failed or partial preparation therefore remains blocked.
+        pass with exactly the application's declared evidence and terminal task
+        status deferred.  Successful preparation is followed by the canonical
+        metadata transition, and both durable effects are checked by the full
+        predicate during normal projection.  Failed preparation therefore
+        leaves metadata non-complete and remains blocked.
         """
         if event["kind"] != "attempt_completed":
             return
@@ -499,6 +511,7 @@ class TaskArtifactProjector:
             workflow="dev-pipeline",
             application=self.application_spec,
             deferred_live_evidence_ids=frozenset(evidence_ids),
+            defer_task_status=True,
         )
         if not ready:
             return
@@ -511,6 +524,7 @@ class TaskArtifactProjector:
             )
         )
         if result.delivered:
+            complete_task_metadata(self.task_dir)
             self.append_trace(f"Prepared completion evidence before finalization: {result.detail}")
 
     def consume(self, raw_event: dict) -> bool:

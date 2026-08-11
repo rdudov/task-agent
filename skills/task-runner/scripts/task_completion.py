@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 try:
@@ -79,6 +82,35 @@ def task_status(task_dir: Path) -> str:
         return "unknown"
 
 
+def complete_task_metadata(task_dir: Path) -> None:
+    """Close a task through the canonical metadata command or fail visibly."""
+    if task_status(task_dir) == "completed":
+        return
+    command = (
+        [sys.executable, str(TASKS_INDEX_PATH)]
+        if TASKS_INDEX_PATH.suffix == ".py"
+        else [str(TASKS_INDEX_PATH)]
+    )
+    env = os.environ.copy()
+    env["TASKS_INDEX_ROOT"] = str(task_dir.resolve().parents[1])
+    result = subprocess.run(
+        [*command, "set-status", task_reference(task_dir), "completed"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(
+            "canonical task metadata owner refused completion: "
+            + (detail or f"exit {result.returncode}")
+        )
+    if task_status(task_dir) != "completed":
+        raise RuntimeError(
+            "canonical task metadata owner returned success without persisting completed status"
+        )
+
+
 def completion_workflow(task_dir: Path, explicit: str | None = None) -> str | None:
     """Resolve which profile owns the caller's completion policy boundary."""
     if explicit in {"standard", "dev-pipeline"}:
@@ -131,6 +163,7 @@ def completion_ready(
     workflow: str | None = None,
     application: str | None = None,
     deferred_live_evidence_ids: frozenset[str] = frozenset(),
+    defer_task_status: bool = False,
 ) -> tuple[bool, str]:
     """Decide whether durable task state authorizes successful completion.
 
@@ -144,7 +177,9 @@ def completion_ready(
         return False, "task_contract.json is absent; no contract can authorize completion"
 
     status = task_status(task_dir)
-    if status != "completed":
+    if status != "completed" and not (
+        defer_task_status and status == "in_progress"
+    ):
         return False, f"task.md frontmatter status is {status!r}, not 'completed'"
 
     plan_path = task_dir / "plan.md"

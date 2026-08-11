@@ -417,9 +417,12 @@ invalid sequence or identity still refuses continuation.
   The declaration is an application capability list; each task defers only the
   intersection with evidence ids its effective contract actually enforces.
   The engine calls this optional v1 hook only when the predicate passes with
-  exactly those ids deferred, then immediately evaluates the complete predicate.
-  The hook must persist its evidence before returning; failure or partial work
-  remains a refused completion. Applications without it retain the old order.
+  exactly those ids and terminal task status deferred. The hook must persist its
+  evidence before returning. On success the engine closes metadata through the
+  canonical `task-agent-tasks-index set-status` command, then immediately
+  evaluates the complete predicate; failure or partial work leaves metadata
+  non-complete and remains a refused completion. Applications without the hook
+  retain the old order and their owner closes metadata as before.
 
 A validated dev-pipeline quota-wait event remains a durable waiting state after
 the adapter process exits. Every child-written `completed` state is rechecked

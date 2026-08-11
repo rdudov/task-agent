@@ -202,8 +202,12 @@ reconcile delivery without the engine guessing whether a resend is safe.
 API v1 also has an additive, optional pre-finalization capability: an
 application may declare the exact live-evidence ids its `prepare_completion`
 method can establish. The engine invokes it only when every other completion
-condition already passes, then evaluates the full predicate again. Existing v1
-applications without the declaration keep the original ordering.
+condition except authoritative task status already passes. After successful
+preparation, the engine closes task metadata through the installed
+`task-agent-tasks-index set-status` owner and evaluates the full predicate
+again. A failed preparation never changes task status. Existing v1 applications
+without the declaration keep the original ordering and still close metadata in
+their owner workflow.
 
 The same adapter can return a launch memory policy for `--memory-limit`, attach
 native-session arguments to a standard `start|resume|retry`, classify the

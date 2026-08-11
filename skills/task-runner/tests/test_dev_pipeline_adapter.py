@@ -293,6 +293,79 @@ class CompletionGateTests(unittest.TestCase):
         self.assertEqual(status_of(task_dir)["state"], "completed")
         self.assertIn("receipt persisted", trace_of(task_dir))
 
+    def test_successful_preparation_closes_in_progress_task_through_metadata_owner(self) -> None:
+        task_dir = make_task(self.tmp, status="in_progress")
+        (task_dir / "task_contract.json").write_text(
+            json.dumps({"required_live_evidence": [{"id": "delivery-receipt"}]}),
+            encoding="utf-8",
+        )
+
+        class PreparingApplication(application_adapter.DefaultApplicationV1):
+            completion_preparation_evidence_ids = ("delivery-receipt",)
+
+            def prepare_completion(self, request):
+                with (request.task_dir / "verification.md").open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        "# Verification\n\n## delivery-receipt\n"
+                        "- Result: **PASS**\n- Evidence: delivered first\n"
+                    )
+                return application_adapter.DeliveryResultV1(True, "receipt persisted")
+
+        module = types.ModuleType("closing_preparing_application")
+        module.adapter = PreparingApplication()
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+
+        def close_metadata(path):
+            task_md = path / "task.md"
+            task_md.write_text(
+                task_md.read_text(encoding="utf-8").replace(
+                    "status: in_progress", "status: completed"
+                ),
+                encoding="utf-8",
+            )
+
+        projector = dev_pipeline_adapter.TaskArtifactProjector(
+            task_dir, application=f"{module.__name__}:adapter", destination="bound"
+        )
+        with mock.patch.object(
+            dev_pipeline_adapter,
+            "complete_task_metadata",
+            side_effect=close_metadata,
+        ) as complete:
+            projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+            projector.consume(event("attempt_completed", 2))
+        complete.assert_called_once_with(task_dir)
+        self.assertEqual(status_of(task_dir)["state"], "completed")
+
+    def test_failed_preparation_leaves_in_progress_task_open(self) -> None:
+        task_dir = make_task(self.tmp, status="in_progress")
+        (task_dir / "task_contract.json").write_text(
+            json.dumps({"required_live_evidence": [{"id": "delivery-receipt"}]}),
+            encoding="utf-8",
+        )
+
+        class RefusingApplication(application_adapter.DefaultApplicationV1):
+            completion_preparation_evidence_ids = ("delivery-receipt",)
+
+            def prepare_completion(self, request):
+                return application_adapter.DeliveryResultV1(False, "transport refused")
+
+        module = types.ModuleType("refusing_preparing_application")
+        module.adapter = RefusingApplication()
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(
+            task_dir, application=f"{module.__name__}:adapter", destination="bound"
+        )
+        with mock.patch.object(dev_pipeline_adapter, "complete_task_metadata") as complete:
+            projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+            projector.consume(event("attempt_completed", 2))
+        complete.assert_not_called()
+        self.assertEqual(status_of(task_dir)["state"], "blocked")
+        self.assertEqual(dev_pipeline_adapter.task_reference(task_dir), "1")
+        self.assertIn("status: in_progress", (task_dir / "task.md").read_text(encoding="utf-8"))
+
     def test_completion_preparation_does_not_run_while_other_gates_fail(self) -> None:
         task_dir = make_task(self.tmp, status="done")
         (task_dir / "task_contract.json").write_text(
