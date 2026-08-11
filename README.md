@@ -132,6 +132,12 @@ without freezing the ambiguous attribution.
 
 `start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity and PID namespace rather than by pid alone. An observer in another namespace reports liveness as unknown and cannot replace, stop, or reattach the host run. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
 
+`stop` records a public-pipeline `handoff request-stop` marker before signalling
+a live dev-pipeline process. This lets an ordinary resume reopen the exact
+review or rework phase and retain the author session. If the marker cannot be
+recorded, `stop` refuses before sending the signal; unexplained process loss
+therefore keeps the core's fail-closed orphan handling.
+
 ## Asking What A Task Is Doing
 
 ```bash

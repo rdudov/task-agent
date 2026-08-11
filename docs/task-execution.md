@@ -143,6 +143,12 @@ authoritative lifecycle ledger through the same cursor. This closes a crash
 between the core's durable append and adapter projection without synthesizing
 events or skipping delivery; repeats remain idempotent by event ID.
 
+A deliberate runner stop is also durable. For dev-pipeline runs, `stop` invokes
+the core's `handoff request-stop` against the recorded state directory before it
+signals the process group. A later ordinary resume may reopen only that exact
+claimed review or rework phase. Failure to write the marker refuses the stop,
+while unexplained claimant loss keeps the public core's user-decision blocker.
+
 The dependency comes from the public `rdudov/dev-pipeline` repository and is
 pinned by commit in both requirements files. The normal README installation is
 therefore sufficient on a fresh Cursor machine; a local checkout is optional.

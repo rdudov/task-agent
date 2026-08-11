@@ -403,6 +403,69 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             self.assertEqual(payload["runner"]["process_visibility"], "different_pid_namespace")
 
 
+class SupportedPipelineStopTests(unittest.TestCase):
+    def test_public_phase_marker_is_written_before_the_process_group_is_signalled(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw) / "1064-example"
+            (task / ".runner").mkdir(parents=True)
+            (task / "task.md").write_text("# Task\n", encoding="utf-8")
+            (task / "plan.md").write_text("# Plan\n", encoding="utf-8")
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {"pid": 12345, "workflow": "dev-pipeline"},
+            )
+            order = []
+            with (
+                mock.patch.object(task_runner, "runner_pid_namespace_visible", return_value=True),
+                mock.patch.object(
+                    task_runner, "process_is_recorded_instance", return_value=(True, "identity")
+                ),
+                mock.patch.object(
+                    task_runner,
+                    "request_dev_pipeline_phase_stop",
+                    side_effect=lambda *_: order.append("marker"),
+                ),
+                mock.patch.object(
+                    task_runner.os,
+                    "killpg",
+                    side_effect=lambda *_: order.append("signal"),
+                ),
+                mock.patch.object(
+                    task_runner,
+                    "try_send_pipeline_stop_message",
+                    return_value=(False, "not configured"),
+                ),
+            ):
+                task_runner.cmd_stop(argparse.Namespace(task_dir=str(task)))
+            self.assertEqual(order, ["marker", "signal"])
+
+    def test_phase_marker_refusal_prevents_the_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw) / "1064-example"
+            (task / ".runner").mkdir(parents=True)
+            (task / "task.md").write_text("# Task\n", encoding="utf-8")
+            (task / "plan.md").write_text("# Plan\n", encoding="utf-8")
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {"pid": 12345, "workflow": "dev-pipeline"},
+            )
+            with (
+                mock.patch.object(task_runner, "runner_pid_namespace_visible", return_value=True),
+                mock.patch.object(
+                    task_runner, "process_is_recorded_instance", return_value=(True, "identity")
+                ),
+                mock.patch.object(
+                    task_runner,
+                    "request_dev_pipeline_phase_stop",
+                    side_effect=SystemExit("marker refused"),
+                ),
+                mock.patch.object(task_runner.os, "killpg") as killpg,
+            ):
+                with self.assertRaisesRegex(SystemExit, "marker refused"):
+                    task_runner.cmd_stop(argparse.Namespace(task_dir=str(task)))
+            killpg.assert_not_called()
+
+
 class TaskNumberWidthTests(unittest.TestCase):
     """A task number is as many digits as `tasks_index.py` allocated, not three.
 

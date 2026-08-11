@@ -2455,6 +2455,36 @@ def cmd_trace(args: argparse.Namespace) -> None:
     print(path.read_text(encoding="utf-8"), end="")
 
 
+def request_dev_pipeline_phase_stop(task_dir: Path, runner_meta: dict) -> None:
+    """Bind a supported stop to the exact live public-pipeline phase first."""
+    if runner_meta.get("workflow") != "dev-pipeline":
+        return
+    workflow = read_json(runner_workflow_path(task_dir))
+    state_dir = workflow.get("state_dir")
+    if not isinstance(state_dir, str) or not state_dir:
+        raise SystemExit(
+            "Cannot stop this dev-pipeline run safely: its lifecycle state directory "
+            "is not recorded."
+        )
+    command = [
+        resolve_dev_pipeline_bin(workflow.get("dev_pipeline_bin")),
+        "handoff",
+        "request-stop",
+        "--task-ref",
+        task_dir.name,
+        "--state-dir",
+        state_dir,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SystemExit(
+            "Cannot stop this dev-pipeline run safely because the durable phase "
+            f"marker was refused: {detail or f'exit {result.returncode}'}"
+        )
+    append_trace(task_dir, "Recorded the supported dev-pipeline stop before signalling it.")
+
+
 def cmd_stop(args: argparse.Namespace) -> None:
     task_dir = resolve_task_dir(args.task_dir)
     ensure_task_contract(task_dir)
@@ -2477,6 +2507,7 @@ def cmd_stop(args: argparse.Namespace) -> None:
             )
         raise SystemExit(f"Process is not running: {pid}")
 
+    request_dev_pipeline_phase_stop(task_dir, runner_meta)
     os.killpg(pid, signal.SIGTERM)
     append_trace(task_dir, f"Parent agent requested stop for pid {pid}.")
     write_status(task_dir, "blocked", "Child agent stopped by parent request")

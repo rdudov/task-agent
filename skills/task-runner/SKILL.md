@@ -204,6 +204,11 @@ installation chooses the assurance strategy and reviewer; task-agent does not
 invent either, and omission retains dev-pipeline's explicit unassured
 compatibility path.
 
+For a supported `task_runner.py stop`, the runner first asks the public core to
+bind `handoff request-stop` to the exact active review/rework lock. Only after
+that durable write succeeds does it signal the process group. Ordinary resume
+then reopens the same phase; an unknown disappearance remains fail-closed.
+
 This workflow depends on the separate public `rdudov/dev-pipeline` project. The
 tested commit is pinned in both requirements files, so the documented virtualenv
 install provides the CLI. An editable local checkout can replace it during core
