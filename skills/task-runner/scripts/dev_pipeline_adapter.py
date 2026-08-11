@@ -521,6 +521,7 @@ class TaskArtifactProjector:
                 workflow="dev-pipeline",
                 event_id=event["event_id"],
                 destination=self.destination,
+                evidence_ids=evidence_ids,
             )
         )
         if result.delivered:

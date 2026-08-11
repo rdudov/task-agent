@@ -120,6 +120,7 @@ class CompletionPreparationRequestV1:
     workflow: str
     event_id: str
     destination: str | None
+    evidence_ids: tuple[str, ...] = ()
 
 
 @runtime_checkable

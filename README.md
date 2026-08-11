@@ -201,7 +201,9 @@ application the durable validated event log so its own receipt policy can
 reconcile delivery without the engine guessing whether a resend is safe.
 API v1 also has an additive, optional pre-finalization capability: an
 application may declare the exact live-evidence ids its `prepare_completion`
-method can establish. The engine invokes it only when every other completion
+method can establish. The request carries the exact intersection of that
+capability list with the effective contract, so the application performs only
+the terminal work this task enforces. The engine invokes it only when every other completion
 condition except authoritative task status already passes. After successful
 preparation, the engine closes task metadata through the installed
 `task-agent-tasks-index set-status` owner and evaluates the full predicate

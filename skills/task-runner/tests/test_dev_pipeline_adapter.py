@@ -274,6 +274,7 @@ class CompletionGateTests(unittest.TestCase):
             completion_preparation_evidence_ids = ("delivery-receipt",)
 
             def prepare_completion(self, request):
+                self.request = request
                 with (request.task_dir / "verification.md").open("a", encoding="utf-8") as handle:
                     handle.write(
                         "# Verification\n\n## delivery-receipt\n"
@@ -292,6 +293,7 @@ class CompletionGateTests(unittest.TestCase):
         projector.consume(event("attempt_completed", 2))
         self.assertEqual(status_of(task_dir)["state"], "completed")
         self.assertIn("receipt persisted", trace_of(task_dir))
+        self.assertEqual(module.adapter.request.evidence_ids, ("delivery-receipt",))
 
     def test_successful_preparation_closes_in_progress_task_through_metadata_owner(self) -> None:
         task_dir = make_task(self.tmp, status="in_progress")

@@ -416,6 +416,8 @@ invalid sequence or identity still refuses continuation.
   `completion_preparation_evidence_ids` and implement `prepare_completion`.
   The declaration is an application capability list; each task defers only the
   intersection with evidence ids its effective contract actually enforces.
+  The request carries that exact intersection, and the application performs
+  only those selected terminal gates.
   The engine calls this optional v1 hook only when the predicate passes with
   exactly those ids and terminal task status deferred. The hook must persist its
   evidence before returning. On success the engine closes metadata through the

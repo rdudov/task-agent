@@ -143,7 +143,9 @@ Its six decisions are deliberately narrower than lifecycle ownership:
   `completion_preparation_evidence_ids` and implement `prepare_completion`.
   The engine intersects this capability list with the current task's enforced
   evidence ids, so one installation can prepare different terminal evidence
-  sets without weakening tasks that do not require them.
+  sets without weakening tasks that do not require them. That exact selected
+  tuple is passed to `prepare_completion`; the application must not infer or
+  execute unselected terminal gates.
   This additive v1 capability runs only after every non-deferred completion
   condition other than terminal task status passes. If preparation succeeds,
   the engine invokes the canonical task-index command to persist `completed`
