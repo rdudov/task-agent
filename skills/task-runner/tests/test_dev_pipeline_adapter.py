@@ -393,12 +393,20 @@ class CoreCommandTests(unittest.TestCase):
         self.assertIn("schema_version: 1", text)
         self.assertIn("Never infer or invent a total", text)
 
-    def test_the_adapter_accepts_no_delivery_configuration(self) -> None:
-        # Delivery belongs to whoever owns a transport. The template cannot bind
-        # a recipient or promise at-most-once delivery, so it refuses to be told
-        # about one at all.
+    def test_the_adapter_accepts_only_the_versioned_delivery_configuration(self) -> None:
         task_dir = make_task(self.tmp)
-        for option in ("--destination", "--chat-id", "--notification-test-context"):
+        with mock.patch.object(
+            dev_pipeline_adapter, "resolve_dev_pipeline_bin", return_value="dev-pipeline"
+        ), mock.patch.object(dev_pipeline_adapter, "run", return_value=0) as run:
+            self.assertEqual(
+                dev_pipeline_adapter.main(
+                    [str(task_dir), "--repo", str(task_dir.parent), "--destination", "opaque"]
+                ),
+                0,
+            )
+        self.assertEqual(run.call_args.args[0].destination, "opaque")
+
+        for option in ("--chat-id", "--notification-test-context"):
             with self.subTest(option=option):
                 with self.assertRaises(SystemExit):
                     dev_pipeline_adapter.main(

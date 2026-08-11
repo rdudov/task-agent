@@ -37,8 +37,14 @@ from pathlib import Path
 import yaml
 
 # TASKS_INDEX_ROOT lets tests point the real script at a throwaway tree instead
-# of forcing them to burn task numbers in tasks/. It is not used in normal operation.
-REPO_ROOT = Path(os.environ.get("TASKS_INDEX_ROOT") or Path(__file__).resolve().parents[3]).resolve()
+# of forcing them to burn task numbers in tasks/. An installed engine shares
+# TASK_AGENT_ROOT with its runner entry points, while direct repository use
+# retains the source-tree default.
+REPO_ROOT = Path(
+    os.environ.get("TASKS_INDEX_ROOT")
+    or os.environ.get("TASK_AGENT_ROOT")
+    or Path(__file__).resolve().parents[3]
+).resolve()
 TASKS_DIR = REPO_ROOT / "tasks"
 DB_PATH = REPO_ROOT / ".state" / "tasks-index.db"
 

@@ -52,6 +52,17 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
 ```
 
+The repository is also a Python distribution. An application can bind the
+engine to an immutable Git revision without copying its lifecycle code:
+
+```text
+task-agent-engine @ git+https://github.com/rdudov/task-agent.git@<40-character-commit>
+```
+
+That install exposes `task-agent`, `task-agent-engine`, and
+`task-agent-tasks-index`. `TASK_AGENT_ROOT` selects the installation workspace
+for relative task paths; absolute task paths need no workspace convention.
+
 Create a task:
 
 ```bash
@@ -173,7 +184,24 @@ review events. A configured review uses `review_started` and
 advances it. Older installed cores still degrade compatibly by omitting phases
 for events they do not emit.
 
-The adapter is transport-neutral. It builds the owner instruction, calls the public CLI, validates the neutral lifecycle events it emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. It binds no recipient and delivers no messages; `skills/task-runner/scripts/pipeline_notify.py` is the documented, deliberately inert seam where an application with a real transport attaches its own delivery and replay rules.
+The engine is transport-neutral, but its extension point is now explicit and
+versioned. `--application package.module:object` loads application API v1;
+`--destination` passes an opaque installation-owned value that is hashed in
+runner metadata and never stored in clear text. Notable neutral lifecycle
+events are offered to `deliver_event`. The default application is inert, so a
+plain template still sends nothing. On restart, `recover_transport` gives the
+application the durable validated event log so its own receipt policy can
+reconcile delivery without the engine guessing whether a resend is safe.
+
+The same adapter can return a launch memory policy for `--memory-limit`, attach
+native-session arguments to a standard `start|resume|retry`, classify the
+supervised exit as an exact quota wait for its scheduler, and add
+installation-specific completion problems such as cross-family verdict binding
+or an unresolved document receipt. The public runner still owns the process,
+session-state persistence, event ordering, artifact projection, and completion
+refusal. An application owns only its resource values, transport receipts,
+pairing rules, and scheduler. API v1 is importable as
+`task_agent.application_adapter`; session state refuses secret-bearing keys.
 
 By default the runner resolves the CLI installed at `.venv/bin/dev-pipeline`,
 then falls back to `PATH`. `TASK_AGENT_DEV_PIPELINE_BIN` or

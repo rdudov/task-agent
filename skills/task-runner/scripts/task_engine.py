@@ -30,19 +30,33 @@ import time
 from pathlib import Path
 from typing import Any
 
-import task_phases
-import write_admission
-from task_completion import completion_ready, task_reference, task_status
-from task_contract import contract_gate_status, load_task_contract
-from task_runner import (
-    admission_liveness,
-    live_run_processes,
-    read_json,
-    resolve_task_dir,
-    runner_meta_path,
-    status_path,
-    structured_progress,
-)
+try:
+    from . import task_phases, write_admission
+    from .task_completion import completion_ready, task_reference, task_status
+    from .task_contract import contract_gate_status, load_task_contract
+    from .task_runner import (
+        admission_liveness,
+        live_run_processes,
+        read_json,
+        resolve_task_dir,
+        runner_meta_path,
+        status_path,
+        structured_progress,
+    )
+except ImportError:
+    import task_phases
+    import write_admission
+    from task_completion import completion_ready, task_reference, task_status
+    from task_contract import contract_gate_status, load_task_contract
+    from task_runner import (
+        admission_liveness,
+        live_run_processes,
+        read_json,
+        resolve_task_dir,
+        runner_meta_path,
+        status_path,
+        structured_progress,
+    )
 
 
 # How long a task may go untouched before its observed state is called stale.

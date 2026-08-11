@@ -13,38 +13,89 @@ import sys
 import tempfile
 import time
 import uuid
+import resource
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline_notify import (
-    INTERRUPTED_COMPLETION_KIND,
-    try_send_pipeline_stop_message,
-)
-from task_completion import completion_ready
-from task_contract import (
-    COMPLETION_REVIEW_CONTEXT,
-    COMPLETION_REVIEW_EXCLUSIONS,
-    COMPLETION_REVIEW_PURPOSE,
-    COMPLETION_REVIEW_QUESTION,
-    COMPLETION_REVIEW_RUN,
-    COMPLETION_REVIEW_SUBJECT,
-    completion_review_bound_materials,
-    completion_review_evidence,
-    completion_review_subject,
-    enforced_review_verdict,
-    ensure_task_contract_file,
-    load_task_contract,
-    require_review_verdict_contract,
-)
-import task_phases
-import write_admission
-
+try:  # package install
+    from .application_adapter import (
+        APPLICATION_API_VERSION,
+        ApplicationAdapterError,
+        LaunchRequestV1,
+        StandardSessionRequestV1,
+        StandardRunResultV1,
+        json_session_state,
+        load_application,
+        parse_memory_limit,
+    )
+    from .pipeline_notify import (
+        INTERRUPTED_COMPLETION_KIND,
+        try_send_pipeline_stop_message,
+    )
+    from .task_completion import application_completion_ready, completion_ready
+    from .task_contract import (
+        COMPLETION_REVIEW_CONTEXT,
+        COMPLETION_REVIEW_EXCLUSIONS,
+        COMPLETION_REVIEW_PURPOSE,
+        COMPLETION_REVIEW_QUESTION,
+        COMPLETION_REVIEW_RUN,
+        COMPLETION_REVIEW_SUBJECT,
+        completion_review_bound_materials,
+        completion_review_evidence,
+        completion_review_subject,
+        enforced_review_verdict,
+        ensure_task_contract_file,
+        load_task_contract,
+        require_review_verdict_contract,
+    )
+    from . import task_phases, write_admission
+except ImportError:  # direct repository script
+    from application_adapter import (
+        APPLICATION_API_VERSION,
+        ApplicationAdapterError,
+        LaunchRequestV1,
+        StandardSessionRequestV1,
+        StandardRunResultV1,
+        json_session_state,
+        load_application,
+        parse_memory_limit,
+    )
+    from pipeline_notify import (
+        INTERRUPTED_COMPLETION_KIND,
+        try_send_pipeline_stop_message,
+    )
+    from task_completion import application_completion_ready, completion_ready
+    from task_contract import (
+        COMPLETION_REVIEW_CONTEXT,
+        COMPLETION_REVIEW_EXCLUSIONS,
+        COMPLETION_REVIEW_PURPOSE,
+        COMPLETION_REVIEW_QUESTION,
+        COMPLETION_REVIEW_RUN,
+        COMPLETION_REVIEW_SUBJECT,
+        completion_review_bound_materials,
+        completion_review_evidence,
+        completion_review_subject,
+        enforced_review_verdict,
+        ensure_task_contract_file,
+        load_task_contract,
+        require_review_verdict_contract,
+    )
+    import task_phases
+    import write_admission
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+TASK_AGENT_ROOT_ENV = "TASK_AGENT_ROOT"
+
+
 def repo_root() -> Path:
+    configured = os.environ.get(TASK_AGENT_ROOT_ENV)
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if __package__:
+        return Path.cwd().resolve()
     return Path(__file__).resolve().parents[3]
 
 
@@ -796,6 +847,7 @@ def build_command(
     sandbox_mode: str | None,
     notebook: Path | None = None,
     access_directories: tuple[Path, ...] | list[Path] = (),
+    application_arguments: tuple[str, ...] | list[str] = (),
 ) -> list[str]:
     prompt = prompt_path.read_text(encoding="utf-8")
     if runner == "codex":
@@ -832,6 +884,7 @@ def build_command(
                 command.extend(["--add-dir", str(directory)])
         if model:
             command.extend(["--model", model])
+        command.extend(application_arguments)
         command.append(prompt)
         return command
 
@@ -851,6 +904,7 @@ def build_command(
         resolved_model = model or os.environ.get("CLAUDE_CHILD_DEFAULT_MODEL")
         if resolved_model:
             command.extend(["--model", resolved_model])
+        command.extend(application_arguments)
         command.append(prompt)
         return command
 
@@ -867,6 +921,7 @@ def build_command(
             command.extend(["--add-dir", str(directory)])
         if model:
             command.extend(["--model", model])
+        command.extend(application_arguments)
         command.append(prompt)
         return command
 
@@ -886,6 +941,8 @@ def build_workflow_command(
     state_dir: str | None = None,
     previous_state_dir: str | None = None,
     retry_reason: str | None = None,
+    application: str | None = None,
+    destination: str | None = None,
 ) -> list[str] | None:
     """Return the command for a workflow that runs through a dedicated script.
 
@@ -905,6 +962,8 @@ def build_workflow_command(
             state_dir,
             previous_state_dir,
             retry_reason,
+            application,
+            destination,
         )
     raise SystemExit(f"Unsupported workflow: {workflow}")
 
@@ -916,6 +975,8 @@ DEV_PIPELINE_OPTIONS = (
     "state_dir",
     "previous_state_dir",
     "retry_reason",
+    "application",
+    "destination",
 )
 
 DEV_PIPELINE_BIN_ENV = "TASK_AGENT_DEV_PIPELINE_BIN"
@@ -971,6 +1032,8 @@ def build_dev_pipeline_command(
     state_dir: str | None,
     previous_state_dir: str | None,
     retry_reason: str | None,
+    application: str | None = None,
+    destination: str | None = None,
 ) -> list[str]:
     """Build the adapter invocation for the dev-pipeline workflow.
 
@@ -1010,7 +1073,104 @@ def build_dev_pipeline_command(
         command.extend(["--sandbox", sandbox_mode])
     if model:
         command.extend(["--model", model])
+    if application:
+        command.extend(["--application", application])
+    if destination:
+        command.extend(["--destination", destination])
     return command
+
+
+def redact_sensitive_arguments(command: list[str]) -> list[str]:
+    redacted = list(command)
+    for option in ("--destination",):
+        while option in redacted:
+            index = redacted.index(option)
+            if index + 1 < len(redacted):
+                redacted[index + 1] = "<application-destination>"
+            break
+    return redacted
+
+
+def prepared_application_launch(args: argparse.Namespace, task_dir: Path) -> dict:
+    """Resolve v1 policy once and reuse its exact standard-session arguments."""
+    spec = getattr(args, "application", None)
+    adapter = load_application(spec)
+    requested = parse_memory_limit(getattr(args, "memory_limit", None))
+    policy = adapter.launch_policy(
+        LaunchRequestV1(
+            task_dir=task_dir,
+            runner=args.runner,
+            workflow=args.workflow,
+            operation=getattr(args, "operation", "start"),
+            destination=getattr(args, "destination", None),
+            requested_memory_limit_bytes=requested,
+        )
+    )
+    if not hasattr(policy, "memory_limit_bytes"):
+        raise ApplicationAdapterError("launch_policy must return LaunchPolicyV1")
+    memory_limit = parse_memory_limit(policy.memory_limit_bytes)
+    record: dict = {
+        "api_version": APPLICATION_API_VERSION,
+        "spec": spec,
+        "operation": getattr(args, "operation", "start"),
+        "memory_limit_bytes": memory_limit,
+    }
+    if args.workflow == "standard":
+        runner_meta = read_json(runner_meta_path(task_dir))
+        existing = runner_meta.get("application", {})
+        prepared = existing.get("standard_session") if isinstance(existing, dict) else None
+        if (
+            runner_meta.get("launch_pending")
+            and isinstance(prepared, dict)
+            and existing.get("spec") == spec
+            and existing.get("operation") == record["operation"]
+        ):
+            record["standard_session"] = prepared
+        else:
+            previous = existing.get("standard_session", {}).get("state", {}) if isinstance(existing, dict) else {}
+            session = adapter.standard_session(
+                StandardSessionRequestV1(
+                    task_dir=task_dir,
+                    runner=args.runner,
+                    operation=record["operation"],
+                    destination=getattr(args, "destination", None),
+                    previous_state=previous if isinstance(previous, dict) else {},
+                )
+            )
+            if not hasattr(session, "command_arguments") or not hasattr(session, "state"):
+                raise ApplicationAdapterError(
+                    "standard_session must return StandardSessionV1"
+                )
+            arguments = tuple(str(value) for value in session.command_arguments)
+            if any("\x00" in value for value in arguments):
+                raise ApplicationAdapterError("standard session arguments contain NUL")
+            destination = getattr(args, "destination", None)
+            if destination and any(destination in value for value in arguments):
+                raise ApplicationAdapterError(
+                    "standard session arguments must not contain the raw destination"
+                )
+            state = json_session_state(session.state)
+            if destination and destination in json.dumps(state, sort_keys=True):
+                raise ApplicationAdapterError(
+                    "standard session state must not contain the raw destination"
+                )
+            record["standard_session"] = {
+                "command_arguments": list(arguments),
+                "state": state,
+            }
+    return record
+
+
+def child_resource_limiter(memory_limit_bytes: int | None):
+    if memory_limit_bytes is None:
+        return None
+
+    def apply_limit() -> None:
+        _, hard = resource.getrlimit(resource.RLIMIT_AS)
+        effective = memory_limit_bytes if hard == resource.RLIM_INFINITY else min(memory_limit_bytes, hard)
+        resource.setrlimit(resource.RLIMIT_AS, (effective, hard))
+
+    return apply_limit
 
 
 def valid_progress_number(value: object) -> bool:
@@ -1398,6 +1558,10 @@ def cmd_start(args: argparse.Namespace) -> None:
     access_directories, access_grant = prepare_access_grant(
         args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
     )
+    try:
+        application_launch = prepared_application_launch(args, task_dir)
+    except ApplicationAdapterError as exc:
+        raise SystemExit(f"Application launch policy refused the run: {exc}") from None
 
     workflow_command = build_workflow_command(
         args.workflow,
@@ -1446,6 +1610,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         resolved_sandbox_mode,
         task_dir,
         access_directories,
+        application_launch.get("standard_session", {}).get("command_arguments", []),
     )
     meta = {
         "runner": args.runner,
@@ -1455,13 +1620,17 @@ def cmd_start(args: argparse.Namespace) -> None:
         "task_dir": str(task_dir),
         "prompt_path": str(runner_prompt_path(task_dir)),
         "log_path": str(runner_log_path(task_dir)),
-        "command": command,
+        "command": redact_sensitive_arguments(command),
+        "application": application_launch,
         "access_grant": access_grant,
         "progress_baseline": observe_progress_state(task_dir),
         "pid_namespace": pid_namespace_identity(),
     }
     if resolved_sandbox_mode:
         meta["sandbox_mode"] = resolved_sandbox_mode
+    destination = getattr(args, "destination", None)
+    if destination:
+        meta["destination_binding"] = hashlib.sha256(destination.encode()).hexdigest()[:12]
 
     # Preserve the exact previous run's terminal write-scope evidence before
     # either a dry run or a real start replaces the single-current-run metadata
@@ -1514,6 +1683,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         watcher_command.extend(["--repo", str(access_directories[0])])
     for name, value in dev_pipeline_options(args).items():
         watcher_command.extend([f"--{name.replace('_', '-')}", str(value)])
+    if getattr(args, "memory_limit", None) is not None:
+        watcher_command.extend(["--memory-limit", str(args.memory_limit)])
 
     def abort_start(detail: str, meta_extra: dict | None = None) -> None:
         """Fail the start without leaving the task claiming to be running.
@@ -1633,12 +1804,70 @@ def finalize_child_lifecycle(
     workflow: str,
     runner: str,
     return_code: int,
+    destination: str | None = None,
 ) -> None:
     """Make a child that died without finishing say so in the task artifacts.
 
     A child that exits non-zero before writing a terminal state would otherwise
     leave `running` behind, which reads as work still in progress.
     """
+    if workflow == "standard":
+        metadata = read_json(runner_meta_path(task_dir))
+        registration = metadata.get("application")
+        application_record = registration if isinstance(registration, dict) else {}
+        spec = application_record.get("spec")
+        session = application_record.get("standard_session")
+        session_record = session if isinstance(session, dict) else {}
+        try:
+            disposition = load_application(spec).standard_run_finished(
+                StandardRunResultV1(
+                    task_dir=task_dir,
+                    runner=runner,
+                    operation=application_record.get("operation", "start"),
+                    return_code=return_code,
+                    log_path=runner_log_path(task_dir),
+                    session_state=session_record.get("state", {}),
+                    destination=destination,
+                )
+            )
+            if disposition is not None and not all(
+                hasattr(disposition, name) for name in ("state", "current_step", "metadata")
+            ):
+                raise ApplicationAdapterError(
+                    "standard_run_finished must return StandardRunDispositionV1 or None"
+                )
+            if disposition is not None:
+                if disposition.state not in {"waiting_for_quota", "blocked", "failed"}:
+                    raise ApplicationAdapterError(
+                        "standard run disposition state must be waiting_for_quota, blocked, or failed"
+                    )
+                extra = json_session_state(disposition.metadata)
+                if destination and destination in json.dumps(extra, sort_keys=True):
+                    raise ApplicationAdapterError(
+                        "standard run disposition must not contain the raw destination"
+                    )
+                write_status(
+                    task_dir,
+                    disposition.state,
+                    disposition.current_step,
+                    {"runner": runner, "workflow": workflow, "exit_code": return_code, **extra},
+                )
+                append_trace(
+                    task_dir,
+                    f"Application handled the standard run as `{disposition.state}`: "
+                    f"{disposition.current_step}",
+                )
+                return
+        except (ApplicationAdapterError, OSError, TypeError, ValueError) as exc:
+            write_status(
+                task_dir,
+                "failed",
+                f"Application could not classify the completed standard run: {exc}",
+                {"runner": runner, "workflow": workflow, "exit_code": return_code},
+            )
+            append_trace(task_dir, f"Application standard-run classification failed: {exc}")
+            return
+
     task_state = read_json(status_path(task_dir)).get("state")
     if task_state in {"completed", "failed", "blocked"}:
         # The child recorded its own terminal state, so there is nothing to
@@ -1646,6 +1875,23 @@ def finalize_child_lifecycle(
         # `status.json` itself and knows nothing about phases, so a run that
         # ended well would otherwise stay in the phase it was working in, and
         # the task's own history would never show how it finished.
+        if task_state == "completed":
+            ready, reason = application_completion_ready(task_dir, workflow=workflow)
+            if not ready:
+                refusal = completion_refusal(task_dir, reason)
+                write_status(
+                    task_dir,
+                    "blocked",
+                    refusal["summary"],
+                    {
+                        "runner": runner,
+                        "workflow": workflow,
+                        "exit_code": return_code,
+                        "completion_refusal": refusal,
+                    },
+                )
+                append_trace(task_dir, refusal["summary"])
+                return
         record_terminal_phase(task_dir, task_state)
         return
     if return_code == 0 and workflow != "dev-pipeline":
@@ -1746,6 +1992,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         access_directories, access_grant = prepare_access_grant(
             args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
         )
+        application_launch = prepared_application_launch(args, task_dir)
         workflow_command = build_workflow_command(
             args.workflow,
             args.runner,
@@ -1762,6 +2009,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             resolved_sandbox_mode,
             task_dir,
             access_directories,
+            application_launch.get("standard_session", {}).get("command_arguments", []),
         )
         if args.runner == "claude" and args.workflow == "standard":
             require_claude_sandbox_dependencies(resolved_sandbox_mode or "workspace-write")
@@ -1786,11 +2034,17 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             "task_dir": str(task_dir),
             "prompt_path": str(runner_prompt_path(task_dir)),
             "log_path": str(runner_log_path(task_dir)),
-            "command": command,
+            "command": redact_sensitive_arguments(command),
+            "application": application_launch,
             "access_grant": access_grant,
             **(
                 {"pid_namespace": pid_namespace_identity()}
                 if not read_json(runner_meta_path(task_dir)).get("pid_namespace")
+                else {}
+            ),
+            **(
+                {"destination_binding": hashlib.sha256(args.destination.encode()).hexdigest()[:12]}
+                if getattr(args, "destination", None)
                 else {}
             ),
             "watcher_pid": os.getpid(),
@@ -1839,6 +2093,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            preexec_fn=child_resource_limiter(application_launch.get("memory_limit_bytes")),
         )
     except Exception as exc:
         report_launch_failure(task_dir, args, exc)
@@ -1891,7 +2146,13 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             write_admission.close_write_scope(task_dir, write_scope_run_id)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             append_trace(task_dir, f"Could not close the Git write scope: {exc}")
-    finalize_child_lifecycle(task_dir, args.workflow, args.runner, return_code)
+    finalize_child_lifecycle(
+        task_dir,
+        args.workflow,
+        args.runner,
+        return_code,
+        destination=getattr(args, "destination", None),
+    )
 
 
 def cmd_monitor_existing(args: argparse.Namespace) -> None:
@@ -2232,7 +2493,19 @@ def parse_args() -> argparse.Namespace:
         "--operation",
         choices=["start", "resume", "retry"],
         default="start",
-        help="Dev-pipeline lifecycle operation.",
+        help="Lifecycle operation; standard resume/retry semantics come from the registered application.",
+    )
+    start_parser.add_argument(
+        "--application",
+        help="Versioned installation adapter as Python module:attribute (API v1).",
+    )
+    start_parser.add_argument(
+        "--destination",
+        help="Opaque installation-owned delivery destination; never stored in clear text.",
+    )
+    start_parser.add_argument(
+        "--memory-limit",
+        help="Child address-space limit in bytes or with K/M/G/T suffix; application policy may adjust it.",
     )
     start_parser.add_argument(
         "--state-dir",
@@ -2271,6 +2544,9 @@ def parse_args() -> argparse.Namespace:
     run_child_parser.add_argument(
         "--operation", choices=["start", "resume", "retry"], default="start", help=argparse.SUPPRESS
     )
+    run_child_parser.add_argument("--application", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--destination", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--memory-limit", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--state-dir", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--previous-state-dir", help=argparse.SUPPRESS)
     run_child_parser.add_argument(

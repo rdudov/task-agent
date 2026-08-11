@@ -49,11 +49,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from task_completion import completion_ready
-from task_contract import (
-    capture_preexisting_tracked_dirty_baseline,
-    git_repository_identity,
-)
+try:
+    from .task_completion import completion_ready
+    from .task_contract import (
+        capture_preexisting_tracked_dirty_baseline,
+        git_repository_identity,
+    )
+except ImportError:
+    from task_completion import completion_ready
+    from task_contract import (
+        capture_preexisting_tracked_dirty_baseline,
+        git_repository_identity,
+    )
 
 
 LEDGER_NAME = "write-admission.jsonl"

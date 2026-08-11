@@ -4,18 +4,40 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import shutil
 from pathlib import Path
 
-from task_contract import (
-    load_task_contract,
-    unsatisfied_live_evidence,
-    unsatisfied_policy_families,
-    unsatisfied_review_verdict,
-)
+try:
+    from .application_adapter import (
+        ApplicationAdapterError,
+        CompletionRequestV1,
+        load_application,
+    )
+    from .task_contract import (
+        load_task_contract,
+        unsatisfied_live_evidence,
+        unsatisfied_policy_families,
+        unsatisfied_review_verdict,
+    )
+except ImportError:
+    from application_adapter import (
+        ApplicationAdapterError,
+        CompletionRequestV1,
+        load_application,
+    )
+    from task_contract import (
+        load_task_contract,
+        unsatisfied_live_evidence,
+        unsatisfied_policy_families,
+        unsatisfied_review_verdict,
+    )
 
 
 TASKS_INDEX_PATH = (
-    Path(__file__).resolve().parents[2] / "task-creator" / "scripts" / "tasks_index.py"
+    Path(shutil.which("task-agent-tasks-index") or "task-agent-tasks-index")
+    if __package__
+    else Path(__file__).resolve().parents[2] / "task-creator" / "scripts" / "tasks_index.py"
 )
 _tasks_index_module = None
 
@@ -24,6 +46,13 @@ def load_tasks_index():
     """Load the canonical task metadata reader without inventing a second parser."""
     global _tasks_index_module
     if _tasks_index_module is None:
+        try:
+            from task_agent_task_creator import tasks_index as packaged_tasks_index
+        except ImportError:
+            packaged_tasks_index = None
+        if packaged_tasks_index is not None:
+            _tasks_index_module = packaged_tasks_index
+            return _tasks_index_module
         spec = importlib.util.spec_from_file_location("tasks_index", TASKS_INDEX_PATH)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Cannot load task metadata owner: {TASKS_INDEX_PATH}")
@@ -50,7 +79,42 @@ def task_status(task_dir: Path) -> str:
         return "unknown"
 
 
-def completion_ready(task_dir: Path) -> tuple[bool, str]:
+def _application_registration(task_dir: Path) -> tuple[str | None, str | None]:
+    try:
+        metadata = json.loads(
+            (task_dir / ".runner" / "runner.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, None
+    application = metadata.get("application") if isinstance(metadata, dict) else None
+    spec = application.get("spec") if isinstance(application, dict) else None
+    workflow = metadata.get("workflow") if isinstance(metadata, dict) else None
+    return (spec if isinstance(spec, str) and spec else None,
+            workflow if workflow in {"standard", "dev-pipeline"} else None)
+
+
+def application_completion_ready(
+    task_dir: Path, workflow: str | None = None, application: str | None = None
+) -> tuple[bool, str]:
+    recorded_application, recorded_workflow = _application_registration(task_dir)
+    try:
+        problems = load_application(application or recorded_application).completion_problems(
+            CompletionRequestV1(task_dir=task_dir, workflow=workflow or recorded_workflow)
+        )
+    except (ApplicationAdapterError, OSError, TypeError, ValueError) as exc:
+        return False, f"application completion policy cannot be evaluated: {exc}"
+    if not isinstance(problems, list) or not all(
+        isinstance(problem, str) and problem.strip() for problem in problems
+    ):
+        return False, "application completion policy must return a list of non-empty strings"
+    if problems:
+        return False, "application completion policy refused completion: " + "; ".join(problems)
+    return True, ""
+
+
+def completion_ready(
+    task_dir: Path, workflow: str | None = None, application: str | None = None
+) -> tuple[bool, str]:
     """Decide whether durable task state authorizes successful completion.
 
     This composes existing semantic owners: ``tasks_index.py`` owns metadata and
@@ -94,4 +158,4 @@ def completion_ready(task_dir: Path) -> tuple[bool, str]:
     unestablished = unsatisfied_policy_families(contract, task_dir)
     if unestablished:
         return False, f"contract policy families are not established: {'; '.join(unestablished)}"
-    return True, ""
+    return application_completion_ready(task_dir, workflow, application)

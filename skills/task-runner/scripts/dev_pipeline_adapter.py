@@ -6,11 +6,10 @@ an owner instruction, runs the public `dev-pipeline owner` command, validates
 the neutral lifecycle events it emits, and projects them into the task's own
 `status.json`, `trace.md`, and `progress.json`.
 
-It carries no delivery concern at all: no destination, no recipient binding, no
-message deduplication, no at-most-once claim. Those belong to whichever
-application owns a transport, because only that owner knows whether its
-transport can be replayed safely. `pipeline_notify.py` is the seam where such an
-owner attaches; in this template it is intentionally inert.
+It carries no delivery policy: no recipient binding, message deduplication, or
+at-most-once claim. Those belong to the registered application API v1, because
+only that owner knows whether its transport can be replayed safely. The default
+application is intentionally inert.
 """
 
 from __future__ import annotations
@@ -25,21 +24,30 @@ from typing import Iterable
 
 from dev_pipeline.events import validate_event
 
-from pipeline_notify import try_send_pipeline_status_message
-from task_completion import (
-    TASKS_INDEX_PATH,
-    completion_ready,
-    task_reference,
-)
-from task_contract import (
-    PASSING_EVIDENCE_RESULTS,
-    enforced_live_evidence,
-    enforced_policy_families,
-    enforced_review_verdict,
-    load_task_contract,
-)
-from task_runner import completion_refusal, resolve_dev_pipeline_bin
-import task_phases
+try:
+    from .application_adapter import ApplicationEventV1, TransportRecoveryV1, load_application
+    from .task_completion import TASKS_INDEX_PATH, completion_ready, task_reference
+    from .task_contract import (
+        PASSING_EVIDENCE_RESULTS,
+        enforced_live_evidence,
+        enforced_policy_families,
+        enforced_review_verdict,
+        load_task_contract,
+    )
+    from .task_runner import completion_refusal, resolve_dev_pipeline_bin
+    from . import task_phases
+except ImportError:
+    from application_adapter import ApplicationEventV1, TransportRecoveryV1, load_application
+    from task_completion import TASKS_INDEX_PATH, completion_ready, task_reference
+    from task_contract import (
+        PASSING_EVIDENCE_RESULTS,
+        enforced_live_evidence,
+        enforced_policy_families,
+        enforced_review_verdict,
+        load_task_contract,
+    )
+    from task_runner import completion_refusal, resolve_dev_pipeline_bin
+    import task_phases
 
 
 # Lifecycle kinds worth telling a human about. The template has no transport, so
@@ -362,7 +370,12 @@ class TaskArtifactProjector:
     not following is a refusal, not a gap to paper over.
     """
 
-    def __init__(self, task_dir: Path) -> None:
+    def __init__(
+        self,
+        task_dir: Path,
+        application: str | None = None,
+        destination: str | None = None,
+    ) -> None:
         self.task_dir = task_dir.resolve()
         self.task_ref = self.task_dir.name
         self.state_dir = state_dir(self.task_dir)
@@ -370,7 +383,17 @@ class TaskArtifactProjector:
         self.cursor_path = self.state_dir / "adapter-cursor.json"
         self.event_path = self.state_dir / "projected-events.jsonl"
         self.projection_cursor_path = self.state_dir / "projection-cursor.json"
+        self.application = load_application(application)
+        self.destination = destination
         self.recover_projection()
+        self.application.recover_transport(
+            TransportRecoveryV1(
+                task_dir=self.task_dir,
+                workflow="dev-pipeline",
+                event_log_path=self.event_path,
+                destination=self.destination,
+            )
+        )
 
     def recover_projection(self) -> None:
         """Replay any event that was durably recorded but not yet projected."""
@@ -465,21 +488,31 @@ class TaskArtifactProjector:
     def offer_to_delivery(self, event: dict) -> None:
         """Hand a notable event to the delivery seam.
 
-        `pipeline_notify.py` reports that no transport is configured, so in this
-        template nothing is delivered and nothing is recorded. An application
-        that owns a transport implements the seam there — along with the
-        recipient binding and replay rules that only it can define.
+        The default application reports that no transport is configured, so in
+        this template nothing is delivered and nothing is recorded. A
+        registered application owns recipient binding and replay rules.
         """
         if event["kind"] not in NOTIFIABLE:
             return
         status = read_json(self.task_dir / "status.json").get("current_step", event["kind"])
-        sent, detail = try_send_pipeline_status_message(
-            task_dir=self.task_dir,
-            status=str(status),
-            artifact_paths=[self.task_dir / "status.json", self.task_dir / "trace.md"],
+        result = self.application.deliver_event(
+            ApplicationEventV1(
+                task_dir=self.task_dir,
+                kind=event["kind"],
+                workflow="dev-pipeline",
+                payload={
+                    "status": str(status),
+                    "event": event,
+                    "artifact_paths": ["status.json", "trace.md"],
+                },
+                destination=self.destination,
+                event_id=event.get("event_id"),
+            )
         )
-        if sent:
-            self.append_trace(f"Delivered dev-pipeline `{event['kind']}` notification: {detail}")
+        if result.delivered:
+            self.append_trace(
+                f"Delivered dev-pipeline `{event['kind']}` notification: {result.detail}"
+            )
 
     def project(self, event: dict) -> None:
         state, step = status_projection(event, self.task_dir)
@@ -642,7 +675,9 @@ def run(args: argparse.Namespace) -> int:
     task_dir = args.task_dir.resolve()
     instruction = prepare_owner_instruction(task_dir)
     command = build_core_command(args, task_dir, instruction)
-    projector = TaskArtifactProjector(task_dir)
+    projector = TaskArtifactProjector(
+        task_dir, application=args.application, destination=args.destination
+    )
     process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
     assert process.stdout is not None
     consume_lines(projector, process.stdout)
@@ -665,6 +700,8 @@ def main(argv: list[str] | None = None) -> int:
         "--retry-reason", choices=("native_unavailable", "intentional_replacement")
     )
     parser.add_argument("--model")
+    parser.add_argument("--application", help="Versioned installation adapter module:attribute.")
+    parser.add_argument("--destination", help="Opaque installation-owned delivery destination.")
     parser.add_argument(
         "--owner-runtime",
         choices=("codex", "claude", "cursor"),

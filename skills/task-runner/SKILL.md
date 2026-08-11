@@ -341,11 +341,46 @@ does not have.
 900. It is a reporting threshold, not a control — a run that publishes every few
 minutes and one that compiles for half an hour are both healthy.
 
-### Delivery Extension Point
+### Application Adapter API v1
 
-The adapter carries no transport. It has no destination option, binds no recipient, deduplicates no messages, and claims no at-most-once delivery — those decisions belong to whoever owns a transport, because only that owner knows whether its transport can be replayed safely.
+The public engine is installable as `task-agent-engine` and exposes a versioned
+installation seam in `task_agent.application_adapter`. Register API v1 with:
 
-`skills/task-runner/scripts/pipeline_notify.py` is where such an owner attaches. It formats messages and reports `no notification transport configured`, so in this template every offer is inert and nothing is recorded. An application that implements it starts receiving the notable lifecycle events the adapter already offers.
+```bash
+task-agent start /absolute/task --application my_app.task_agent:adapter \
+  --destination "$INSTALLATION_DESTINATION" --memory-limit 4G
+```
+
+The v1 methods are `launch_policy`, `standard_session`,
+`standard_run_finished`, `deliver_event`, `recover_transport`, and
+`completion_problems`. They
+supply installation values and policy only. The engine continues to own
+process supervision, session-state persistence, event
+validation/order, artifact projection, and completion refusal.
+
+- `--destination` is opaque. Only its digest may be persisted; never put the
+  raw recipient into runner metadata, task artifacts, source, or docs.
+- `standard_session` can return native `--session-id`/`--resume` arguments and
+  non-secret JSON state. This is the supported standard-workflow continuation
+  seam after an application observes an exact quota reset. Secret-bearing state
+  keys are refused.
+- `standard_run_finished` receives the supervised return code and log. An
+  installation may parse a structured exact reset, arm its own durable
+  scheduler, and return `waiting_for_quota`; it may not invent a reset time or
+  replace the native session.
+- `deliver_event` receives notable neutral lifecycle events after validation.
+  Recipient binding, delivery receipts, deduplication, replay, and Telegram are
+  installation concerns.
+- `recover_transport` receives the durable validated event-log path when the
+  projector starts. An installation reconciles its own receipts there; the
+  engine never guesses whether repeating a transport send is safe.
+- `completion_problems` can enforce cross-family verdict binding and the
+  delivery policy of one installation. Problems join the shared completion
+  refusal; prose or a child-written `completed` state cannot override them.
+
+With no registered application the default v1 implementation is inert, adds no
+completion policy, and refuses standard `resume|retry` because their native
+meaning would otherwise be invented.
 
 ## Completion Rules
 

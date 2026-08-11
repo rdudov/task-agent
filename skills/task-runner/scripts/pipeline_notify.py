@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
+import json
 import re
 from pathlib import Path
+
+try:
+    from .application_adapter import ApplicationEventV1, load_application
+except ImportError:
+    from application_adapter import ApplicationEventV1, load_application
 
 
 # Shared machine vocabulary for the branch where an owner process ended after
@@ -22,6 +29,11 @@ def is_interrupted_completion_kind(kind: object) -> bool:
 
 
 def repo_root() -> Path:
+    configured = os.environ.get("TASK_AGENT_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if __package__:
+        return Path.cwd().resolve()
     return Path(__file__).resolve().parents[3]
 
 
@@ -87,15 +99,46 @@ def try_send_pipeline_stop_message(
     summary: str,
     requested_action: str,
     artifact_paths: list[Path] | None = None,
+    destination: str | None = None,
+    application: str | None = None,
 ) -> tuple[bool, str]:
-    format_pipeline_stop_message(task_dir, summary, requested_action, artifact_paths)
-    return False, "no notification transport configured"
+    text = format_pipeline_stop_message(task_dir, summary, requested_action, artifact_paths)
+    if application is None:
+        try:
+            metadata = json.loads(
+                (task_dir / ".runner" / "runner.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            metadata = {}
+        registration = metadata.get("application") if isinstance(metadata, dict) else None
+        application = registration.get("spec") if isinstance(registration, dict) else None
+    result = load_application(application).deliver_event(
+        ApplicationEventV1(
+            task_dir=task_dir,
+            kind="pipeline_stopped",
+            workflow="standard",
+            payload={"message": text},
+            destination=destination,
+        )
+    )
+    return result.delivered, result.detail
 
 
 def try_send_pipeline_status_message(
     task_dir: Path,
     status: str,
     artifact_paths: list[Path] | None = None,
+    destination: str | None = None,
+    application: str | None = None,
 ) -> tuple[bool, str]:
-    format_pipeline_status_message(task_dir, status, artifact_paths)
-    return False, "no notification transport configured"
+    text = format_pipeline_status_message(task_dir, status, artifact_paths)
+    result = load_application(application).deliver_event(
+        ApplicationEventV1(
+            task_dir=task_dir,
+            kind="pipeline_status",
+            workflow="standard",
+            payload={"message": text},
+            destination=destination,
+        )
+    )
+    return result.delivered, result.detail

@@ -83,7 +83,33 @@ review-candidate TASK --repo REPOSITORY`; the subject binds the effective
 contract and candidate digest, so a stale or readability-only approval cannot
 close the task.
 
-The adapter carries no transport: no destination, no recipient binding, no delivery deduplication. Those belong to an application that owns a transport, and `skills/task-runner/scripts/pipeline_notify.py` is the documented seam where it attaches. In this template that seam is inert by design.
+The adapter itself carries no transport policy. A caller registers application
+API v1 with `--application module:attribute` and supplies an opaque
+`--destination`; notable lifecycle events then reach the application's
+`deliver_event` method. The public template's default application is inert.
+Recipient binding, deduplication, replay, and document receipts remain owned by
+the installation, while the public adapter still validates and orders the
+events before offering them. On adapter startup `recover_transport` receives
+the durable validated event-log path, allowing the installation to reconcile
+its own receipt journal without the engine inventing replay safety.
+
+The same registered application controls the named installation boundaries for
+standard runs:
+
+```bash
+task-agent start /absolute/task --workflow standard --runner claude \
+  --operation resume --application my_app.task_agent:adapter \
+  --destination "$INSTALLATION_DESTINATION" --memory-limit 4G
+```
+
+`standard_session` receives the prior non-secret state and returns the exact
+native CLI arguments for `start`, `resume`, or `retry`; the runner persists and
+reuses those arguments across its detached watcher boundary.
+`standard_run_finished` receives the supervised exit and log, and may turn an
+exact provider reset into a durable `waiting_for_quota` disposition after
+arming the installation scheduler. It does not replace the engine's run
+ownership or completion decision. Raw
+destinations are not written to runner metadata or recorded commands.
 
 This workflow requires the separate `dev-pipeline` package; see `skills/task-runner/SKILL.md` for the install step and the per-artifact projection rules.
 

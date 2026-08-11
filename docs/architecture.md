@@ -118,6 +118,32 @@ that surface instead of importing a helper that can be renamed underneath it.
 identity and the neutral lifecycle events. It is asked what happened; this
 repository decides what that means for a task.
 
+### Versioned application boundary
+
+`pyproject.toml` makes this engine installable from an exact VCS commit. The
+installed `task_agent.application_adapter` module defines application API v1;
+the CLI registers one implementation with `--application module:attribute`.
+Its six decisions are deliberately narrower than lifecycle ownership:
+
+- `launch_policy` resolves the actual child address-space limit from
+  `--memory-limit` and installation policy;
+- `standard_session` returns native CLI arguments plus non-secret JSON state,
+  allowing the same Claude session to be resumed after an application observes
+  an exact quota reset;
+- `standard_run_finished` receives the supervised exit and log, so an
+  installation can recognize an exact reset, arm its scheduler, and publish a
+  durable `waiting_for_quota` disposition without replacing the session;
+- `deliver_event` transports a neutral event to the opaque `--destination`;
+- `recover_transport` gives that transport the durable validated event log so
+  it can reconcile installation-owned receipts after an adapter restart;
+- `completion_problems` adds installation-specific pairing and delivery gates.
+
+The engine persists the session state and destination hash, never the raw
+destination. It owns process supervision, event ordering, task artifacts, and
+the final refusal. The application owns scheduling, recipient binding,
+transport receipts, quota scheduling, and cross-family policy. The default v1
+application is inert and adds no policy, preserving the public template behavior.
+
 **One goal, one number.** A user goal keeps a single task directory for its whole
 life. Review is a phase of that task and so is the rework a review asks for;
 neither is a separate task, under either execution profile. `phases.json` records

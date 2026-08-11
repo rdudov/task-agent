@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "task-agent-engine"
+version = "1.0.0"
+description = "Public task lifecycle engine with a versioned application adapter"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+  "PyYAML>=6.0,<7",
+  "dev-pipeline @ git+https://github.com/rdudov/dev-pipeline.git@10e1fef8c7c4a2b1db4dd402d3a661a8d1da6008",
+]
+
+[project.scripts]
+task-agent = "task_agent.task_runner:main"
+task-agent-engine = "task_agent.task_engine:main"
+task-agent-tasks-index = "task_agent_task_creator.tasks_index:main"
+
+[tool.setuptools]
+packages = ["task_agent", "task_agent_task_creator"]
+
+[tool.setuptools.package-dir]
+task_agent = "skills/task-runner/scripts"
+task_agent_task_creator = "skills/task-creator/scripts"
