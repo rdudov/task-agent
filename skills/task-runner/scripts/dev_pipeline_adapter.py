@@ -75,6 +75,22 @@ BOOKKEEPING = frozenset(
     {"attempt_started", "run_started", "process_started", "native_session_discovered"}
 )
 
+# Events the public core emits first under a fresh run identity. Review,
+# rework, live acceptance, and an escalated phase-claim failure are runs within
+# the same attempt even though they are not owner-session `run_started` events.
+# Keeping this list explicit preserves the refusal for arbitrary foreign-run
+# events such as a stray `process_started`.
+RUN_BOUNDARY_KINDS = frozenset(
+    {
+        "run_started",
+        "review_started",
+        "rework_started",
+        "live_acceptance_waiting",
+        "live_acceptance_completed",
+        "blocked_on_user_decision",
+    }
+)
+
 TERMINAL_TASK_STATES = frozenset({"completed", "failed", "blocked"})
 
 PROGRESS_SOURCE = "dev-pipeline-adapter"
@@ -459,7 +475,7 @@ class TaskArtifactProjector:
         )
         starts_new_run = bool(
             cursor
-            and event["kind"] == "run_started"
+            and event["kind"] in RUN_BOUNDARY_KINDS
             and event["attempt_id"] == cursor.get("attempt_id")
             and event["run_id"] != cursor.get("run_id")
             and event["sequence"] == cursor.get("last_sequence", 0) + 1

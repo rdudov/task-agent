@@ -372,6 +372,11 @@ The v1 methods are `launch_policy`, `standard_session`,
 supply installation values and policy only. The engine continues to own
 process supervision, session-state persistence, event
 validation/order, artifact projection, and completion refusal.
+The projector follows the public core's explicit run boundaries within one
+attempt: owner start/resume, independent review, same-session rework, live
+acceptance, and an escalated phase blocker may each carry a fresh run identity.
+An arbitrary event that changes run identity without one of those boundaries is
+still refused.
 
 - `--destination` is opaque. Only its digest may be persisted; never put the
   raw recipient into runner metadata, task artifacts, source, or docs.

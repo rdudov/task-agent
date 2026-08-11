@@ -132,6 +132,13 @@ log and its persisted destination digest, not the raw destination.
 
 This workflow requires the separate `dev-pipeline` package; see `skills/task-runner/SKILL.md` for the install step and the per-artifact projection rules.
 
+The adapter cursor is attempt-scoped and sequence-strict. It accepts a new run
+identity only on a lifecycle boundary the public core defines—owner
+start/resume, independent review, same-session rework, live acceptance, or an
+escalated phase blocker—and rejects a foreign run identity on ordinary events.
+This lets automatic cross-provider phases remain one attempt without weakening
+the projector's identity check.
+
 The dependency comes from the public `rdudov/dev-pipeline` repository and is
 pinned by commit in both requirements files. The normal README installation is
 therefore sufficient on a fresh Cursor machine; a local checkout is optional.

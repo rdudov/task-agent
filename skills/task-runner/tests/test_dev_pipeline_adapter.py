@@ -297,6 +297,58 @@ class EventOrderingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             projector.consume(event("process_started", 2, {"pid": 1}, run_id="run_b"))
 
+    @requires_review_events
+    def test_review_and_rework_phase_claims_rotate_the_run_identity(self) -> None:
+        task_dir = make_task(self.tmp)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(event("run_started", 2, RUN_STARTED))
+        projector.consume(
+            event(
+                "review_started",
+                3,
+                {
+                    "strategy": "cross_provider",
+                    "review_provider": "claude",
+                    "artifact_digest": "sha256:abc",
+                    "author_session_id": "session-author",
+                },
+                run_id="run_review",
+            )
+        )
+        projector.consume(
+            event(
+                "review_rework_required",
+                4,
+                {
+                    "strategy": "cross_provider",
+                    "review_provider": "claude",
+                    "artifact_digest": "sha256:abc",
+                },
+                run_id="run_review",
+            )
+        )
+        projector.consume(
+            event(
+                "rework_started",
+                5,
+                {
+                    "strategy": "cross_provider",
+                    "author_provider": "codex",
+                    "author_session_id": "session-author",
+                    "artifact_digest": "sha256:abc",
+                    "decision_digest": "sha256:def",
+                    "decision_artifact": "/decision.json",
+                },
+                run_id="run_rework",
+            )
+        )
+
+        cursor = json.loads(projector.cursor_path.read_text(encoding="utf-8"))
+        self.assertEqual(cursor["attempt_id"], "attempt_a")
+        self.assertEqual(cursor["run_id"], "run_rework")
+        self.assertEqual(cursor["last_sequence"], 5)
+
     def test_a_new_attempt_starts_a_fresh_cursor(self) -> None:
         task_dir = make_task(self.tmp)
         projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
