@@ -1,3 +1,3 @@
 pytest==9.0.3
 PyYAML==6.0.3
-dev-pipeline @ git+https://github.com/rdudov/dev-pipeline.git@8e3f838f3808e5f746ee86436a0a84d475cec592
+dev-pipeline @ git+https://github.com/rdudov/dev-pipeline.git@10e1fef8c7c4a2b1db4dd402d3a661a8d1da6008
