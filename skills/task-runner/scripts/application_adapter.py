@@ -106,6 +106,22 @@ class CompletionRequestV1:
     workflow: str | None
 
 
+@dataclass(frozen=True)
+class CompletionPreparationRequestV1:
+    """One pre-finalization action requested by an installation.
+
+    The public engine calls this only after every completion condition except
+    the evidence ids declared by the application is already satisfied.  The
+    application must persist those facts before returning; the engine then
+    evaluates the complete predicate normally.
+    """
+
+    task_dir: Path
+    workflow: str
+    event_id: str
+    destination: str | None
+
+
 @runtime_checkable
 class ApplicationAdapterV1(Protocol):
     api_version: int
@@ -123,6 +139,35 @@ class ApplicationAdapterV1(Protocol):
     def recover_transport(self, request: TransportRecoveryV1) -> None: ...
 
     def completion_problems(self, request: CompletionRequestV1) -> list[str]: ...
+
+
+def completion_preparation_evidence_ids(adapter: ApplicationAdapterV1) -> tuple[str, ...]:
+    """Return the optional evidence ids an application can establish at the boundary.
+
+    This is an additive v1 capability: existing applications that do not
+    declare it retain the original ordering and remain valid.
+    """
+    raw = getattr(adapter, "completion_preparation_evidence_ids", ())
+    method = getattr(adapter, "prepare_completion", None)
+    if raw in (None, ()) and method is None:
+        return ()
+    if not isinstance(raw, (tuple, list)) or not raw or not all(
+        isinstance(item, str) and item.strip() for item in raw
+    ):
+        raise ApplicationAdapterError(
+            "completion_preparation_evidence_ids must be a non-empty list of ids"
+        )
+    normalized = tuple(item.strip() for item in raw)
+    if len(set(normalized)) != len(normalized):
+        raise ApplicationAdapterError(
+            "completion_preparation_evidence_ids must not contain duplicates"
+        )
+    if not callable(method):
+        raise ApplicationAdapterError(
+            "an application declaring completion preparation evidence must implement "
+            "prepare_completion(request)"
+        )
+    return normalized
 
 
 class DefaultApplicationV1:

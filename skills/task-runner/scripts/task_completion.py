@@ -127,7 +127,10 @@ def application_completion_ready(
 
 
 def completion_ready(
-    task_dir: Path, workflow: str | None = None, application: str | None = None
+    task_dir: Path,
+    workflow: str | None = None,
+    application: str | None = None,
+    deferred_live_evidence_ids: frozenset[str] = frozenset(),
 ) -> tuple[bool, str]:
     """Decide whether durable task state authorizes successful completion.
 
@@ -161,7 +164,20 @@ def completion_ready(
         if verification_path.exists()
         else ""
     )
-    unsatisfied = unsatisfied_live_evidence(contract, verification)
+    enforced_ids = {
+        str(item.get("id", "")).strip()
+        for item in contract.get("required_live_evidence", [])
+        if isinstance(item, dict)
+    }
+    unknown_deferred = deferred_live_evidence_ids - enforced_ids
+    if unknown_deferred:
+        return False, (
+            "application completion preparation names evidence not enforced by the contract: "
+            + ", ".join(sorted(unknown_deferred))
+        )
+    unsatisfied = unsatisfied_live_evidence(
+        contract, verification, deferred_live_evidence_ids
+    )
     if unsatisfied:
         return False, f"required live evidence is not established: {'; '.join(unsatisfied)}"
 

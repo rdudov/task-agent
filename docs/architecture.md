@@ -139,6 +139,11 @@ Its six decisions are deliberately narrower than lifecycle ownership:
 - `recover_transport` gives that transport the durable validated event log so
   it can reconcile installation-owned receipts after an adapter restart;
 - `completion_problems` adds installation-specific pairing and delivery gates.
+- An application may additionally declare
+  `completion_preparation_evidence_ids` and implement `prepare_completion`.
+  This additive v1 capability runs only after every non-deferred completion
+  condition passes; its durable evidence is then consumed by the ordinary full
+  predicate. A missing hook changes no existing application's behavior.
 
 The engine persists the session state and destination hash, never the raw
 destination. It owns process supervision, event ordering, task artifacts, and

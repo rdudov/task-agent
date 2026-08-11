@@ -234,6 +234,20 @@ class ApplicationAdapterTests(unittest.TestCase):
             self.assertFalse(ready)
             self.assertIn("installation delivery receipt", reason)
 
+    def test_optional_completion_preparation_is_additive_to_v1(self) -> None:
+        adapter = application_adapter.DefaultApplicationV1()
+        self.assertEqual(
+            application_adapter.completion_preparation_evidence_ids(adapter), ()
+        )
+
+    def test_completion_preparation_declaration_requires_a_method(self) -> None:
+        adapter = application_adapter.DefaultApplicationV1()
+        adapter.completion_preparation_evidence_ids = ("delivery",)
+        with self.assertRaisesRegex(
+            application_adapter.ApplicationAdapterError, "prepare_completion"
+        ):
+            application_adapter.completion_preparation_evidence_ids(adapter)
+
     def test_dev_pipeline_notable_event_reaches_registered_transport(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task = self._task(Path(raw))

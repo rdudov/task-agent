@@ -190,7 +190,11 @@ def verification_gate_result(verification: str, gate_id: str) -> str | None:
     return None if record is None else record["result"]
 
 
-def unsatisfied_live_evidence(contract: dict[str, Any], verification: str) -> list[str]:
+def unsatisfied_live_evidence(
+    contract: dict[str, Any],
+    verification: str,
+    deferred_gate_ids: frozenset[str] = frozenset(),
+) -> list[str]:
     """Which enforced gates this `verification.md` fails to establish, and why.
 
     The dev-pipeline gate used to accept the mere presence of `## <id>`, so a
@@ -200,6 +204,8 @@ def unsatisfied_live_evidence(contract: dict[str, Any], verification: str) -> li
     problems: list[str] = []
     for item in enforced_live_evidence(contract):
         gate_id = str(item["id"]).strip()
+        if gate_id in deferred_gate_ids:
+            continue
         result = verification_gate_result(verification, gate_id)
         if result is None:
             problems.append(f"{gate_id} has no `## {gate_id}` section")
@@ -1221,4 +1227,3 @@ def render_task_contract_overlay(contract: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
-

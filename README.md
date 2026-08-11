@@ -193,6 +193,11 @@ and an exact quota wait—are offered to `deliver_event`. The default applicatio
 plain template still sends nothing. On restart, `recover_transport` gives the
 application the durable validated event log so its own receipt policy can
 reconcile delivery without the engine guessing whether a resend is safe.
+API v1 also has an additive, optional pre-finalization capability: an
+application may declare the exact live-evidence ids its `prepare_completion`
+method can establish. The engine invokes it only when every other completion
+condition already passes, then evaluates the full predicate again. Existing v1
+applications without the declaration keep the original ordering.
 
 The same adapter can return a launch memory policy for `--memory-limit`, attach
 native-session arguments to a standard `start|resume|retry`, classify the

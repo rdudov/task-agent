@@ -406,6 +406,13 @@ invalid sequence or identity still refuses continuation.
 - `completion_problems` can enforce cross-family verdict binding and the
   delivery policy of one installation. Problems join the shared completion
   refusal; prose or a child-written `completed` state cannot override them.
+- An installation whose terminal side effect itself establishes required live
+  evidence may declare those exact ids in
+  `completion_preparation_evidence_ids` and implement `prepare_completion`.
+  The engine calls this optional v1 hook only when the predicate passes with
+  exactly those ids deferred, then immediately evaluates the complete predicate.
+  The hook must persist its evidence before returning; failure or partial work
+  remains a refused completion. Applications without it retain the old order.
 
 A validated dev-pipeline quota-wait event remains a durable waiting state after
 the adapter process exits. Every child-written `completed` state is rechecked

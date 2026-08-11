@@ -25,7 +25,13 @@ from typing import Iterable
 from dev_pipeline.events import validate_event
 
 try:
-    from .application_adapter import ApplicationEventV1, TransportRecoveryV1, load_application
+    from .application_adapter import (
+        ApplicationEventV1,
+        CompletionPreparationRequestV1,
+        TransportRecoveryV1,
+        completion_preparation_evidence_ids,
+        load_application,
+    )
     from .task_completion import TASKS_INDEX_PATH, completion_ready, task_reference
     from .task_contract import (
         PASSING_EVIDENCE_RESULTS,
@@ -37,7 +43,13 @@ try:
     from .task_runner import completion_refusal, resolve_dev_pipeline_bin
     from . import task_phases
 except ImportError:
-    from application_adapter import ApplicationEventV1, TransportRecoveryV1, load_application
+    from application_adapter import (
+        ApplicationEventV1,
+        CompletionPreparationRequestV1,
+        TransportRecoveryV1,
+        completion_preparation_evidence_ids,
+        load_application,
+    )
     from task_completion import TASKS_INDEX_PATH, completion_ready, task_reference
     from task_contract import (
         PASSING_EVIDENCE_RESULTS,
@@ -409,6 +421,7 @@ class TaskArtifactProjector:
         self.cursor_path = self.state_dir / "adapter-cursor.json"
         self.event_path = self.state_dir / "projected-events.jsonl"
         self.projection_cursor_path = self.state_dir / "projection-cursor.json"
+        self.application_spec = application
         self.application = load_application(application)
         self.destination = destination
         self.recover_projection()
@@ -441,6 +454,7 @@ class TaskArtifactProjector:
                     ) from exc
                 if event["event_id"] in projected:
                     continue
+                self.prepare_completion(event)
                 self.project(event)
                 projected.add(event["event_id"])
                 write_json(
@@ -455,6 +469,38 @@ class TaskArtifactProjector:
                         "updated_at": utc_now(),
                     },
                 )
+
+    def prepare_completion(self, event: dict) -> None:
+        """Let an installation establish declared terminal evidence first.
+
+        The hook is reached only when the ordinary completion predicate would
+        pass with exactly the application's declared evidence deferred.  Its
+        durable effects are then checked by the full predicate during normal
+        projection; a failed or partial preparation therefore remains blocked.
+        """
+        if event["kind"] != "attempt_completed":
+            return
+        evidence_ids = completion_preparation_evidence_ids(self.application)
+        if not evidence_ids:
+            return
+        ready, _reason = completion_ready(
+            self.task_dir,
+            workflow="dev-pipeline",
+            application=self.application_spec,
+            deferred_live_evidence_ids=frozenset(evidence_ids),
+        )
+        if not ready:
+            return
+        result = self.application.prepare_completion(
+            CompletionPreparationRequestV1(
+                task_dir=self.task_dir,
+                workflow="dev-pipeline",
+                event_id=event["event_id"],
+                destination=self.destination,
+            )
+        )
+        if result.delivered:
+            self.append_trace(f"Prepared completion evidence before finalization: {result.detail}")
 
     def consume(self, raw_event: dict) -> bool:
         """Record and project one event. Returns False for a repeat."""
