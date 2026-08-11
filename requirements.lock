@@ -4,4 +4,4 @@ pluggy==1.6.0
 Pygments==2.19.2
 pytest==9.0.3
 PyYAML==6.0.3
-dev-pipeline @ git+https://github.com/rdudov/dev-pipeline.git@c67a6ba9a5e6ba34744228ead363dd2f9ce9ade7
+dev-pipeline @ git+https://github.com/rdudov/dev-pipeline.git@555f3d740bf32303c616f7feb4b50333a89b53bf
