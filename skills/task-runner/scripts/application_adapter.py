@@ -92,6 +92,7 @@ class TransportRecoveryV1:
     workflow: str
     event_log_path: Path
     destination: str | None = None
+    active_attempt_id: str | None = None
 
 
 @dataclass(frozen=True)

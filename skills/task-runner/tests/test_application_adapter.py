@@ -306,6 +306,39 @@ class ApplicationAdapterTests(unittest.TestCase):
             self.assertEqual(delivered.kind, "attempt_started")
             self.assertEqual(delivered.destination, "opaque-installation-value")
             self.assertEqual(self.module.adapter.recovery.event_log_path, projector.event_path)
+            self.assertIsNone(self.module.adapter.recovery.active_attempt_id)
+
+    def test_transport_recovery_is_bound_to_the_active_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            projector = dev_pipeline_adapter.TaskArtifactProjector(
+                task, application=self.spec, destination="opaque-installation-value"
+            )
+            projector.consume(
+                {
+                    "schema_version": "1.0",
+                    "kind": "attempt_started",
+                    "event_id": "event-1",
+                    "task_ref": task.name,
+                    "attempt_id": "attempt-current",
+                    "run_id": "run-current",
+                    "sequence": 1,
+                    "timestamp": "2026-08-11T16:00:00+00:00",
+                    "payload": {
+                        "attempt_origin": "fresh",
+                        "repository": str(task.parent),
+                    },
+                }
+            )
+
+            self.module.adapter.events.clear()
+            dev_pipeline_adapter.TaskArtifactProjector(
+                task, application=self.spec, destination="opaque-installation-value"
+            )
+
+            self.assertEqual(
+                self.module.adapter.recovery.active_attempt_id, "attempt-current"
+            )
 
     def test_review_and_rework_transitions_reach_registered_transport(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

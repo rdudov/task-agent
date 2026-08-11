@@ -435,12 +435,14 @@ class TaskArtifactProjector:
         self.application = load_application(application)
         self.destination = destination
         self.recover_projection()
+        cursor = read_json(self.cursor_path)
         self.application.recover_transport(
             TransportRecoveryV1(
                 task_dir=self.task_dir,
                 workflow="dev-pipeline",
                 event_log_path=self.event_path,
                 destination=self.destination,
+                active_attempt_id=cursor.get("attempt_id"),
             )
         )
 

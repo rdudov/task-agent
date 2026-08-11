@@ -109,8 +109,11 @@ quota waiting are notable transitions rather than silent internal events. The pu
 Recipient binding, deduplication, replay, and document receipts remain owned by
 the installation, while the public adapter still validates and orders the
 events before offering them. On adapter startup `recover_transport` receives
-the durable validated event-log path, allowing the installation to reconcile
-its own receipt journal without the engine inventing replay safety.
+the durable validated event-log path and the active attempt identity, allowing
+the installation to reconcile its own receipt journal without the engine
+inventing replay safety. Older attempts remain auditable but are outside the
+notification replay boundary, so their terminal outcome cannot be reclassified
+from the current task status.
 
 The same registered application controls the named installation boundaries for
 standard runs:

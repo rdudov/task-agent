@@ -456,6 +456,10 @@ by the gate records `rejected_completion_contract`, and a quota pause records
 With no registered application the default v1 implementation is inert, adds no
 completion policy, and refuses standard `resume|retry` because their native
 meaning would otherwise be invented.
+Transport recovery is bound to the adapter cursor's active attempt. The public
+engine still exposes the complete append-only projected ledger for audit, but an
+installation must not reinterpret terminal events from older attempts using the
+current task status or current refusal text.
 
 ## Completion Rules
 
