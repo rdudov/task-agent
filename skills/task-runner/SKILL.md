@@ -409,6 +409,8 @@ invalid sequence or identity still refuses continuation.
 - An installation whose terminal side effect itself establishes required live
   evidence may declare those exact ids in
   `completion_preparation_evidence_ids` and implement `prepare_completion`.
+  The declaration is an application capability list; each task defers only the
+  intersection with evidence ids its effective contract actually enforces.
   The engine calls this optional v1 hook only when the predicate passes with
   exactly those ids deferred, then immediately evaluates the complete predicate.
   The hook must persist its evidence before returning; failure or partial work

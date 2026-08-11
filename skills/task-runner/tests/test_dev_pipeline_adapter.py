@@ -322,6 +322,38 @@ class CompletionGateTests(unittest.TestCase):
         self.assertEqual(status_of(task_dir)["state"], "blocked")
         self.assertIn("other-live-gate", status_of(task_dir)["current_step"])
 
+    def test_completion_preparation_uses_only_ids_enforced_by_this_contract(self) -> None:
+        task_dir = make_task(self.tmp, status="done")
+        (task_dir / "task_contract.json").write_text(
+            json.dumps({"required_live_evidence": [{"id": "delivery-receipt"}]}),
+            encoding="utf-8",
+        )
+
+        class PreparingApplication(application_adapter.DefaultApplicationV1):
+            completion_preparation_evidence_ids = (
+                "review-transition", "delivery-receipt"
+            )
+
+            def prepare_completion(self, request):
+                with (request.task_dir / "verification.md").open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        "# Verification\n\n## delivery-receipt\n"
+                        "- Result: **PASS**\n- Evidence: delivered first\n"
+                    )
+                return application_adapter.DeliveryResultV1(True, "receipt persisted")
+
+        module = types.ModuleType("multi_capability_preparing_application")
+        module.adapter = PreparingApplication()
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(
+            task_dir, application=f"{module.__name__}:adapter", destination="bound"
+        )
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(event("attempt_completed", 2))
+        self.assertEqual(status_of(task_dir)["state"], "completed")
+
+
 
 class EventOrderingTests(unittest.TestCase):
     def setUp(self) -> None:

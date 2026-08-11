@@ -141,6 +141,9 @@ Its six decisions are deliberately narrower than lifecycle ownership:
 - `completion_problems` adds installation-specific pairing and delivery gates.
 - An application may additionally declare
   `completion_preparation_evidence_ids` and implement `prepare_completion`.
+  The engine intersects this capability list with the current task's enforced
+  evidence ids, so one installation can prepare different terminal evidence
+  sets without weakening tasks that do not require them.
   This additive v1 capability runs only after every non-deferred completion
   condition passes; its durable evidence is then consumed by the ordinary full
   predicate. A missing hook changes no existing application's behavior.

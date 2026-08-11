@@ -480,7 +480,18 @@ class TaskArtifactProjector:
         """
         if event["kind"] != "attempt_completed":
             return
-        evidence_ids = completion_preparation_evidence_ids(self.application)
+        declared_ids = completion_preparation_evidence_ids(self.application)
+        if not declared_ids:
+            return
+        contract = load_task_contract(self.task_dir)
+        enforced_ids = {
+            str(item["id"]).strip()
+            for item in enforced_live_evidence(contract)
+            if isinstance(item.get("id"), str) and str(item["id"]).strip()
+        }
+        evidence_ids = tuple(
+            evidence_id for evidence_id in declared_ids if evidence_id in enforced_ids
+        )
         if not evidence_ids:
             return
         ready, _reason = completion_ready(
