@@ -363,7 +363,10 @@ validation/order, artifact projection, and completion refusal.
 - `standard_session` can return native `--session-id`/`--resume` arguments and
   non-secret JSON state. This is the supported standard-workflow continuation
   seam after an application observes an exact quota reset. Secret-bearing state
-  keys are refused.
+  keys are refused. The parent forwards the application, operation, and opaque
+  destination across the detached watcher boundary; the watcher binds them to
+  the exact prepared record and fails the launch if registration, destination
+  binding, or native-session data is missing or changed.
 - `standard_run_finished` receives the supervised return code and log. An
   installation may parse a structured exact reset, arm its own durable
   scheduler, and return `waiting_for_quota`; it may not invent a reset time or

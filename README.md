@@ -202,6 +202,12 @@ session-state persistence, event ordering, artifact projection, and completion
 refusal. An application owns only its resource values, transport receipts,
 pairing rules, and scheduler. API v1 is importable as
 `task_agent.application_adapter`; session state refuses secret-bearing keys.
+For standard runs the parent forwards the registration, operation, and opaque
+destination to the detached watcher, which reuses the exact prepared session
+record. A missing or changed value is a visible launch refusal, never an inert
+application fallback or a fresh native session. Because the raw destination is
+not persisted, restart-time transport recovery must resolve its recipient from
+installation-owned state.
 
 By default the runner resolves the CLI installed at `.venv/bin/dev-pipeline`,
 then falls back to `PATH`. `TASK_AGENT_DEV_PIPELINE_BIN` or

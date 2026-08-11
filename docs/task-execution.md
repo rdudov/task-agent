@@ -104,12 +104,19 @@ task-agent start /absolute/task --workflow standard --runner claude \
 
 `standard_session` receives the prior non-secret state and returns the exact
 native CLI arguments for `start`, `resume`, or `retry`; the runner persists and
-reuses those arguments across its detached watcher boundary.
+reuses those arguments across its detached watcher boundary. The watcher
+verifies the application registration, operation, destination binding, and
+prepared session before it launches the child. If any required value is absent
+or differs from the parent record, the run terminates as a visible launch
+failure rather than silently starting a new native session.
 `standard_run_finished` receives the supervised exit and log, and may turn an
 exact provider reset into a durable `waiting_for_quota` disposition after
 arming the installation scheduler. It does not replace the engine's run
 ownership or completion decision. Raw
 destinations are not written to runner metadata or recorded commands.
+Consequently, recovery after the original command has exited must obtain the
+recipient from installation-owned state; the engine supplies the durable event
+log and its persisted destination digest, not the raw destination.
 
 This workflow requires the separate `dev-pipeline` package; see `skills/task-runner/SKILL.md` for the install step and the per-artifact projection rules.
 

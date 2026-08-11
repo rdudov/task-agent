@@ -143,6 +143,12 @@ destination. It owns process supervision, event ordering, task artifacts, and
 the final refusal. The application owns scheduling, recipient binding,
 transport receipts, quota scheduling, and cross-family policy. The default v1
 application is inert and adds no policy, preserving the public template behavior.
+The standard parent passes the application registration, lifecycle operation,
+and destination through the detached watcher command. Before launching the
+native child, the watcher binds those values back to the parent's prepared
+record and reuses that record exactly; an absent session or mismatched binding
+fails closed instead of selecting the default application or starting a new
+session.
 
 **One goal, one number.** A user goal keeps a single task directory for its whole
 life. Review is a phase of that task and so is the rework a review asks for;

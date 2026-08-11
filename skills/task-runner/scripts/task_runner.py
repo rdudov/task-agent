@@ -1021,6 +1021,17 @@ def dev_pipeline_options(args: argparse.Namespace) -> dict:
     return {name: value for name, value in options.items() if value is not None}
 
 
+def watcher_options(args: argparse.Namespace) -> dict:
+    """Return lifecycle inputs that must survive the detached watcher boundary."""
+    options = {
+        name: getattr(args, name, None)
+        for name in ("operation", "application", "destination")
+    }
+    if getattr(args, "workflow", None) == "dev-pipeline":
+        options.update(dev_pipeline_options(args))
+    return {name: value for name, value in options.items() if value is not None}
+
+
 def build_dev_pipeline_command(
     runner: str,
     task_dir: Path,
@@ -1094,6 +1105,36 @@ def redact_sensitive_arguments(command: list[str]) -> list[str]:
 def prepared_application_launch(args: argparse.Namespace, task_dir: Path) -> dict:
     """Resolve v1 policy once and reuse its exact standard-session arguments."""
     spec = getattr(args, "application", None)
+    operation = getattr(args, "operation", "start")
+    destination = getattr(args, "destination", None)
+    if args.workflow == "standard" and getattr(args, "launch_token", None) is not None:
+        runner_meta = read_json(runner_meta_path(task_dir))
+        existing = runner_meta.get("application")
+        expected_binding = runner_meta.get("destination_binding")
+        received_binding = (
+            hashlib.sha256(destination.encode()).hexdigest()[:12] if destination else None
+        )
+        problems = []
+        if not isinstance(existing, dict):
+            problems.append("the parent application record is absent")
+        else:
+            if existing.get("api_version") != APPLICATION_API_VERSION:
+                problems.append("the application API version changed")
+            if existing.get("spec") != spec:
+                problems.append("the application registration changed")
+            if existing.get("operation") != operation:
+                problems.append("the lifecycle operation changed")
+            if not isinstance(existing.get("standard_session"), dict):
+                problems.append("the prepared native session is absent")
+        if expected_binding != received_binding:
+            problems.append("the destination binding changed")
+        if problems:
+            raise ApplicationAdapterError(
+                "Detached watcher refused inconsistent application context: "
+                + "; ".join(problems)
+            )
+        return dict(existing)
+
     adapter = load_application(spec)
     requested = parse_memory_limit(getattr(args, "memory_limit", None))
     policy = adapter.launch_policy(
@@ -1101,8 +1142,8 @@ def prepared_application_launch(args: argparse.Namespace, task_dir: Path) -> dic
             task_dir=task_dir,
             runner=args.runner,
             workflow=args.workflow,
-            operation=getattr(args, "operation", "start"),
-            destination=getattr(args, "destination", None),
+            operation=operation,
+            destination=destination,
             requested_memory_limit_bytes=requested,
         )
     )
@@ -1112,52 +1153,46 @@ def prepared_application_launch(args: argparse.Namespace, task_dir: Path) -> dic
     record: dict = {
         "api_version": APPLICATION_API_VERSION,
         "spec": spec,
-        "operation": getattr(args, "operation", "start"),
+        "operation": operation,
         "memory_limit_bytes": memory_limit,
     }
     if args.workflow == "standard":
         runner_meta = read_json(runner_meta_path(task_dir))
         existing = runner_meta.get("application", {})
-        prepared = existing.get("standard_session") if isinstance(existing, dict) else None
-        if (
-            runner_meta.get("launch_pending")
-            and isinstance(prepared, dict)
-            and existing.get("spec") == spec
-            and existing.get("operation") == record["operation"]
-        ):
-            record["standard_session"] = prepared
-        else:
-            previous = existing.get("standard_session", {}).get("state", {}) if isinstance(existing, dict) else {}
-            session = adapter.standard_session(
-                StandardSessionRequestV1(
-                    task_dir=task_dir,
-                    runner=args.runner,
-                    operation=record["operation"],
-                    destination=getattr(args, "destination", None),
-                    previous_state=previous if isinstance(previous, dict) else {},
-                )
+        previous = (
+            existing.get("standard_session", {}).get("state", {})
+            if isinstance(existing, dict)
+            else {}
+        )
+        session = adapter.standard_session(
+            StandardSessionRequestV1(
+                task_dir=task_dir,
+                runner=args.runner,
+                operation=record["operation"],
+                destination=destination,
+                previous_state=previous if isinstance(previous, dict) else {},
             )
-            if not hasattr(session, "command_arguments") or not hasattr(session, "state"):
-                raise ApplicationAdapterError(
-                    "standard_session must return StandardSessionV1"
-                )
-            arguments = tuple(str(value) for value in session.command_arguments)
-            if any("\x00" in value for value in arguments):
-                raise ApplicationAdapterError("standard session arguments contain NUL")
-            destination = getattr(args, "destination", None)
-            if destination and any(destination in value for value in arguments):
-                raise ApplicationAdapterError(
-                    "standard session arguments must not contain the raw destination"
-                )
-            state = json_session_state(session.state)
-            if destination and destination in json.dumps(state, sort_keys=True):
-                raise ApplicationAdapterError(
-                    "standard session state must not contain the raw destination"
-                )
-            record["standard_session"] = {
-                "command_arguments": list(arguments),
-                "state": state,
-            }
+        )
+        if not hasattr(session, "command_arguments") or not hasattr(session, "state"):
+            raise ApplicationAdapterError(
+                "standard_session must return StandardSessionV1"
+            )
+        arguments = tuple(str(value) for value in session.command_arguments)
+        if any("\x00" in value for value in arguments):
+            raise ApplicationAdapterError("standard session arguments contain NUL")
+        if destination and any(destination in value for value in arguments):
+            raise ApplicationAdapterError(
+                "standard session arguments must not contain the raw destination"
+            )
+        state = json_session_state(session.state)
+        if destination and destination in json.dumps(state, sort_keys=True):
+            raise ApplicationAdapterError(
+                "standard session state must not contain the raw destination"
+            )
+        record["standard_session"] = {
+            "command_arguments": list(arguments),
+            "state": state,
+        }
     return record
 
 
@@ -1681,7 +1716,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         watcher_command.extend(["--sandbox-mode", resolved_sandbox_mode])
     if access_directories and args.workflow == "standard":
         watcher_command.extend(["--repo", str(access_directories[0])])
-    for name, value in dev_pipeline_options(args).items():
+    for name, value in watcher_options(args).items():
         watcher_command.extend([f"--{name.replace('_', '-')}", str(value)])
     if getattr(args, "memory_limit", None) is not None:
         watcher_command.extend(["--memory-limit", str(args.memory_limit)])

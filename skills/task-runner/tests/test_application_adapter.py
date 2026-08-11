@@ -1,12 +1,17 @@
 """The versioned installation seam stays thin while the public engine owns lifecycle."""
 
 import argparse
+import contextlib
+import hashlib
+import io
 import json
+import os
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -101,6 +106,115 @@ class ApplicationAdapterTests(unittest.TestCase):
                 ["--resume", "native-1"],
             )
             self.assertEqual(resumed["memory_limit_bytes"], 2 * 1024**3)
+
+    def test_standard_watcher_receives_and_reparses_application_context(self) -> None:
+        args = self._args("resume")
+        options = task_runner.watcher_options(args)
+        argv = [
+            "task-agent",
+            "_run-child",
+            "/tmp/001-example",
+            "--runner",
+            "claude",
+            "--workflow",
+            "standard",
+            "--launch-token",
+            "launch-1",
+        ]
+        for name, value in options.items():
+            argv.extend([f"--{name.replace('_', '-')}", str(value)])
+        with mock.patch.object(sys, "argv", argv):
+            reparsed = task_runner.parse_args()
+        self.assertEqual(reparsed.application, self.spec)
+        self.assertEqual(reparsed.destination, "opaque-installation-value")
+        self.assertEqual(reparsed.operation, "resume")
+
+    def test_real_start_builds_watcher_command_with_application_context(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            args = self._args("resume")
+            args.task_dir = str(task)
+            args.model = None
+            args.sandbox_mode = "danger-full-access"
+            args.repo = None
+            args.dry_run = False
+            captured = {}
+
+            class WatcherProcess:
+                def __init__(self, command, **kwargs):
+                    captured["command"] = command
+                    identity = task_runner.process_identity(os.getpid())
+                    self.stdout = io.StringIO(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "pid": os.getpid(),
+                                "watcher_pid": os.getpid(),
+                                "child_started_at": task_runner.utc_now(),
+                                "process_identity": identity,
+                                "watcher_process_identity": identity,
+                            }
+                        )
+                        + "\n"
+                    )
+
+            with mock.patch.object(
+                task_runner, "watcher_supervision_boundary", return_value=([], {})
+            ), mock.patch.object(
+                task_runner.subprocess, "Popen", WatcherProcess
+            ), contextlib.redirect_stdout(io.StringIO()):
+                task_runner.cmd_start(args)
+
+            command = captured["command"]
+            self.assertEqual(command[command.index("--application") + 1], self.spec)
+            self.assertEqual(
+                command[command.index("--destination") + 1],
+                "opaque-installation-value",
+            )
+            self.assertEqual(command[command.index("--operation") + 1], "resume")
+
+    def test_standard_watcher_reuses_exact_parent_session_record(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            prepared = task_runner.prepared_application_launch(self._args("resume"), task)
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {
+                    "launch_pending": {"token": "launch-1"},
+                    "destination_binding": hashlib.sha256(
+                        b"opaque-installation-value"
+                    ).hexdigest()[:12],
+                    "application": prepared,
+                },
+            )
+            watcher_args = self._args("resume")
+            watcher_args.launch_token = "launch-1"
+            reused = task_runner.prepared_application_launch(watcher_args, task)
+            self.assertEqual(reused, prepared)
+
+    def test_standard_watcher_refuses_missing_parent_context(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            prepared = task_runner.prepared_application_launch(self._args(), task)
+            task_runner.write_json(
+                task_runner.runner_meta_path(task),
+                {
+                    "launch_pending": {"token": "launch-1"},
+                    "destination_binding": hashlib.sha256(
+                        b"opaque-installation-value"
+                    ).hexdigest()[:12],
+                    "application": prepared,
+                },
+            )
+            watcher_args = self._args()
+            watcher_args.launch_token = "launch-1"
+            watcher_args.application = None
+            watcher_args.destination = None
+            with self.assertRaisesRegex(
+                application_adapter.ApplicationAdapterError,
+                "registration changed.*destination binding changed",
+            ):
+                task_runner.prepared_application_launch(watcher_args, task)
 
     def test_destination_is_redacted_from_persisted_command(self) -> None:
         command = ["python", "adapter.py", "--destination", "private-value"]
