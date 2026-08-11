@@ -319,6 +319,13 @@ HEAD, tracked worktree bytes, staged bytes, and non-ignored untracked
 path/type/content identity. Ignored runtime files are outside that publishable
 state.
 
+Host observers consume the same liveness owner through the public
+`process_identity`, `process_is_live`, and `runner_pid_namespace_state` API.
+The namespace state distinguishes local visibility, a visible foreign
+namespace, a provably absent recorded namespace, and a foreign namespace whose
+absence cannot be proved. Installation adapters may preserve that vocabulary
+but must not reimplement its `/proc` and host-supervision decision.
+
 A launch failure before the child exists is terminal launcher state. It removes
 `launch_pending` when it records `failed_to_launch`, so a retry is not refused by
 the dead launch's ownership token.

@@ -1414,6 +1414,40 @@ def pid_namespace_identity() -> str | None:
         return None
 
 
+def observed_pid_namespace_identities() -> tuple[set[str], bool]:
+    """Return PID namespaces visible through /proc and whether the scan was complete."""
+    identities: set[str] = set()
+    complete = True
+    try:
+        processes = list(Path("/proc").iterdir())
+    except OSError:
+        return identities, False
+    for process in processes:
+        if not process.name.isdigit():
+            continue
+        try:
+            identities.add(os.readlink(process / "ns" / "pid"))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError:
+            complete = False
+    return identities, complete
+
+
+def runner_pid_namespace_state(meta: dict) -> str:
+    """Classify whether this observer can decide the recorded run's liveness."""
+    recorded = meta.get("pid_namespace")
+    current = pid_namespace_identity()
+    if not recorded or (current is not None and recorded == current):
+        return "local"
+    observed, complete = observed_pid_namespace_identities()
+    if recorded in observed:
+        return "foreign_live"
+    if complete and host_systemd_scope_available():
+        return "recorded_namespace_absent"
+    return "different_pid_namespace"
+
+
 def runner_pid_namespace_visible(meta: dict) -> bool:
     """Whether negative PID lookups are evidence for this runner record."""
     recorded = meta.get("pid_namespace")
@@ -1439,6 +1473,11 @@ def process_is_recorded_instance(pid: object, expected_identity: object) -> tupl
     # The host can produce identities but none was recorded, so this metadata
     # predates identity tracking. PID liveness is all that is left.
     return pid_is_running(pid), "pid_only_unrecorded_identity"
+
+
+def process_is_live(pid: object, expected_identity: object) -> bool:
+    """Compatibility boolean over the canonical identity-aware liveness result."""
+    return process_is_recorded_instance(pid, expected_identity)[0]
 
 
 def live_run_processes(task_dir: Path) -> list[dict]:

@@ -108,6 +108,42 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         self.assertIn("--scope", prefix)
         self.assertEqual(record["durability"], "independent_cgroup")
 
+    def test_pid_namespace_state_preserves_observer_vocabulary(self) -> None:
+        with mock.patch.object(task_runner, "pid_namespace_identity", return_value="ns-current"):
+            self.assertEqual(
+                task_runner.runner_pid_namespace_state({"pid_namespace": "ns-current"}),
+                "local",
+            )
+        with mock.patch.object(
+            task_runner, "pid_namespace_identity", return_value="ns-current"
+        ), mock.patch.object(
+            task_runner,
+            "observed_pid_namespace_identities",
+            return_value=({"ns-foreign"}, True),
+        ):
+            self.assertEqual(
+                task_runner.runner_pid_namespace_state({"pid_namespace": "ns-foreign"}),
+                "foreign_live",
+            )
+        with mock.patch.object(
+            task_runner, "pid_namespace_identity", return_value="ns-current"
+        ), mock.patch.object(
+            task_runner, "observed_pid_namespace_identities", return_value=(set(), True)
+        ), mock.patch.object(task_runner, "host_systemd_scope_available", return_value=True):
+            self.assertEqual(
+                task_runner.runner_pid_namespace_state({"pid_namespace": "ns-gone"}),
+                "recorded_namespace_absent",
+            )
+
+    def test_process_is_live_delegates_to_identity_aware_owner(self) -> None:
+        with mock.patch.object(
+            task_runner,
+            "process_is_recorded_instance",
+            return_value=(True, "identity_match"),
+        ) as owner:
+            self.assertTrue(task_runner.process_is_live(123, "identity"))
+        owner.assert_called_once_with(123, "identity")
+
     def test_default_pipeline_cli_is_resolved_from_the_readme_virtualenv(self) -> None:
         expected = task_runner.repo_root() / ".venv" / "bin" / "dev-pipeline"
         self.assertTrue(expected.is_file())
