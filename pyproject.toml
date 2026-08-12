@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = {file = "LICENSE"}
 dependencies = [
   "PyYAML>=6.0,<7",
-  "dev-pipeline @ git+https://github.com/rdudov/dev-pipeline.git@2930739c3ce51f17459deb820ed66d0995f30c74",
+  "dev-pipeline @ git+https://github.com/rdudov/dev-pipeline.git@200f8eb86f1c29d74f0b5ff275f9f5d1e8b96482",
 ]
 
 [project.scripts]
