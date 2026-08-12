@@ -562,8 +562,8 @@ class EventOrderingTests(unittest.TestCase):
 
     @requires_review_events
     def test_an_unobtainable_review_becomes_another_numbers_work(self) -> None:
-        """The outage is recorded as its own obligation; this task just waits."""
-        task_dir = make_task(self.tmp)
+        """The outage gets its own number; this task keeps its scope and waits."""
+        task_dir = make_task(self.tmp / "workspace" / "tasks")
         projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
         projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
         projector.consume(event("run_started", 2, RUN_STARTED))
@@ -594,6 +594,9 @@ class EventOrderingTests(unittest.TestCase):
         self.assertEqual(obligations[0]["kind"], "review_infrastructure_defect")
         self.assertEqual(obligations[0]["source"], "dev-pipeline:review_refused")
         self.assertEqual(obligations[0]["subject_scope"], "unchanged")
+        filed = obligations[0]["recorded_as"]
+        self.assertTrue((self.tmp / "workspace" / filed / "task.md").is_file())
+        self.assertNotIn(task_dir.name, filed)
 
     @requires_review_events
     def test_a_finding_that_comes_back_is_reported_without_stopping_rework(self) -> None:

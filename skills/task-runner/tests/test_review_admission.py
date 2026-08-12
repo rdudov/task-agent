@@ -178,11 +178,25 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(record["decision"], "exempt")
 
 
+def _workspace_task(root: str, name: str = "001-subject") -> Path:
+    """A task directory in a real workspace layout, so numbers can be allocated."""
+    task_dir = Path(root) / "tasks" / name
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.md").write_text(
+        "---\n"
+        'id: 1\nslug: "001-subject"\ntitle: "Subject"\ndate: 2026-08-12\n'
+        'status: "planned"\nprojects: []\ntrips: []\n---\n# Subject\n',
+        encoding="utf-8",
+    )
+    (task_dir / "plan.md").write_text("# Plan\n\n1. [pending] Work\n", encoding="utf-8")
+    return task_dir
+
+
 class InfrastructureObligationTests(unittest.TestCase):
-    def test_a_missing_reviewer_becomes_another_numbers_work(self) -> None:
-        """The task that hit the outage keeps its scope and waits."""
+    def test_a_missing_reviewer_is_filed_under_its_own_number(self) -> None:
+        """The outage gets a number of its own; the subject task keeps its scope."""
         with tempfile.TemporaryDirectory() as raw:
-            task_dir = Path(raw)
+            task_dir = _workspace_task(raw)
             with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
                 review_admission.admit_launch(
                     task_dir,
@@ -193,15 +207,35 @@ class InfrastructureObligationTests(unittest.TestCase):
                     which=_installed("claude"),
                 )
             obligations = review_admission.infrastructure_obligations(task_dir)
+            filed = obligations[0]["recorded_as"]
+            self.assertTrue((Path(raw) / filed / "task.md").is_file())
         self.assertEqual(len(obligations), 1)
         self.assertEqual(obligations[0]["kind"], "review_infrastructure_defect")
-        self.assertEqual(obligations[0]["separate_task_number"], "required")
         self.assertEqual(obligations[0]["subject_scope"], "unchanged")
-        self.assertIn("own task number", str(caught.exception))
+        self.assertNotEqual(filed, task_dir.name)
+        self.assertIn(filed, str(caught.exception))
+
+    def test_the_same_outage_does_not_keep_allocating_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = _workspace_task(raw)
+            first = review_admission.record_infrastructure_obligation(
+                task_dir,
+                event_id="event-1",
+                source="dev-pipeline:review_refused",
+                reason="the reviewer sandbox could not execute any command",
+            )
+            second = review_admission.record_infrastructure_obligation(
+                task_dir,
+                event_id="event-2",
+                source="dev-pipeline:review_refused",
+                reason="the reviewer sandbox could not execute any command",
+            )
+        self.assertEqual(first["recorded_as"], second["recorded_as"])
+        self.assertTrue(second["reused_existing_number"])
 
     def test_an_incoherent_launch_is_not_an_infrastructure_defect(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            task_dir = Path(raw)
+            task_dir = _workspace_task(raw)
             with self.assertRaises(review_admission.ReviewAdmissionError):
                 review_admission.admit_launch(
                     task_dir,
@@ -216,7 +250,7 @@ class InfrastructureObligationTests(unittest.TestCase):
 
     def test_the_obligation_is_recorded_once_per_event(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            task_dir = Path(raw)
+            task_dir = _workspace_task(raw)
             for _ in range(2):
                 review_admission.record_infrastructure_obligation(
                     task_dir,
@@ -225,6 +259,20 @@ class InfrastructureObligationTests(unittest.TestCase):
                     reason="reviewer sandbox cannot execute",
                 )
             self.assertEqual(len(review_admission.infrastructure_obligations(task_dir)), 1)
+
+    def test_an_unfileable_defect_says_so_instead_of_pretending(self) -> None:
+        """No workspace to file into is stated, not silently dropped."""
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            entry = review_admission.record_infrastructure_obligation(
+                task_dir,
+                event_id="event-1",
+                source="dev-pipeline:review_waiting",
+                reason="no reviewer answered",
+            )
+        self.assertIsNone(entry["recorded_as"])
+        self.assertEqual(entry["separate_task_number"], "unfiled")
+        self.assertIn("could not be allocated", entry["statement"])
 
 
 class RoundLedgerTests(unittest.TestCase):

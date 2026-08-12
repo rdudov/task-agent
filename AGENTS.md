@@ -92,8 +92,9 @@ Files the user explicitly requested are a separate, user-facing class of output.
   spent attempt. There is no limit on rework rounds: review and rework stay
   phases of one task number until the work is accepted, a repeated demonstrated
   finding is reported to the user as an execution-quality problem without
-  stopping the fixes, and a defect in the review infrastructure is a separate
-  number rather than a reason to accept unreviewed work.
+  stopping the fixes, and a defect in the review infrastructure is filed under
+  its own number through the task-number owner rather than becoming the subject
+  of the task that hit it or a reason to accept unreviewed work.
 - Git write admission is one common-directory-locked check-and-claim operation;
   only provable abandoned no-ops are durably settled before a successor enters,
   unknown liveness refuses a foreign writer, abandoned divergent work remains a

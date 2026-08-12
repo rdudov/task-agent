@@ -185,10 +185,12 @@ about how small it is; `review_admission.py` binds a reviewer from a different
 provider family before the author starts and refuses the launch when it cannot,
 rather than discovering after a finished attempt that nobody was ever going to
 check it. The exception is a structurally declared read-only lookup that
-observation does not contradict. There is no round budget: rework and review
-repeat under one number until the work is accepted, and a demonstrated finding
-that comes back is reported as an execution-quality signal without stopping
-anything.
+observation does not contradict. A defect in the review machinery is filed as its
+own task through the task-number owner, so the task that hit it keeps its scope
+and waits rather than absorbing an outage. There is no round budget: rework and
+review repeat under one number until the work is accepted, and a demonstrated
+finding that comes back is reported as an execution-quality signal without
+stopping anything.
 
 **One writer per repository.** A write-mode child is admitted to a Git repository
 through one repository-locked check-and-claim operation. Unknown PID visibility

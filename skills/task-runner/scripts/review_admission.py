@@ -37,6 +37,8 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -343,13 +345,7 @@ def evaluate(
         return record
     record["decision"] = "refused"
     record["message"] = _refusal_message(classification, pair)
-    if pair.get("outcome") in INFRASTRUCTURE_OUTCOMES:
-        record["infrastructure_obligation"] = infrastructure_obligation(
-            source="launch_admission",
-            reason=str(pair.get("detail", "")),
-            reference=pair.get("outcome"),
-        )
-        record["message"] += " " + record["infrastructure_obligation"]["statement"]
+    record["infrastructure_defect"] = pair.get("outcome") in INFRASTRUCTURE_OUTCOMES
     return record
 
 
@@ -371,15 +367,93 @@ def infrastructure_obligation(
         "reference": reference,
         "subject_work": "preserved_and_waiting_for_a_bindable_reviewer",
         "subject_scope": "unchanged",
-        "separate_task_number": "required",
         "allocated_by": "skills/task-creator",
-        "statement": (
-            "This is a defect in the review machinery, not in the work under "
-            "review: file it under its own task number via task-creator. This "
-            "task keeps its scope, keeps its work, and waits for a reviewer it "
-            "can bind -- it is not accepted unreviewed and not reviewed by its "
-            "own author."
-        ),
+    }
+
+
+def obligation_statement(entry: dict[str, Any]) -> str:
+    """Say where the defect went, so the subject task is visibly not it."""
+    filed = entry.get("recorded_as")
+    where = (
+        f"filed under its own task number as {filed}"
+        if filed
+        else (
+            "its own task number could not be allocated here "
+            f"({entry.get('allocation_error') or 'allocation unavailable'}), so file it "
+            "through task-creator"
+        )
+    )
+    return (
+        "This is a defect in the review machinery, not in the work under review: "
+        f"{where}. This task keeps its scope, keeps its work, and waits for a "
+        "reviewer it can bind -- it is not accepted unreviewed and not reviewed "
+        "by its own author."
+    )
+
+
+def _defect_key(reason: str, reference: str | None) -> str:
+    """One key per distinct outage, so a retry does not allocate a second number."""
+    normalized = " ".join(f"{reference or ''} {reason}".lower().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _tasks_index_command() -> tuple[list[str], Path]:
+    """Resolve the canonical task-number owner, source tree or installed."""
+    try:  # package install
+        from .task_completion import TASKS_INDEX_PATH
+    except ImportError:  # direct repository script
+        from task_completion import TASKS_INDEX_PATH
+    if TASKS_INDEX_PATH.suffix == ".py":
+        return [sys.executable, str(TASKS_INDEX_PATH)], TASKS_INDEX_PATH
+    return [str(TASKS_INDEX_PATH)], TASKS_INDEX_PATH
+
+
+def allocate_infrastructure_task(
+    task_dir: Path, *, reason: str, reference: str | None
+) -> dict[str, Any]:
+    """Give the review-machinery defect its own task number, through its owner.
+
+    `task-creator` allocates numbers; this asks it to, rather than growing a
+    second allocator here. The number belongs to the defect, so the subject task
+    can stay exactly what it was.
+    """
+    resolved = task_dir.resolve()
+    if resolved.parent.name != "tasks":
+        # Numbers are allocated inside a workspace `tasks/` root. A task that is
+        # not in one has no index to file against, and saying so is better than
+        # creating a `tasks/` directory somewhere nobody looks.
+        return {
+            "recorded_as": None,
+            "allocation_error": (
+                f"{resolved} is not inside a workspace `tasks/` root, so no task "
+                "number can be allocated for the defect here"
+            ),
+        }
+    command, index_path = _tasks_index_command()
+    title = f"Review infrastructure defect: {reason or reference or 'reviewer unavailable'}"
+    summary = (
+        f"Raised while task {task_dir.name} tried to obtain an independent review "
+        f"({reference or 'review unavailable'}). {reason} The subject task keeps its "
+        "own scope and waits for a reviewer it can bind."
+    )
+    env = dict(os.environ)
+    env["TASKS_INDEX_ROOT"] = str(resolved.parents[1])
+    result = subprocess.run(
+        [*command, "add", title[:180], summary],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        return {
+            "recorded_as": None,
+            "allocation_error": detail or f"exit {result.returncode}",
+            "allocated_through": str(index_path),
+        }
+    return {
+        "recorded_as": result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None,
+        "allocated_through": str(index_path),
     }
 
 
@@ -391,9 +465,17 @@ def record_infrastructure_obligation(
     reason: str,
     reference: str | None = None,
     recorded_at: str | None = None,
+    allocate: bool = True,
 ) -> dict[str, Any]:
-    """Append the obligation durably, once per event that raised it."""
+    """File the defect under its own number and append the durable obligation.
+
+    Once per event that raised it, and once per distinct defect: a retry of the
+    same outage reuses the number already allocated for it instead of filling
+    the index with copies of one problem.
+    """
     path = task_dir / OBLIGATIONS_LEDGER
+    key = _defect_key(reason, reference)
+    allocation: dict[str, Any] | None = None
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
@@ -402,14 +484,35 @@ def record_infrastructure_obligation(
                 value = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(value, dict) and value.get("event_id") == event_id:
+            if not isinstance(value, dict):
+                continue
+            if value.get("event_id") == event_id:
                 return value
+            if value.get("defect_key") == key and value.get("recorded_as"):
+                allocation = {
+                    "recorded_as": value["recorded_as"],
+                    "allocated_through": value.get("allocated_through"),
+                    "reused_existing_number": True,
+                }
+    if allocation is None and allocate:
+        try:
+            allocation = allocate_infrastructure_task(
+                task_dir, reason=reason, reference=reference
+            )
+        except (OSError, subprocess.SubprocessError, ImportError, IndexError) as exc:
+            # The refusal itself must survive a failure to file. An unfiled
+            # defect is recorded as unfiled rather than silently dropped.
+            allocation = {"recorded_as": None, "allocation_error": str(exc)}
     entry = {
         "schema_version": SCHEMA_VERSION,
         "event_id": event_id,
         "recorded_at": recorded_at or utc_now(),
+        "defect_key": key,
+        **(allocation or {"recorded_as": None, "allocation_skipped": True}),
         **infrastructure_obligation(source=source, reason=reason, reference=reference),
     }
+    entry["separate_task_number"] = entry.get("recorded_as") or "unfiled"
+    entry["statement"] = obligation_statement(entry)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
@@ -460,9 +563,10 @@ def admit_launch(
         declared_reviewer=declared_reviewer,
         which=which,
     )
-    _write_json(task_dir / ADMISSION_RECORD, record)
-    if "infrastructure_obligation" in record:
-        record_infrastructure_obligation(
+    if record.pop("infrastructure_defect", False):
+        # The outage is another number's work, and it is filed as one before the
+        # refusal is reported, so the report can say where it went.
+        obligation = record_infrastructure_obligation(
             task_dir,
             event_id=f"launch-admission:{record['evaluated_at']}",
             source="launch_admission",
@@ -470,6 +574,9 @@ def admit_launch(
             reference=record["pair"].get("outcome"),
             recorded_at=record["evaluated_at"],
         )
+        record["infrastructure_obligation"] = obligation
+        record["message"] += " " + obligation["statement"]
+    _write_json(task_dir / ADMISSION_RECORD, record)
     if record["decision"] == "refused":
         raise ReviewAdmissionError(record)
     return record

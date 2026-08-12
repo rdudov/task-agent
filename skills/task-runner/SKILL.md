@@ -364,15 +364,21 @@ comes back, the projection adds an execution-quality warning to `status.json`,
 finding appearing for the first time, including the deeper one a fix exposes, is
 normal iteration and warns about nothing.
 
-A defect in the review infrastructure itself belongs to a separate task number,
-and the runner records that as an obligation rather than leaving it to prose.
-When a launch is refused because no reviewer is installed, and when a
-`review_waiting` or `review_refused` event says a review could not be obtained,
-an entry is appended to `reviews/infrastructure-obligations.jsonl` naming the
-defect, the fact that this task's subject and work are unchanged, and that the
-number must be allocated through `skills/task-creator` — which owns task
-identity, so the launcher does not become a second allocator. The same statement
-goes into `status.json` and `trace.md`.
+A defect in the review infrastructure itself gets a task number of its own, and
+the runner files it rather than leaving the rule to prose. When a launch is
+refused because no reviewer is installed, and when a `review_waiting` or
+`review_refused` event says a review could not be obtained, a task is allocated
+through `skills/task-creator` — which owns task identity, so the launcher asks
+for a number instead of becoming a second allocator — and the entry appended to
+`reviews/infrastructure-obligations.jsonl` names the filed task, the defect, and
+the fact that this task's subject and work are unchanged. `status.json` and
+`trace.md` say where the defect went.
+
+Repeats of one outage reuse the number already filed for it, keyed on the
+defect, so retrying a launch against a host that is still missing a reviewer does
+not fill the index with copies of one problem. When there is no workspace
+`tasks/` root to file into, the entry says the defect is `unfiled` and why —
+never that it was filed.
 
 The work under review is not rewritten to accommodate the outage, and the outage
 never licenses accepting the work unreviewed: the task keeps its scope and waits
