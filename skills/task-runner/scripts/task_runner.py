@@ -1623,6 +1623,42 @@ def claim_write_admission(task_dir: Path, repository: Path, run_id: str) -> dict
     )
 
 
+def report_review_admission_refusal(
+    task_dir: Path, record: dict, args: argparse.Namespace
+) -> dict:
+    """Tell whoever asked for this launch that it was refused.
+
+    The refusal already exists in the task's own state, but state is something
+    a caller has to go and look at. This gate only pays for itself if the
+    person who asked for a material launch hears, before any author work, that
+    nobody could review it. Only the message travels: the decision was made
+    before this call, and neither an absent transport nor a broken one can turn
+    the refusal back into a launch.
+    """
+    parts = review_admission.refusal_notification(record)
+    try:
+        delivered, detail = try_send_pipeline_stop_message(
+            task_dir=task_dir,
+            summary=parts["summary"],
+            requested_action=parts["requested_action"],
+            artifact_paths=[status_path(task_dir), trace_path(task_dir)],
+            destination=getattr(args, "destination", None),
+            application=getattr(args, "application", None),
+        )
+    except Exception as exc:  # a failed transport must not hide the refusal
+        delivered, detail = False, f"delivery raised {type(exc).__name__}: {exc}"
+    return {
+        "kind": "pipeline_stopped",
+        "delivered": bool(delivered),
+        "detail": detail,
+        "trace": (
+            f"Delivered the review-admission refusal to the caller: {detail}"
+            if delivered
+            else f"Could not deliver the review-admission refusal: {detail}"
+        ),
+    }
+
+
 def cmd_start(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
@@ -1658,6 +1694,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             declared_reviewer=getattr(args, "reviewer_runner", None),
         )
     except review_admission.ReviewAdmissionError as exc:
+        notification = report_review_admission_refusal(task_dir, exc.record, args)
         write_status(
             task_dir,
             "blocked",
@@ -1665,10 +1702,11 @@ def cmd_start(args: argparse.Namespace) -> None:
             {
                 "runner": args.runner,
                 "workflow": args.workflow,
-                "review_admission": exc.record,
+                "review_admission": {**exc.record, "notification": notification},
             },
         )
         append_trace(task_dir, exc.record["message"])
+        append_trace(task_dir, notification["trace"])
         ownership_lock.close()
         raise SystemExit(exc.record["message"]) from None
     append_trace(task_dir, review_record["message"])

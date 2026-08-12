@@ -184,7 +184,9 @@ review is read from what it is observably granted and gated on, not from prose
 about how small it is; `review_admission.py` binds a reviewer from a different
 provider family before the author starts and refuses the launch when it cannot,
 rather than discovering after a finished attempt that nobody was ever going to
-check it. The exception is a structurally declared read-only lookup that
+check it. A refusal is reported to the caller through the delivery seam as well
+as recorded in the task, because a gate nobody hears is indistinguishable from a
+launch that never happened. The exception is a structurally declared read-only lookup that
 observation does not contradict. A defect in the review machinery is filed as its
 own task through the task-number owner, so the task that hit it keeps its scope
 and waits rather than absorbing an outage. There is no round budget: rework and

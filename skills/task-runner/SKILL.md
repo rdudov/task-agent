@@ -346,9 +346,16 @@ author is never its own reviewer, whoever is unavailable — a launch with no
 independent family installed is refused, not downgraded.
 
 The refusal exits non-zero with its reason in its own words, and leaves the task
-`blocked` with the same message in `status.json` and `trace.md`. It happens
-before the child is spawned, before the application adapter is loaded, and before
-Git write admission — the point of it is that no author work is spent.
+`blocked` with the same message in `status.json` and `trace.md`. It is also
+delivered to whoever asked for the launch, as a `pipeline_stopped` notification
+carrying what happened and what to do about it: task state is something a caller
+has to go and look at, and a gate whose whole value is being heard before any
+author work cannot rely on that. The delivery outcome is recorded next to the
+decision as `review_admission.notification`, and a transport that is absent or
+broken leaves the refusal exactly as it is — nothing can turn it back into a
+launch. It happens before the child is spawned, before the launch's application
+policy is prepared, and before Git write admission — the point of it is that no
+author work is spent.
 
 There is no cap on rework rounds. Review and rework are phases of one task
 number, and the runner has nothing that counts down: `rework_rounds` is recorded

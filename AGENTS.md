@@ -89,7 +89,8 @@ Files the user explicitly requested are a separate, user-facing class of output.
   exception is a structurally declared read-only lookup that observation does not
   contradict. An author never reviews its own work, so a material launch with no
   independent provider family available is refused up front instead of after a
-  spent attempt. There is no limit on rework rounds: review and rework stay
+  spent attempt, and that refusal is delivered to the caller rather than only
+  filed in the task's own state. There is no limit on rework rounds: review and rework stay
   phases of one task number until the work is accepted, a repeated demonstrated
   finding is reported to the user as an execution-quality problem without
   stopping the fixes, and a defect in the review infrastructure is filed under

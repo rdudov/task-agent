@@ -74,6 +74,15 @@ INFRASTRUCTURE_OUTCOMES = frozenset(
     {"reviewer_unavailable", "no_independent_runner_installed"}
 )
 
+# What a caller can do about a refusal. It is the closing sentence of the
+# refusal message and the requested action of the refusal notification, so the
+# two cannot drift into different instructions.
+REFUSAL_ACTION = (
+    "Install a reviewer from another provider family, name one in the task "
+    "contract's `review_policy.reviewer_runner`, or declare an observably "
+    "read-only launch that grants no write access and delivers nothing."
+)
+
 
 class ReviewAdmissionError(RuntimeError):
     """A material launch that has no independent reviewer to bind."""
@@ -286,17 +295,33 @@ def resolve_pair(
     return pair
 
 
-def _refusal_message(classification: dict[str, Any], pair: dict[str, Any]) -> str:
+def _refusal_reason(classification: dict[str, Any], pair: dict[str, Any]) -> str:
     effects = classification.get("material_effects") or []
     because = effects[0] if effects else "it is not declared as an observably read-only lookup"
     return (
         "task-runner refuses to start the author: this launch needs an independent "
         f"reviewer because {because}, and none can be bound -- {pair.get('detail')}. "
-        f"The {pair.get('author_family')} author will not review its own work. Install a "
-        "reviewer from another provider family, name one in the task contract's "
-        "`review_policy.reviewer_runner`, or declare an observably read-only launch "
-        "that grants no write access and delivers nothing."
+        f"The {pair.get('author_family')} author will not review its own work."
     )
+
+
+def _refusal_message(classification: dict[str, Any], pair: dict[str, Any]) -> str:
+    return f"{_refusal_reason(classification, pair)} {REFUSAL_ACTION}"
+
+
+def refusal_notification(record: dict[str, Any]) -> dict[str, str]:
+    """Say a refusal in the two parts a notification needs.
+
+    A refusal that exists only in the task's own files is invisible to whoever
+    asked for the launch, and being heard before an author runs is this gate's
+    whole value. The wording is the record's own, so the notification cannot
+    describe a different decision from the one that was made.
+    """
+    message = str(record.get("message", "")).strip()
+    return {
+        "summary": str(record.get("refusal_reason") or message).strip(),
+        "requested_action": str(record.get("refusal_action") or REFUSAL_ACTION).strip(),
+    }
 
 
 def evaluate(
@@ -344,6 +369,8 @@ def evaluate(
         )
         return record
     record["decision"] = "refused"
+    record["refusal_reason"] = _refusal_reason(classification, pair)
+    record["refusal_action"] = REFUSAL_ACTION
     record["message"] = _refusal_message(classification, pair)
     record["infrastructure_defect"] = pair.get("outcome") in INFRASTRUCTURE_OUTCOMES
     return record
@@ -576,6 +603,11 @@ def admit_launch(
         )
         record["infrastructure_obligation"] = obligation
         record["message"] += " " + obligation["statement"]
+        # The notification carries where the outage went for the same reason the
+        # message does: the caller has to see that this task is not the defect.
+        record["refusal_reason"] = (
+            record.get("refusal_reason", "") + " " + obligation["statement"]
+        ).strip()
     _write_json(task_dir / ADMISSION_RECORD, record)
     if record["decision"] == "refused":
         raise ReviewAdmissionError(record)

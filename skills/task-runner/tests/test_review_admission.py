@@ -1,9 +1,11 @@
 """Material work gets an independent reviewer before its author starts."""
 
+import argparse
 import importlib.util
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -19,6 +21,9 @@ def _load(name: str):
 
 
 review_admission = _load("review_admission")
+task_runner = _load("task_runner")
+
+import application_adapter  # noqa: E402  (`_load` put the scripts directory on the path)
 
 
 def _installed(*runners: str):
@@ -273,6 +278,152 @@ class InfrastructureObligationTests(unittest.TestCase):
         self.assertIsNone(entry["recorded_as"])
         self.assertEqual(entry["separate_task_number"], "unfiled")
         self.assertIn("could not be allocated", entry["statement"])
+
+
+class RefusalNotificationTests(unittest.TestCase):
+    """A refusal nobody hears is indistinguishable from a launch that never ran."""
+
+    def _refused_record(self, task_dir: Path) -> dict:
+        with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+            review_admission.admit_launch(
+                task_dir,
+                workflow="dev-pipeline",
+                author_runner="claude",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                declared_reviewer="claude",
+                which=_installed("claude"),
+            )
+        return caught.exception.record
+
+    def test_the_notification_says_what_happened_and_what_to_do(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            record = self._refused_record(Path(raw))
+        parts = review_admission.refusal_notification(record)
+        self.assertIn("refuses to start the author", parts["summary"])
+        self.assertIn("author reviewing itself", parts["summary"])
+        self.assertNotIn(review_admission.REFUSAL_ACTION, parts["summary"])
+        self.assertEqual(parts["requested_action"], review_admission.REFUSAL_ACTION)
+        # The two halves are the message the task's own state records, so the
+        # caller cannot be told a different decision from the one that was made.
+        self.assertEqual(
+            f"{parts['summary']} {parts['requested_action']}", record["message"]
+        )
+
+    def test_a_filed_review_outage_travels_with_the_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = _workspace_task(raw)
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                review_admission.admit_launch(
+                    task_dir,
+                    workflow="dev-pipeline",
+                    author_runner="claude",
+                    access_grant=WRITE_GRANT,
+                    contract=UNGATED,
+                    which=_installed("claude"),
+                )
+            parts = review_admission.refusal_notification(caught.exception.record)
+        self.assertIn("defect in the review machinery", parts["summary"])
+
+    def test_an_old_record_without_the_split_still_notifies(self) -> None:
+        parts = review_admission.refusal_notification({"message": "refused: no reviewer"})
+        self.assertEqual(parts["summary"], "refused: no reviewer")
+        self.assertEqual(parts["requested_action"], review_admission.REFUSAL_ACTION)
+
+
+class _RecordingTransport:
+    """An installation that keeps what the engine handed to it."""
+
+    api_version = 1
+
+    def __init__(self, fail: bool = False) -> None:
+        self.events: list = []
+        self.fail = fail
+
+    def launch_policy(self, request):
+        return application_adapter.LaunchPolicyV1(None)
+
+    def standard_session(self, request):
+        return application_adapter.StandardSessionV1()
+
+    def standard_run_finished(self, result):
+        return None
+
+    def deliver_event(self, event):
+        if self.fail:
+            raise RuntimeError("transport is down")
+        self.events.append(event)
+        return application_adapter.DeliveryResultV1(True, "recorded")
+
+    def recover_transport(self, request):
+        return None
+
+    def completion_problems(self, request):
+        return []
+
+
+class RefusalReachesTheCallerTests(unittest.TestCase):
+    """The refusal path of the real `start` entrypoint, end to end."""
+
+    def _register(self, adapter: _RecordingTransport) -> str:
+        module = types.ModuleType(f"task_agent_transport_{id(adapter)}")
+        module.adapter = adapter
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+        return f"{module.__name__}:adapter"
+
+    def _refuse(self, adapter: _RecordingTransport, root: str) -> tuple[Path, str]:
+        task_dir = _workspace_task(root)
+        args = argparse.Namespace(
+            task_dir=str(task_dir),
+            runner="claude",
+            # Naming the author's own family refuses whatever is installed on
+            # the host running this test.
+            reviewer_runner="claude",
+            workflow="dev-pipeline",
+            model=None,
+            sandbox_mode=None,
+            repo=None,
+            dry_run=True,
+            application=self._register(adapter),
+            destination=None,
+        )
+        with self.assertRaises(SystemExit) as caught:
+            task_runner.cmd_start(args)
+        return task_dir, str(caught.exception)
+
+    def test_a_refused_launch_is_delivered_and_not_only_filed(self) -> None:
+        adapter = _RecordingTransport()
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, message = self._refuse(adapter, raw)
+            status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+            trace = (task_dir / "trace.md").read_text(encoding="utf-8")
+            started = (task_dir / ".runner" / "runner.json").exists()
+
+        self.assertEqual([event.kind for event in adapter.events], ["pipeline_stopped"])
+        delivered = adapter.events[0].payload["message"]
+        self.assertIn("refuses to start the author", delivered)
+        self.assertIn(review_admission.REFUSAL_ACTION, delivered)
+        self.assertIn("refuses to start the author", message)
+        # The author never ran: the refusal is what the caller was told about.
+        self.assertFalse(started)
+        self.assertEqual(status["state"], "blocked")
+        self.assertTrue(status["review_admission"]["notification"]["delivered"])
+        self.assertIn("Delivered the review-admission refusal", trace)
+
+    def test_a_broken_transport_does_not_turn_a_refusal_into_a_launch(self) -> None:
+        adapter = _RecordingTransport(fail=True)
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, message = self._refuse(adapter, raw)
+            status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+            started = (task_dir / ".runner" / "runner.json").exists()
+
+        self.assertIn("refuses to start the author", message)
+        self.assertFalse(started)
+        self.assertEqual(status["state"], "blocked")
+        notification = status["review_admission"]["notification"]
+        self.assertFalse(notification["delivered"])
+        self.assertIn("transport is down", notification["detail"])
 
 
 class RoundLedgerTests(unittest.TestCase):
