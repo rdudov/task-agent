@@ -50,6 +50,18 @@ entrypoint. Both paths survive detached watcher construction and reach the same
 `dev-pipeline owner` process. Task-agent treats them as opaque installation
 policy and never selects or substitutes a reviewer itself.
 
+A launch is also admitted against the review it will need. Material work — a
+write grant, a non-read-only sandbox, a delivery workflow, a gated contract,
+declared review gates, registered deliverables — is refused before the author
+starts unless an independent provider family can be bound as its reviewer, and
+the author is never bound to review itself. The narrow exception is a launch
+declared `review_policy.work_class: "read_only_lookup"` in `task_contract.json`
+that observably does none of those things; a declaration any observation
+contradicts is a mislabel and the launch stays reviewable. Nothing here counts
+rework rounds — review and rework are phases of one number, continued until the
+work is accepted. `skills/task-runner/SKILL.md` owns the rules, the record
+format, and the repeated-finding quality warning.
+
 A write-mode launch is additionally admitted against the target repository, so
 two tasks never write one working tree at the same time and a change nobody has
 reviewed does not get built on. `skills/task-runner/SKILL.md` owns the rules and

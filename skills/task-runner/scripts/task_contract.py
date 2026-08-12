@@ -27,6 +27,7 @@ def default_task_contract() -> dict[str, Any]:
         "acceptance_criteria": [],
         "review_gates": [],
         "review_verdict": {},
+        "review_policy": {},
         "completion_policy": {
             "require_all_required_live_evidence_passed": True,
             "require_forbidden_substitutions_absent": True,
@@ -1215,6 +1216,11 @@ def merge_task_contract(base: dict[str, Any], override: dict[str, Any]) -> dict[
         requirement = source.get("review_verdict")
         if isinstance(requirement, dict) and requirement:
             result["review_verdict"] = dict(requirement)
+
+    for source in (base, override):
+        declaration = source.get("review_policy")
+        if isinstance(declaration, dict) and declaration:
+            result["review_policy"] = dict(declaration)
 
     result["completion_policy"] = dict(default_task_contract()["completion_policy"])
     for source in (base.get("completion_policy", {}), override.get("completion_policy", {})):

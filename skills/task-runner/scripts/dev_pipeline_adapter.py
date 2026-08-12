@@ -46,7 +46,7 @@ try:
         load_task_contract,
     )
     from .task_runner import completion_refusal, resolve_dev_pipeline_bin
-    from . import task_phases
+    from . import review_admission, task_phases
 except ImportError:
     from application_adapter import (
         ApplicationEventV1,
@@ -69,6 +69,7 @@ except ImportError:
         load_task_contract,
     )
     from task_runner import completion_refusal, resolve_dev_pipeline_bin
+    import review_admission
     import task_phases
 
 
@@ -112,6 +113,10 @@ RUN_BOUNDARY_KINDS = frozenset(
         "blocked_on_user_decision",
     }
 )
+
+# Events that carry a reviewer's decision about the candidate. Each one is a
+# review round of this task number; there is no limit on how many there may be.
+REVIEW_DECISION_KINDS = frozenset({"review_approved", "review_rework_required"})
 
 TERMINAL_TASK_STATES = frozenset({"completed", "failed", "blocked"})
 
@@ -630,12 +635,49 @@ class TaskArtifactProjector:
         if event["kind"] == "attempt_completed" and preparation_refusal is not None:
             refusal = completion_refusal(self.task_dir, preparation_refusal)
             state, step = "blocked", refusal["summary"]
+        warning = self.record_review_round(event)
+        if warning:
+            step = f"{step}; {warning}"
         self.project_phase(event, state)
         self.project_status(
             event, state, step, preparation_refusal=preparation_refusal
         )
         self.project_trace(event, step)
-        self.project_progress(event, step)
+        self.project_progress(event, step, warning=warning)
+
+    def record_review_round(self, event: dict) -> str | None:
+        """Log this review round and say whether it repeated a known finding.
+
+        The round is recorded for the user's benefit, not as a budget: nothing
+        here can stop rework, and a repeat only adds a sentence to what the task
+        is already reporting. A finding that appears for the first time -- the
+        honest deeper problem a fix exposes -- says nothing about quality and
+        produces no warning.
+        """
+        if event["kind"] not in REVIEW_DECISION_KINDS:
+            return None
+        payload = event["payload"]
+        decision: dict = {}
+        artifact = payload.get("decision_artifact")
+        if artifact:
+            try:
+                candidate = read_json(Path(str(artifact))).get("decision")
+            except (OSError, ValueError):
+                # An unreadable decision artifact is the reviewer's problem to
+                # report; it must not stop the task's own projection.
+                candidate = None
+            if isinstance(candidate, dict):
+                decision = candidate
+        if not decision and isinstance(payload.get("decision"), str):
+            decision = {"decision": payload["decision"]}
+        entry = review_admission.record_review_round(
+            self.task_dir,
+            event_id=event["event_id"],
+            decision=decision,
+            review_provider=payload.get("review_provider"),
+            recorded_at=event["timestamp"],
+        )
+        return entry.get("warning")
 
     def project_phase(self, event: dict, state: str) -> None:
         """Record which phase of this one task the event belongs to.
@@ -717,7 +759,9 @@ class TaskArtifactProjector:
             handle.flush()
             os.fsync(handle.fileno())
 
-    def project_progress(self, event: dict, step: str) -> None:
+    def project_progress(
+        self, event: dict, step: str, *, warning: str | None = None
+    ) -> None:
         """Publish progress from lifecycle events without overwriting the owner.
 
         The owner agent knows far more about its own work than the lifecycle
@@ -741,6 +785,8 @@ class TaskArtifactProjector:
                 existing = candidate
 
         activity, outcome = progress_projection(event, step)
+        if warning:
+            outcome = f"{outcome}; {warning}" if outcome else warning
         progress = {
             "schema_version": 1,
             "source": PROGRESS_SOURCE,

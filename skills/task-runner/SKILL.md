@@ -23,6 +23,7 @@ It creates or updates:
 - `.runner/prompt.txt`
 - `.runner/runner.json`
 - `.runner/runner.log`
+- `.runner/review-admission.json`
 
 The child is asked to publish `progress.json` for long runs, and to place explicitly requested output files in `deliverables/` with `deliverables/manifest.json`.
 
@@ -102,6 +103,14 @@ Run a task through the dev-pipeline workflow:
 ```bash
 .venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
   --workflow dev-pipeline --repo /path/to/target-repo
+```
+
+Name the reviewing family explicitly when the launch should not take the first
+independent one installed:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
+  --runner claude --reviewer-runner codex
 ```
 
 If a runner rejects a model as unsupported for the current account, treat that as recoverable runner configuration drift rather than a user-task blocker: use a currently supported model.
@@ -297,6 +306,65 @@ Two mappings are worth stating because the obvious reading of each is wrong:
 An unknown event kind moves nothing. A newer core may emit a kind this project
 has not heard of, and leaving the task in the phase it is demonstrably still in
 beats inventing one.
+
+## Review Admission
+
+A material launch that nobody independent can check is refused before the author
+starts. `review_admission.py` decides that at launch time, and the decision is
+recorded in `.runner/review-admission.json`, `status.json`, and `trace.md`
+whatever the outcome.
+
+Two things are decided, both from observable inputs:
+
+**Does this launch need a review?** From what the launcher itself can see: a
+write grant on a target repository, a sandbox mode that is not `read-only`, a
+non-standard workflow that delivers a candidate, a gated task contract, declared
+review gates, a registered `deliverables/manifest.json`. Anything observed puts
+the launch in `material`, and an undeclared launch is `material` too — silence is
+not an exception.
+
+**The narrow read-only exception** is a structured declaration in
+`task_contract.json`, never an adjective in prose:
+
+```json
+{"review_policy": {"work_class": "read_only_lookup",
+                   "justification": "one-off lookup, no state change"}}
+```
+
+The declaration only holds while nothing contradicts it. Declare
+`read_only_lookup` and then grant write access, and the launch is material with
+`classified_by: declared_read_only_lookup_contradicted_by_observation`. Calling
+work trivial in `task.md` classifies nothing at all.
+
+**Can a reviewer be bound?** A reviewer is independent when it is a different
+provider family (`Codex`, `Claude`, `Cursor`) from the author *and* its CLI is
+installed here. `--reviewer-runner`, or `review_policy.reviewer_runner`, names
+one explicitly; otherwise the first installed independent family is bound. The
+author is never its own reviewer, whoever is unavailable — a launch with no
+independent family installed is refused, not downgraded.
+
+The refusal exits non-zero with its reason in its own words, and leaves the task
+`blocked` with the same message in `status.json` and `trace.md`. It happens
+before the child is spawned, before the application adapter is loaded, and before
+Git write admission — the point of it is that no author work is spent.
+
+There is no cap on rework rounds. Review and rework are phases of one task
+number, and the runner has nothing that counts down: `rework_rounds` is recorded
+as `unlimited` for exactly that reason. A technical limit inside one provider
+attempt may end a *process*; continuing the same goal after it needs no user
+permission.
+
+What the round ledger at `reviews/rounds.jsonl` is for is quality, not budget.
+Each reviewer decision the dev-pipeline adapter projects is appended with the
+finding identities it carried. When a finding this task already demonstrated
+comes back, the projection adds an execution-quality warning to `status.json`,
+`progress.json`, and `trace.md` — and changes nothing else. Rework continues. A
+finding appearing for the first time, including the deeper one a fix exposes, is
+normal iteration and warns about nothing.
+
+A defect in the review infrastructure itself is a separate task number. The work
+under review is not rewritten to accommodate it, and it never licenses accepting
+the work unreviewed: the task waits for a reviewer it can bind.
 
 ## Git Write Admission
 

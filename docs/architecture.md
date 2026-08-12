@@ -179,6 +179,17 @@ the current phase and an append-only history, so
 as the history of one number. `skills/task-runner/SKILL.md` owns the vocabulary
 and the mappings.
 
+**No material work without an independent reviewer.** Whether a launch needs a
+review is read from what it is observably granted and gated on, not from prose
+about how small it is; `review_admission.py` binds a reviewer from a different
+provider family before the author starts and refuses the launch when it cannot,
+rather than discovering after a finished attempt that nobody was ever going to
+check it. The exception is a structurally declared read-only lookup that
+observation does not contradict. There is no round budget: rework and review
+repeat under one number until the work is accepted, and a demonstrated finding
+that comes back is reported as an execution-quality signal without stopping
+anything.
+
 **One writer per repository.** A write-mode child is admitted to a Git repository
 through one repository-locked check-and-claim operation. Unknown PID visibility
 refuses a foreign writer. A dead abandoned scope is durably settled when its

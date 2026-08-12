@@ -561,6 +561,83 @@ class EventOrderingTests(unittest.TestCase):
             projector.consume(event("process_started", 2, {"pid": 1}, run_id="run_b"))
 
     @requires_review_events
+    def test_a_finding_that_comes_back_is_reported_without_stopping_rework(self) -> None:
+        """Two rounds of the same task number, second one repeating a finding.
+
+        The repeat is a statement about execution quality, so it reaches the
+        user through the task's own state. It is not a stop: the task stays
+        `running` in its rework phase, and no round is refused.
+        """
+        task_dir = make_task(self.tmp)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+        decision_path = task_dir / "decision.json"
+
+        def review_round(sequence: int, run: str, findings: list[str]) -> None:
+            decision_path.write_text(
+                json.dumps(
+                    {
+                        "decision": {
+                            "decision": "rework_required",
+                            "findings": [
+                                {"id": name, "severity": "critical"} for name in findings
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            projector.consume(
+                event(
+                    "review_started",
+                    sequence,
+                    {
+                        "strategy": "cross_provider",
+                        "review_provider": "codex",
+                        "artifact_digest": "sha256:abc",
+                        "author_session_id": "session-author",
+                    },
+                    run_id=run,
+                )
+            )
+            projector.consume(
+                event(
+                    "review_rework_required",
+                    sequence + 1,
+                    {
+                        "strategy": "cross_provider",
+                        "review_provider": "codex",
+                        "artifact_digest": "sha256:abc",
+                        "decision_artifact": str(decision_path),
+                    },
+                    run_id=run,
+                )
+            )
+
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(event("run_started", 2, RUN_STARTED))
+        review_round(3, "run_review_1", ["no-live-evidence"])
+        self.assertNotIn("quality warning", status_of(task_dir)["current_step"])
+
+        review_round(5, "run_review_2", ["no-live-evidence", "newly-exposed"])
+
+        status = status_of(task_dir)
+        self.assertEqual(status["state"], "running")
+        self.assertEqual(status["phase"], "rework")
+        self.assertIn("quality warning", status["current_step"])
+        self.assertIn("no-live-evidence", status["current_step"])
+        self.assertNotIn("newly-exposed", status["current_step"])
+        self.assertIn("quality warning", progress_of(task_dir)["recent_outcome"])
+        self.assertIn("quality warning", trace_of(task_dir))
+
+        rounds = [
+            json.loads(line)
+            for line in (task_dir / "reviews" / "rounds.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        self.assertEqual([entry["round"] for entry in rounds], [1, 2])
+
+    @requires_review_events
     def test_review_and_rework_phase_claims_rotate_the_run_identity(self) -> None:
         task_dir = make_task(self.tmp)
         projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)

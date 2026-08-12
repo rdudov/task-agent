@@ -48,7 +48,7 @@ try:  # package install
         load_task_contract,
         require_review_verdict_contract,
     )
-    from . import task_phases, write_admission
+    from . import review_admission, task_phases, write_admission
 except ImportError:  # direct repository script
     from application_adapter import (
         APPLICATION_API_VERSION,
@@ -80,6 +80,7 @@ except ImportError:  # direct repository script
         load_task_contract,
         require_review_verdict_contract,
     )
+    import review_admission
     import task_phases
     import write_admission
 
@@ -1644,6 +1645,34 @@ def cmd_start(args: argparse.Namespace) -> None:
     access_directories, access_grant = prepare_access_grant(
         args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
     )
+    # Bind the reviewer before the author exists. A material launch that nobody
+    # independent can check is cheapest to stop here: after the author runs, the
+    # same missing reviewer costs the whole attempt.
+    try:
+        review_record = review_admission.admit_launch(
+            task_dir,
+            workflow=args.workflow,
+            author_runner=args.runner,
+            access_grant=access_grant,
+            contract=load_task_contract(task_dir),
+            declared_reviewer=getattr(args, "reviewer_runner", None),
+        )
+    except review_admission.ReviewAdmissionError as exc:
+        write_status(
+            task_dir,
+            "blocked",
+            exc.record["message"],
+            {
+                "runner": args.runner,
+                "workflow": args.workflow,
+                "review_admission": exc.record,
+            },
+        )
+        append_trace(task_dir, exc.record["message"])
+        ownership_lock.close()
+        raise SystemExit(exc.record["message"]) from None
+    append_trace(task_dir, review_record["message"])
+
     try:
         application_launch = prepared_application_launch(args, task_dir)
     except ApplicationAdapterError as exc:
@@ -1685,6 +1714,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             "runner": args.runner,
             "runner_resolution": runner_resolution,
             "workflow": args.workflow,
+            "review_admission": review_record,
         },
     )
 
@@ -1709,6 +1739,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         "command": redact_sensitive_arguments(command),
         "application": application_launch,
         "access_grant": access_grant,
+        "review_admission": review_record,
         "progress_baseline": observe_progress_state(task_dir),
         "pid_namespace": pid_namespace_identity(),
     }
@@ -2604,6 +2635,15 @@ def parse_args() -> argparse.Namespace:
         default="standard",
     )
     start_parser.add_argument("--model", help="Optional model override for the resolved runner.")
+    start_parser.add_argument(
+        "--reviewer-runner",
+        choices=list(CLI_RUNNERS),
+        default=None,
+        help=(
+            "Provider family that must review this launch. Omit to bind the first "
+            "installed family independent from the author."
+        ),
+    )
     start_parser.add_argument(
         "--require-review-verdict",
         action="store_true",
