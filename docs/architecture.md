@@ -191,6 +191,11 @@ observation does not contradict. A defect in the review machinery is filed as it
 own task through the task-number owner, so the task that hit it keeps its scope
 and waits rather than absorbing an outage.
 
+Only a launch that runs binds anything: a `--dry-run` preparation is evaluated
+and refused identically, and commits no admission record, no ledger entry and no
+outage number, because the admission names the family that authored this number's
+work and a preparation has authored none of it.
+
 The pair bound at launch is then the pair that runs and the pair that accepts.
 A `dev-pipeline` launch is refused unless the assurance it will hand the core
 reviews with that same family, and a launch asked for a verdict is refused

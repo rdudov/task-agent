@@ -1705,6 +1705,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     # same missing reviewer costs the whole attempt. The same call admits the
     # other half of the pair: a launch asked for a verdict is the review, and it
     # has to be the family this number was promised.
+    #
+    # A dry run is evaluated and refused identically and commits nothing. The
+    # admission says which family authored this number's work, and a preparation
+    # that starts no child has authored none of it: committing its binding let a
+    # `--dry-run` on the other family lock the bound reviewer out and admit the
+    # author's own family in its place.
+    committing = not args.dry_run
     try:
         review_record = review_admission.admit_launch(
             task_dir,
@@ -1715,8 +1722,12 @@ def cmd_start(args: argparse.Namespace) -> None:
             declared_reviewer=getattr(args, "reviewer_runner", None),
             review_launch=bool(getattr(args, "require_review_verdict", False)),
             assurance=configured_assurance(args),
+            persist=committing,
         )
     except review_admission.ReviewAdmissionError as exc:
+        # A refused preparation still reports: being told before an author runs
+        # is what preparing a launch is for, and a refusal binds nobody. Only the
+        # binding and the outage number are withheld from a run that never began.
         notification = report_review_admission_refusal(task_dir, exc.record, args)
         write_status(
             task_dir,
@@ -1732,7 +1743,15 @@ def cmd_start(args: argparse.Namespace) -> None:
         append_trace(task_dir, notification["trace"])
         ownership_lock.close()
         raise SystemExit(exc.record["message"]) from None
-    append_trace(task_dir, review_record["message"])
+    append_trace(
+        task_dir,
+        review_record["message"]
+        if committing
+        else (
+            "Dry run evaluated this launch without committing its admission: "
+            + review_record["message"]
+        ),
+    )
 
     try:
         application_launch = prepared_application_launch(args, task_dir)

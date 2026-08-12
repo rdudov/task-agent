@@ -643,15 +643,22 @@ def infrastructure_obligation(
 def obligation_statement(entry: dict[str, Any]) -> str:
     """Say where the defect went, so the subject task is visibly not it."""
     filed = entry.get("recorded_as")
-    where = (
-        f"filed under its own task number as {filed}"
-        if filed
-        else (
+    if filed:
+        where = f"filed under its own task number as {filed}"
+    elif entry.get("allocation_skipped"):
+        # A preparation that never starts files nothing: allocating a number for
+        # a launch that did not happen would put the outage in the index twice
+        # once the real start meets it.
+        where = (
+            "no number was allocated for it here, because this launch was a "
+            "preparation that never started -- a real start files it"
+        )
+    else:
+        where = (
             "its own task number could not be allocated here "
             f"({entry.get('allocation_error') or 'allocation unavailable'}), so file it "
             "through task-creator"
         )
-    )
     return (
         "This is a defect in the review machinery, not in the work under review: "
         f"{where}. This task keeps its scope, keeps its work, and waits for a "
@@ -735,12 +742,18 @@ def record_infrastructure_obligation(
     reference: str | None = None,
     recorded_at: str | None = None,
     allocate: bool = True,
+    persist: bool = True,
 ) -> dict[str, Any]:
     """File the defect under its own number and append the durable obligation.
 
     Once per event that raised it, and once per distinct defect: a retry of the
     same outage reuses the number already allocated for it instead of filling
     the index with copies of one problem.
+
+    `persist=False` describes the same obligation without creating it, for a
+    launch that is only being prepared: it may report the outage it would run
+    into, and it may not allocate a number or write a ledger for work that has
+    not started.
     """
     path = task_dir / OBLIGATIONS_LEDGER
     key = _defect_key(reason, reference)
@@ -754,7 +767,7 @@ def record_infrastructure_obligation(
                 "allocated_through": value.get("allocated_through"),
                 "reused_existing_number": True,
             }
-    if allocation is None and allocate:
+    if allocation is None and allocate and persist:
         try:
             allocation = allocate_infrastructure_task(
                 task_dir, reason=reason, reference=reference
@@ -773,7 +786,8 @@ def record_infrastructure_obligation(
     }
     entry["separate_task_number"] = entry.get("recorded_as") or "unfiled"
     entry["statement"] = obligation_statement(entry)
-    _append_jsonl(path, entry)
+    if persist:
+        _append_jsonl(path, entry)
     return entry
 
 
@@ -793,6 +807,7 @@ def admit_launch(
     review_launch: bool = False,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
+    persist: bool = True,
 ) -> dict[str, Any]:
     """Record the decision and refuse a material launch with no reviewer.
 
@@ -802,6 +817,14 @@ def admit_launch(
     here has to survive the launches that come after it -- the review that has to
     be the family that was bound, and the acceptance that has to find its
     approval.
+
+    `persist=False` is a launch that is only being prepared and will not run. It
+    is evaluated and refused exactly like a real one -- that report is the whole
+    point of preparing it -- but it writes none of the above, because this record
+    says who authored this number's work and who may review it. A preparation has
+    authored nothing, and committing its binding would let a command that starts
+    no child hand the work to the author's own family. The sibling write
+    admission already works this way: a dry run opens no write scope.
     """
     record = evaluate(
         task_dir,
@@ -824,6 +847,7 @@ def admit_launch(
             reason=str(record["pair"].get("detail", "")),
             reference=record["pair"].get("outcome"),
             recorded_at=record["evaluated_at"],
+            persist=persist,
         )
         record["infrastructure_obligation"] = obligation
         record["message"] += " " + obligation["statement"]
@@ -832,8 +856,9 @@ def admit_launch(
         record["refusal_reason"] = (
             record.get("refusal_reason", "") + " " + obligation["statement"]
         ).strip()
-    _write_json(task_dir / ADMISSION_RECORD, record)
-    _append_jsonl(task_dir / ADMISSIONS_LEDGER, record)
+    if persist:
+        _write_json(task_dir / ADMISSION_RECORD, record)
+        _append_jsonl(task_dir / ADMISSIONS_LEDGER, record)
     if record["decision"] == "refused":
         raise ReviewAdmissionError(record)
     return record

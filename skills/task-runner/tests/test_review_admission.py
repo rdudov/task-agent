@@ -210,6 +210,90 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(binding["pair"]["author_runner"], "claude")
         self.assertEqual(binding["pair"]["reviewer_runner"], "codex")
 
+    def test_a_prepared_launch_evaluates_without_committing_anything(self) -> None:
+        """`--dry-run` gets the same answer and leaves no binding behind."""
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            record = review_admission.admit_launch(
+                task_dir,
+                workflow="standard",
+                author_runner="claude",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+                persist=False,
+            )
+            self.assertEqual(record["decision"], "admitted")
+            self.assertEqual(record["pair"]["reviewer_family"], "Codex")
+            self.assertEqual(review_admission.recorded_admission(task_dir), {})
+            self.assertEqual(review_admission.admissions(task_dir), [])
+            self.assertIsNone(review_admission.bound_author_admission(task_dir))
+
+    def test_a_preparation_cannot_rebind_the_number_it_prepared_for(self) -> None:
+        """The pair belongs to the launch that ran, not to one that was drafted.
+
+        A `--dry-run` on the other family used to append its own binding, and the
+        acceptance gate reads the last one: the bound reviewer was then refused as
+        the author's own family, and the family that actually wrote the work was
+        admitted to review and close it.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            review_admission.admit_launch(
+                task_dir,
+                workflow="standard",
+                author_runner="claude",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+            )
+            review_admission.admit_launch(
+                task_dir,
+                workflow="standard",
+                author_runner="codex",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+                persist=False,
+            )
+            binding = review_admission.bound_author_admission(task_dir)
+            bound_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="codex"
+            )
+            author_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="claude"
+            )
+            self.assertEqual(len(review_admission.admissions(task_dir)), 1)
+        self.assertEqual(binding["pair"]["author_family"], "Claude")
+        self.assertEqual(binding["pair"]["reviewer_family"], "Codex")
+        self.assertTrue(bound_review["bound"])
+        self.assertEqual(author_review["outcome"], "review_by_author_family")
+
+    def test_a_prepared_refusal_allocates_no_outage_number(self) -> None:
+        """A launch that never starts does not file another number's defect."""
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = _workspace_task(raw)
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                review_admission.admit_launch(
+                    task_dir,
+                    workflow="dev-pipeline",
+                    author_runner="claude",
+                    access_grant=WRITE_GRANT,
+                    contract=UNGATED,
+                    which=_installed("claude"),
+                    persist=False,
+                )
+            self.assertEqual(review_admission.infrastructure_obligations(task_dir), [])
+            self.assertEqual(review_admission.recorded_admission(task_dir), {})
+            self.assertEqual(
+                sorted(item.name for item in (Path(raw) / "tasks").iterdir()),
+                [task_dir.name],
+            )
+        # The caller is still told what it ran into, and told that this task is
+        # not the defect -- only the number for it waits for a real start.
+        self.assertIn("refuses to start the author", str(caught.exception))
+        self.assertIn("a real start files it", str(caught.exception))
+
     def test_the_read_only_exception_starts_without_a_reviewer(self) -> None:
         contract = {**UNGATED, "review_policy": {"work_class": "read_only_lookup"}}
         with tempfile.TemporaryDirectory() as raw:
