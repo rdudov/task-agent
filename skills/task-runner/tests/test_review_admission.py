@@ -178,6 +178,55 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(record["decision"], "exempt")
 
 
+class InfrastructureObligationTests(unittest.TestCase):
+    def test_a_missing_reviewer_becomes_another_numbers_work(self) -> None:
+        """The task that hit the outage keeps its scope and waits."""
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                review_admission.admit_launch(
+                    task_dir,
+                    workflow="dev-pipeline",
+                    author_runner="claude",
+                    access_grant=WRITE_GRANT,
+                    contract=UNGATED,
+                    which=_installed("claude"),
+                )
+            obligations = review_admission.infrastructure_obligations(task_dir)
+        self.assertEqual(len(obligations), 1)
+        self.assertEqual(obligations[0]["kind"], "review_infrastructure_defect")
+        self.assertEqual(obligations[0]["separate_task_number"], "required")
+        self.assertEqual(obligations[0]["subject_scope"], "unchanged")
+        self.assertIn("own task number", str(caught.exception))
+
+    def test_an_incoherent_launch_is_not_an_infrastructure_defect(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            with self.assertRaises(review_admission.ReviewAdmissionError):
+                review_admission.admit_launch(
+                    task_dir,
+                    workflow="dev-pipeline",
+                    author_runner="claude",
+                    declared_reviewer="claude",
+                    access_grant=WRITE_GRANT,
+                    contract=UNGATED,
+                    which=_installed("claude", "codex"),
+                )
+            self.assertEqual(review_admission.infrastructure_obligations(task_dir), [])
+
+    def test_the_obligation_is_recorded_once_per_event(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            for _ in range(2):
+                review_admission.record_infrastructure_obligation(
+                    task_dir,
+                    event_id="event-1",
+                    source="dev-pipeline:review_refused",
+                    reason="reviewer sandbox cannot execute",
+                )
+            self.assertEqual(len(review_admission.infrastructure_obligations(task_dir)), 1)
+
+
 class RoundLedgerTests(unittest.TestCase):
     def _record(self, task_dir: Path, event_id: str, *findings: str):
         return review_admission.record_review_round(

@@ -561,6 +561,41 @@ class EventOrderingTests(unittest.TestCase):
             projector.consume(event("process_started", 2, {"pid": 1}, run_id="run_b"))
 
     @requires_review_events
+    def test_an_unobtainable_review_becomes_another_numbers_work(self) -> None:
+        """The outage is recorded as its own obligation; this task just waits."""
+        task_dir = make_task(self.tmp)
+        projector = dev_pipeline_adapter.TaskArtifactProjector(task_dir)
+        projector.consume(event("attempt_started", 1, ATTEMPT_STARTED))
+        projector.consume(event("run_started", 2, RUN_STARTED))
+        projector.consume(
+            event(
+                "review_refused",
+                3,
+                {
+                    "strategy": "cross_provider",
+                    "review_provider": "codex",
+                    "reason": "the reviewer sandbox could not execute any command",
+                    "artifact_digest": "sha256:abc",
+                },
+            )
+        )
+
+        status = status_of(task_dir)
+        self.assertEqual(status["state"], "blocked")
+        self.assertIn("own task number", status["current_step"])
+        self.assertIn("waits for a reviewer", status["current_step"])
+        obligations = [
+            json.loads(line)
+            for line in (task_dir / "reviews" / "infrastructure-obligations.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        self.assertEqual(len(obligations), 1)
+        self.assertEqual(obligations[0]["kind"], "review_infrastructure_defect")
+        self.assertEqual(obligations[0]["source"], "dev-pipeline:review_refused")
+        self.assertEqual(obligations[0]["subject_scope"], "unchanged")
+
+    @requires_review_events
     def test_a_finding_that_comes_back_is_reported_without_stopping_rework(self) -> None:
         """Two rounds of the same task number, second one repeating a finding.
 

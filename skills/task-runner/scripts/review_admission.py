@@ -62,6 +62,16 @@ REVIEWER_PREFERENCE = ("codex", "claude", "agent")
 MATERIAL = "material"
 READ_ONLY_LOOKUP = "read_only_lookup"
 
+OBLIGATIONS_LEDGER = "reviews/infrastructure-obligations.jsonl"
+
+# Pairing outcomes that say the review machinery is missing rather than that the
+# caller asked for something incoherent. A host with no second provider family
+# installed, or a named reviewer that is not there, is a defect in the review
+# infrastructure; a caller naming the author's own family as reviewer is not.
+INFRASTRUCTURE_OUTCOMES = frozenset(
+    {"reviewer_unavailable", "no_independent_runner_installed"}
+)
+
 
 class ReviewAdmissionError(RuntimeError):
     """A material launch that has no independent reviewer to bind."""
@@ -333,7 +343,97 @@ def evaluate(
         return record
     record["decision"] = "refused"
     record["message"] = _refusal_message(classification, pair)
+    if pair.get("outcome") in INFRASTRUCTURE_OUTCOMES:
+        record["infrastructure_obligation"] = infrastructure_obligation(
+            source="launch_admission",
+            reason=str(pair.get("detail", "")),
+            reference=pair.get("outcome"),
+        )
+        record["message"] += " " + record["infrastructure_obligation"]["statement"]
     return record
+
+
+def infrastructure_obligation(
+    *, source: str, reason: str, reference: str | None = None
+) -> dict[str, Any]:
+    """Name a review-machinery defect as work that belongs to another number.
+
+    The task that ran into it keeps its own scope: its work is preserved as it
+    stands and waits for a reviewer that can be bound, rather than growing a
+    second subject or being accepted unreviewed. The number itself is allocated
+    by `task-creator`, which owns task identity -- this record is the durable
+    obligation to allocate it, not a second allocator hidden in the launcher.
+    """
+    return {
+        "kind": "review_infrastructure_defect",
+        "source": source,
+        "reason": reason,
+        "reference": reference,
+        "subject_work": "preserved_and_waiting_for_a_bindable_reviewer",
+        "subject_scope": "unchanged",
+        "separate_task_number": "required",
+        "allocated_by": "skills/task-creator",
+        "statement": (
+            "This is a defect in the review machinery, not in the work under "
+            "review: file it under its own task number via task-creator. This "
+            "task keeps its scope, keeps its work, and waits for a reviewer it "
+            "can bind -- it is not accepted unreviewed and not reviewed by its "
+            "own author."
+        ),
+    }
+
+
+def record_infrastructure_obligation(
+    task_dir: Path,
+    *,
+    event_id: str,
+    source: str,
+    reason: str,
+    reference: str | None = None,
+    recorded_at: str | None = None,
+) -> dict[str, Any]:
+    """Append the obligation durably, once per event that raised it."""
+    path = task_dir / OBLIGATIONS_LEDGER
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and value.get("event_id") == event_id:
+                return value
+    entry = {
+        "schema_version": SCHEMA_VERSION,
+        "event_id": event_id,
+        "recorded_at": recorded_at or utc_now(),
+        **infrastructure_obligation(source=source, reason=reason, reference=reference),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return entry
+
+
+def infrastructure_obligations(task_dir: Path) -> list[dict[str, Any]]:
+    """Every review-machinery defect this task ran into and must not absorb."""
+    path = task_dir / OBLIGATIONS_LEDGER
+    if not path.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            entries.append(value)
+    return entries
 
 
 def admit_launch(
@@ -361,6 +461,15 @@ def admit_launch(
         which=which,
     )
     _write_json(task_dir / ADMISSION_RECORD, record)
+    if "infrastructure_obligation" in record:
+        record_infrastructure_obligation(
+            task_dir,
+            event_id=f"launch-admission:{record['evaluated_at']}",
+            source="launch_admission",
+            reason=str(record["pair"].get("detail", "")),
+            reference=record["pair"].get("outcome"),
+            recorded_at=record["evaluated_at"],
+        )
     if record["decision"] == "refused":
         raise ReviewAdmissionError(record)
     return record

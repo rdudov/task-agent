@@ -24,6 +24,8 @@ It creates or updates:
 - `.runner/runner.json`
 - `.runner/runner.log`
 - `.runner/review-admission.json`
+- `reviews/rounds.jsonl` and `reviews/infrastructure-obligations.jsonl`, once a
+  review round or a review outage happens
 
 The child is asked to publish `progress.json` for long runs, and to place explicitly requested output files in `deliverables/` with `deliverables/manifest.json`.
 
@@ -362,9 +364,21 @@ comes back, the projection adds an execution-quality warning to `status.json`,
 finding appearing for the first time, including the deeper one a fix exposes, is
 normal iteration and warns about nothing.
 
-A defect in the review infrastructure itself is a separate task number. The work
-under review is not rewritten to accommodate it, and it never licenses accepting
-the work unreviewed: the task waits for a reviewer it can bind.
+A defect in the review infrastructure itself belongs to a separate task number,
+and the runner records that as an obligation rather than leaving it to prose.
+When a launch is refused because no reviewer is installed, and when a
+`review_waiting` or `review_refused` event says a review could not be obtained,
+an entry is appended to `reviews/infrastructure-obligations.jsonl` naming the
+defect, the fact that this task's subject and work are unchanged, and that the
+number must be allocated through `skills/task-creator` — which owns task
+identity, so the launcher does not become a second allocator. The same statement
+goes into `status.json` and `trace.md`.
+
+The work under review is not rewritten to accommodate the outage, and the outage
+never licenses accepting the work unreviewed: the task keeps its scope and waits
+for a reviewer it can bind. A caller naming the author's own family as the
+reviewer is not an infrastructure defect — that is an incoherent launch, and it
+is simply refused.
 
 ## Git Write Admission
 

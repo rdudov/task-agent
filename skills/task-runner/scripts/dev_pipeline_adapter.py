@@ -118,6 +118,10 @@ RUN_BOUNDARY_KINDS = frozenset(
 # review round of this task number; there is no limit on how many there may be.
 REVIEW_DECISION_KINDS = frozenset({"review_approved", "review_rework_required"})
 
+# Events that say the review machinery failed rather than that the candidate
+# did. They belong to another task number; this task waits.
+REVIEW_UNAVAILABLE_KINDS = frozenset({"review_waiting", "review_refused"})
+
 TERMINAL_TASK_STATES = frozenset({"completed", "failed", "blocked"})
 
 PROGRESS_SOURCE = "dev-pipeline-adapter"
@@ -635,7 +639,7 @@ class TaskArtifactProjector:
         if event["kind"] == "attempt_completed" and preparation_refusal is not None:
             refusal = completion_refusal(self.task_dir, preparation_refusal)
             state, step = "blocked", refusal["summary"]
-        warning = self.record_review_round(event)
+        warning = self.record_review_round(event) or self.record_review_obligation(event)
         if warning:
             step = f"{step}; {warning}"
         self.project_phase(event, state)
@@ -678,6 +682,27 @@ class TaskArtifactProjector:
             recorded_at=event["timestamp"],
         )
         return entry.get("warning")
+
+    def record_review_obligation(self, event: dict) -> str | None:
+        """Keep a broken reviewer from becoming this task's subject.
+
+        A review that could not be obtained is a defect in the review machinery.
+        It gets its own task number, allocated by `task-creator`; recording the
+        obligation here is what makes that durable rather than prose. This task
+        keeps the work it has and waits -- the phase is already `blocked`, and
+        nothing about the candidate is rewritten to accommodate the outage.
+        """
+        if event["kind"] not in REVIEW_UNAVAILABLE_KINDS:
+            return None
+        entry = review_admission.record_infrastructure_obligation(
+            self.task_dir,
+            event_id=event["event_id"],
+            source=f"dev-pipeline:{event['kind']}",
+            reason=str(event["payload"].get("reason", "")),
+            reference=event["payload"].get("review_provider"),
+            recorded_at=event["timestamp"],
+        )
+        return entry["statement"]
 
     def project_phase(self, event: dict, state: str) -> None:
         """Record which phase of this one task the event belongs to.
