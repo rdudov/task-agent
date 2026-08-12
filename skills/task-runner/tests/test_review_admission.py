@@ -744,6 +744,22 @@ class IndependentReviewStatusTests(unittest.TestCase):
         self.assertFalse(status["satisfied"])
         self.assertIn("authored this work", status["reason"])
 
+    def test_an_approval_by_a_third_independent_family_does_not_satisfy_it(self) -> None:
+        """Independence is not enough: it has to be the family that was bound.
+
+        Cursor is neither the Claude author nor the Codex reviewer this number
+        bound, so its approval is of work nobody promised to review.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._admitted(task_dir)
+            self._round(task_dir, "approved", provider="agent")
+            status = review_admission.independent_review_status(task_dir)
+        self.assertEqual(status["reviewer_family"], "Codex")
+        self.assertEqual(status["last_round"]["reviewer_family"], "Cursor")
+        self.assertFalse(status["satisfied"])
+        self.assertIn("not the review this work was admitted with", status["reason"])
+
     def test_author_work_after_an_approval_needs_another_review(self) -> None:
         """An approval is of what was there, not of whatever replaced it."""
         with tempfile.TemporaryDirectory() as raw:
@@ -836,6 +852,27 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
         self.assertFalse(rework_ready)
         self.assertIn("did not approve", rework_reason)
         self.assertTrue(ready)
+
+    def test_an_unbound_familys_approval_does_not_close_the_task(self) -> None:
+        """The gate reads the binding, not merely "somebody else approved".
+
+        A dev-pipeline installation whose assurance reviews with a third family
+        projects that family's round into this ledger, and before this it closed
+        a task whose bound Codex reviewer had seen nothing.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            review_admission.record_review_round(
+                task,
+                event_id="event-cursor-approved",
+                decision={"decision": "approved"},
+                review_provider="agent",
+            )
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+        self.assertFalse(ready)
+        self.assertIn("Codex was bound", reason)
+        self.assertIn("--require-review-verdict", reason)
 
     def test_the_author_cannot_record_the_round_that_accepts_its_own_work(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

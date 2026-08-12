@@ -381,8 +381,11 @@ places where the work could still get out unreviewed:
 
 **Acceptance is bound to it too.** `independent_review_status` answers, from this
 number's own append-only ledgers, whether the work as it now stands carries the
-approval it was admitted with: the last recorded round approved, by a family that
-is not the author's, with no author phase entered since. The shared completion
+approval it was admitted with: the last recorded round approved, by the family
+that binding named — being merely independent of the author is not enough, since
+a third family's approval is not the review this number was promised — with no
+author phase entered since. A binding that names no family at all cannot be
+checked, so it refuses too. The shared completion
 decision refuses otherwise, naming the exact command that would obtain the
 review. So a material standard launch can no longer finish and be accepted
 without its reviewer ever seeing it — the author run ends `blocked`, waiting for

@@ -985,7 +985,10 @@ def independent_review_status(
     about itself:
 
     - the number bound an independent reviewer to material work at all;
-    - its most recent review round approved;
+    - its most recent review round approved, and the family that approved is the
+      family that binding named -- not merely some family other than the
+      author's, because a third family is not the review this work was admitted
+      with;
     - no author work has been recorded since that approval, so the approval is
       of what is there now rather than of something a later rework replaced.
 
@@ -1049,6 +1052,23 @@ def independent_review_status(
             f"the approval on record was recorded for the {last_family} family, "
             "which authored this work; an author's approval of itself is not the "
             "independent review this task was admitted with"
+        )
+        return status
+    if not reviewer_family or reviewer_family == "unknown":
+        status["satisfied"] = False
+        status["reason"] = (
+            "this task's author admission names no reviewer family, so no "
+            f"approval -- including round {last.get('round')} by {last_family} -- "
+            "can be checked against the binding it was admitted with"
+        )
+        return status
+    if last_family != reviewer_family:
+        status["satisfied"] = False
+        status["reason"] = (
+            f"{reviewer_family} was bound as this task's independent reviewer "
+            f"before the author started, and the approval on record is round "
+            f"{last.get('round')} by {last_family}; a third family's approval is "
+            "not the review this work was admitted with"
         )
         return status
     approved_at = str(last.get("recorded_at", ""))
