@@ -61,6 +61,44 @@ def make_task(tasks_root: Path, name: str, *, completed: bool = False) -> Path:
     return task_dir
 
 
+def record_terminal_projection(
+    task_dir: Path,
+    *,
+    attempt_id: str = "attempt-accepted",
+    candidate_head: str | None = None,
+) -> None:
+    (task_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "completed",
+                "dev_pipeline": {"attempt_id": attempt_id},
+            }
+        ),
+        encoding="utf-8",
+    )
+    task_phases.record_phase(task_dir, task_phases.COMPLETED)
+    event_dir = task_dir / "dev-pipeline" / "accepted"
+    event_dir.mkdir(parents=True, exist_ok=True)
+    events = [
+        {"attempt_id": attempt_id, "kind": "attempt_completed", "payload": {}}
+    ]
+    (event_dir / "events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+    if candidate_head:
+        review_dir = task_dir / "dev-pipeline" / "contract-review"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        (review_dir / "completion-review-subject.json").write_text(
+            json.dumps({"delivered_candidate": {"head": candidate_head}}),
+            encoding="utf-8",
+        )
+
+
+def completion_only_at_recorded_candidate(*_args, **kwargs):
+    historical = bool(kwargs.get("allow_historical_candidate"))
+    return historical, "" if historical else "completion review subject is stale"
+
+
 class WriteScopeTests(unittest.TestCase):
     def test_a_scope_that_changed_the_repository_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -466,6 +504,20 @@ class FalseBlockerTests(unittest.TestCase):
 
 
 class ConcurrentWriteTests(unittest.TestCase):
+    def test_weak_legacy_backfill_receipt_is_revalidated(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = make_task(Path(raw), "0001-legacy", completed=True)
+            write_admission._append(
+                task,
+                {
+                    "schema_version": 1,
+                    "record": "completion_accepted",
+                    "source": "terminal_completion_backfill",
+                    "accepted_run_ids": ["run-a"],
+                },
+            )
+            self.assertEqual(write_admission.accepted_write_run_ids(task), set())
+
     def test_reused_pid_does_not_keep_an_abandoned_claim_alive(self) -> None:
         self.assertFalse(
             write_admission._claimant_liveness(
@@ -770,7 +822,7 @@ class ConcurrentWriteTests(unittest.TestCase):
             with mock.patch.object(
                 write_admission,
                 "completion_ready",
-                return_value=(False, "completion review subject is stale"),
+                side_effect=completion_only_at_recorded_candidate,
             ):
                 self.assertEqual(write_admission.outstanding_write_results(task), [])
 
@@ -797,10 +849,12 @@ class ConcurrentWriteTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
             subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task A"], check=True)
             write_admission.close_write_scope(reviewed, "run-a")
-            (reviewed / "status.json").write_text(
-                json.dumps({"state": "completed"}), encoding="utf-8"
+            record_terminal_projection(
+                reviewed,
+                candidate_head=subprocess.check_output(
+                    ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+                ).strip(),
             )
-            task_phases.record_phase(reviewed, task_phases.COMPLETED)
 
             (repository / "source.txt").write_text("legitimate B\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
@@ -808,7 +862,7 @@ class ConcurrentWriteTests(unittest.TestCase):
             with mock.patch.object(
                 write_admission,
                 "completion_ready",
-                return_value=(False, "completion review subject is stale"),
+                side_effect=completion_only_at_recorded_candidate,
             ):
                 blockers = write_admission.admission_blockers(
                     tasks_root=tasks_root,
@@ -819,7 +873,29 @@ class ConcurrentWriteTests(unittest.TestCase):
             self.assertEqual(blockers, [])
             self.assertEqual(
                 write_admission.read_ledger(reviewed)[-1]["source"],
-                "terminal_completion_backfill",
+                "historical_completion_ready",
+            )
+            receipt = write_admission.read_ledger(reviewed)[-1]
+            self.assertNotEqual(
+                receipt["candidate_head"],
+                subprocess.check_output(
+                    ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+                ).strip(),
+            )
+
+            write_admission.open_write_scope(reviewed, repository, "run-after-review")
+            (repository / "source.txt").write_text("later rework\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "later rework"], check=True)
+            write_admission.close_write_scope(reviewed, "run-after-review")
+            with mock.patch.object(
+                write_admission,
+                "completion_ready",
+                side_effect=completion_only_at_recorded_candidate,
+            ):
+                outstanding = write_admission.outstanding_write_results(reviewed)
+            self.assertEqual(
+                [result["run_id"] for result in outstanding], ["run-after-review"]
             )
 
     def test_completed_frontmatter_alone_does_not_clear_a_write(self) -> None:
@@ -832,6 +908,55 @@ class ConcurrentWriteTests(unittest.TestCase):
             write_admission.close_write_scope(task, "run-a")
             with mock.patch.object(
                 write_admission, "completion_ready", return_value=(False, "not ready")
+            ):
+                self.assertEqual(len(write_admission.outstanding_write_results(task)), 1)
+
+    def test_terminal_markers_without_controller_completion_do_not_clear_a_write(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-markers-only", completed=True)
+            write_admission.open_write_scope(task, repository, "run-a")
+            (repository / "source.txt").write_text("unreviewed\n", encoding="utf-8")
+            write_admission.close_write_scope(task, "run-a")
+            (task / "status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "completed",
+                        "dev_pipeline": {"attempt_id": "attempt-never-completed"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            task_phases.record_phase(task, task_phases.COMPLETED)
+
+            with mock.patch.object(
+                write_admission, "completion_ready", return_value=(False, "not ready")
+            ):
+                self.assertEqual(len(write_admission.outstanding_write_results(task)), 1)
+
+    def test_prior_ungated_completion_cannot_satisfy_a_later_review_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            task = make_task(root, "0001-later-gated", completed=True)
+            write_admission.open_write_scope(task, repository, "run-a")
+            (repository / "source.txt").write_text("ungated\n", encoding="utf-8")
+            write_admission.close_write_scope(task, "run-a")
+            record_terminal_projection(task)
+            (task / "task_contract.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "review_gates": ["Independent review is mandatory."],
+                        "source": "test",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                write_admission, "completion_ready", return_value=(False, "review absent")
             ):
                 self.assertEqual(len(write_admission.outstanding_write_results(task)), 1)
 
@@ -877,10 +1002,12 @@ class ConcurrentWriteTests(unittest.TestCase):
             (repository / "source.txt").write_text("accepted A\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
             subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task A"], check=True)
-            (reviewed / "status.json").write_text(
-                json.dumps({"state": "completed"}), encoding="utf-8"
+            record_terminal_projection(
+                reviewed,
+                candidate_head=subprocess.check_output(
+                    ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+                ).strip(),
             )
-            task_phases.record_phase(reviewed, task_phases.COMPLETED)
             (repository / "source.txt").write_text("legitimate B\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
             subprocess.run(["git", "-C", str(repository), "commit", "-qm", "task B"], check=True)
@@ -888,7 +1015,7 @@ class ConcurrentWriteTests(unittest.TestCase):
             with mock.patch.object(
                 write_admission,
                 "completion_ready",
-                return_value=(False, "completion review subject is stale"),
+                side_effect=completion_only_at_recorded_candidate,
             ):
                 blockers = write_admission.admission_blockers(
                     tasks_root=tasks_root,

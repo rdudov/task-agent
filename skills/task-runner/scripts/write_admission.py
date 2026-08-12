@@ -54,6 +54,7 @@ try:
     from .task_contract import (
         capture_preexisting_tracked_dirty_baseline,
         git_repository_identity,
+        recorded_completion_candidate_head,
     )
     from . import task_phases
 except ImportError:
@@ -61,6 +62,7 @@ except ImportError:
     from task_contract import (
         capture_preexisting_tracked_dirty_baseline,
         git_repository_identity,
+        recorded_completion_candidate_head,
     )
     import task_phases
 
@@ -416,6 +418,14 @@ def accepted_write_run_ids(task_dir: Path) -> set[str]:
     for record in read_ledger(task_dir):
         if record.get("record") != COMPLETION_ACCEPTED:
             continue
+        if record.get("source") == "terminal_completion_backfill" or (
+            record.get("source") == "historical_completion_ready"
+            and not record.get("candidate_head")
+        ):
+            # ad94867 briefly emitted this weak legacy receipt from terminal
+            # markers alone. Re-evaluate it through the canonical historical
+            # completion predicate and replace it with a strong receipt.
+            continue
         run_ids = record.get("accepted_run_ids")
         if isinstance(run_ids, list):
             accepted.update(
@@ -429,6 +439,7 @@ def record_completion_acceptance(
     *,
     source: str = "completion_ready",
     additional_scope_evidence: dict[str, str] | None = None,
+    candidate_head: str | None = None,
 ) -> dict[str, Any] | None:
     """Bind the task's accepted completion to its existing write scopes.
 
@@ -450,6 +461,10 @@ def record_completion_acceptance(
         if result.get("changed") is True
         and isinstance(result.get("run_id"), str)
         and result["run_id"] not in accepted
+        and (
+            candidate_head is None
+            or _state_head_is_covered(result.get("after"), candidate_head)
+        )
     ]
     run_ids = [result["run_id"] for result in results]
     scope_evidence = additional_scope_evidence or {}
@@ -468,6 +483,7 @@ def record_completion_acceptance(
             "accepted_at": utc_now(),
             "source": source,
             "accepted_run_ids": run_ids,
+            **({"candidate_head": candidate_head} if candidate_head else {}),
             "write_result_digests": [state_digest(result["after"]) for result in results],
             "additional_scope_evidence": [
                 {
@@ -486,17 +502,87 @@ def _durable_terminal_completion(task_dir: Path) -> bool:
 
     Older ledgers predate ``completion_accepted``. Backfill is deliberately
     narrower than completed frontmatter: both canonical runtime projections
-    must also be terminal, because editing metadata alone never proved gates.
+    and the matching controller attempt must say completion. The canonical
+    completion owner then revalidates every current gate against the recorded
+    exact Git candidate and reviewer envelope; this module never reimplements
+    review pairing or decision semantics.
     """
     try:
         status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
-    return (
+    if not (
         task_status(task_dir) == "completed"
         and isinstance(status, dict)
         and status.get("state") == "completed"
         and task_phases.current_phase(task_dir) == task_phases.COMPLETED
+    ):
+        return False
+    projection = status.get("dev_pipeline")
+    attempt_id = projection.get("attempt_id") if isinstance(projection, dict) else None
+    if not isinstance(attempt_id, str) or not attempt_id:
+        return False
+    events: list[dict[str, Any]] = []
+    for path in sorted((task_dir / "dev-pipeline").glob("*/events.jsonl")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and event.get("attempt_id") == attempt_id:
+                events.append(event)
+    if not any(event.get("kind") == "attempt_completed" for event in events):
+        return False
+    ready, _reason = completion_ready(task_dir, allow_historical_candidate=True)
+    return ready
+
+
+def _historical_completion_head(task_dir: Path) -> str | None:
+    if not _durable_terminal_completion(task_dir):
+        return None
+    return recorded_completion_candidate_head(task_dir)
+
+
+def _git_is_ancestor(repository: str, ancestor: str, descendant: str) -> bool:
+    if not all(isinstance(value, str) and value for value in (repository, ancestor, descendant)):
+        return False
+    completed = subprocess.run(
+        ["git", "-C", repository, "merge-base", "--is-ancestor", ancestor, descendant],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def _state_head_is_covered(state: Any, candidate_head: str) -> bool:
+    if not isinstance(state, dict):
+        return False
+    return _git_is_ancestor(
+        str(state.get("repository", "")),
+        str(state.get("head", "")),
+        candidate_head,
+    )
+
+
+def _ambiguous_scope_is_covered(
+    scope: dict[str, Any], resolution: dict[str, Any], candidate_head: str
+) -> bool:
+    before = scope.get("before")
+    after = resolution.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    repository = str(before.get("repository", ""))
+    if repository != str(after.get("repository", "")):
+        return False
+    return _git_is_ancestor(
+        repository, str(before.get("head", "")), candidate_head
+    ) and _git_is_ancestor(
+        repository, candidate_head, str(after.get("head", ""))
     )
 
 
@@ -753,9 +839,15 @@ def outstanding_write_results(task_dir: Path) -> list[dict[str, Any]]:
     if ready:
         record_completion_acceptance(task_dir)
         return []
-    if _durable_terminal_completion(task_dir):
-        record_completion_acceptance(task_dir, source="terminal_completion_backfill")
-        return []
+    historical_head = _historical_completion_head(task_dir)
+    if historical_head:
+        record_completion_acceptance(
+            task_dir,
+            source="historical_completion_ready",
+            candidate_head=historical_head,
+        )
+        accepted = accepted_write_run_ids(task_dir)
+        return [result for result in changes if result.get("run_id") not in accepted]
     return changes
 
 
@@ -839,14 +931,19 @@ def admission_blockers(
             if isinstance(run_id, str) and run_id in accepted_write_run_ids(task):
                 continue
             ready, _reason = completion_ready(task)
-            if ready or _durable_terminal_completion(task):
+            historical_head = None if ready else _historical_completion_head(task)
+            if ready or (
+                historical_head
+                and _ambiguous_scope_is_covered(scope, resolution, historical_head)
+            ):
                 record_completion_acceptance(
                     task,
                     source=(
                         "completion_ready"
                         if ready
-                        else "terminal_completion_backfill"
+                        else "historical_completion_ready"
                     ),
+                    candidate_head=historical_head,
                     additional_scope_evidence=(
                         {run_id: _completion_evidence_digest(task)}
                         if isinstance(run_id, str)

@@ -55,10 +55,19 @@ two tasks never write one working tree at the same time and a change nobody has
 reviewed does not get built on. `skills/task-runner/SKILL.md` owns the rules and
 the ledger format. Successful completion is preserved in that append-only ledger
 against the exact write-scope run IDs it covered, including bounded recovery of
-a terminal scope whose watcher did not close it. A legitimate later commit can
-therefore stale a current review packet without retroactively turning the older
-completed task into an admission blocker; later rework has new run IDs and must
-close its own gates.
+a terminal scope whose watcher did not close it. Legacy backfill additionally
+requires the matching controller completion event and any review evidence the
+current contract requires. The shared completion owner revalidates historical
+policy review from immutable Git objects plus its complete context, diagnostics,
+and decision envelope; write admission does not parse review claims itself. An
+earlier ungated terminal state therefore cannot satisfy a later review gate. A
+legitimate later commit can stale a current review packet without retroactively
+turning the older completed task into an admission blocker; later rework has new
+run IDs and must close its own gates. The migration receipt names the validated
+candidate head and accepts only scope results whose Git heads are ancestors of
+that candidate; it never clears a later same-task write. Historical validation
+uses the stored Git objects and envelope directly, so unrelated current dirt or
+a later dependency checkout does not become retroactive evidence about task A.
 
 ## Task Phases
 

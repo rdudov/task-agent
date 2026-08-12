@@ -185,6 +185,7 @@ def completion_ready(
     application: str | None = None,
     deferred_live_evidence_ids: frozenset[str] = frozenset(),
     defer_task_status: bool = False,
+    allow_historical_candidate: bool = False,
 ) -> tuple[bool, str]:
     """Decide whether durable task state authorizes successful completion.
 
@@ -245,7 +246,11 @@ def completion_ready(
     # Standard tasks use their authored live-evidence and verdict gates and do
     # not manufacture another workflow's review directory.
     if completion_workflow(task_dir, workflow) != "standard":
-        unestablished = unsatisfied_policy_families(contract, task_dir)
+        unestablished = unsatisfied_policy_families(
+            contract,
+            task_dir,
+            allow_historical_candidate=allow_historical_candidate,
+        )
         if unestablished:
             return False, (
                 "contract policy families are not established: "

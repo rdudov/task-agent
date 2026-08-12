@@ -242,7 +242,16 @@ that completion. A later task advancing the same repository does not
 retroactively stale those accepted scopes; later rework under the original task
 creates new scope IDs and therefore new obligations. Pre-receipt ledgers,
 including a terminal abandoned scope, are backfilled only when task metadata,
-runtime status, and phase all durably say `completed`.
+runtime status, phase, and the matching controller attempt all durably say
+`completed`. A review requirement added after an ungated terminal attempt also
+requires that attempt's independent approval, and enforced policy families
+are revalidated by the shared completion owner against the stored Git objects,
+full context packet, native reviewer diagnostics, and decision envelope.
+Terminal markers or a bare `approved` field alone never manufacture acceptance.
+Historical acceptance records the validated candidate head and covers only scope
+results at or before that head; a later same-task scope remains outstanding.
+The historical check does not require reconstructing a new subject from the
+successor worktree or its now-current dependency checkout.
 
 The bounded reviewer decides only the two prose policy families against the
 exact candidate. Required live evidence remains a separate completion gate: a

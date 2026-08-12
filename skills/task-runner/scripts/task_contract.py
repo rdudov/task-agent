@@ -389,14 +389,14 @@ def require_clean_tracked_worktree(repository: Path) -> None:
         raise ValueError(f"dependency repository {repository} has tracked worktree changes")
 
 
-def delivered_candidate(repository: Path) -> dict[str, Any]:
-    """Describe the exact committed Git tree at HEAD, independent of local dirt."""
+def delivered_candidate(repository: Path, revision: str = "HEAD") -> dict[str, Any]:
+    """Describe an exact committed Git tree, independent of local dirt."""
     repository = repository.resolve()
     head = subprocess.check_output(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+        ["git", "-C", str(repository), "rev-parse", revision], text=True
     ).strip()
     raw = subprocess.check_output(
-        ["git", "-C", str(repository), "ls-tree", "-r", "-z", "--full-tree", "HEAD"]
+        ["git", "-C", str(repository), "ls-tree", "-r", "-z", "--full-tree", head]
     )
     files: list[dict[str, Any]] = []
     for encoded in sorted(item for item in raw.split(b"\0") if item):
@@ -656,6 +656,90 @@ def completion_review_evidence(task_dir: Path) -> list[Path]:
     )
 
 
+def recorded_completion_candidate_head(task_dir: Path) -> str | None:
+    """Return the recorded delivery head after its envelope was validated."""
+    subject = read_json(task_dir / COMPLETION_REVIEW_SUBJECT)
+    candidate = subject.get("delivered_candidate") if isinstance(subject, dict) else None
+    head = candidate.get("head") if isinstance(candidate, dict) else None
+    return head if isinstance(head, str) and head else None
+
+
+def historical_completion_review_materials(
+    subject: dict[str, Any], context: dict[str, Any]
+) -> list[Path]:
+    """Validate a once-approved candidate from its immutable Git objects.
+
+    Completion review normally binds the current HEAD. Write-admission recovery
+    is the one consumer that must recognize a previously accepted HEAD after a
+    legitimate successor commit. It still validates the same context and
+    reviewer run; only source bytes come from the recorded Git object instead
+    of the moved worktree.
+    """
+    candidate = subject.get("delivered_candidate")
+    if not isinstance(candidate, dict):
+        raise ValueError("completion review subject has no delivered candidate")
+    raw_repository = candidate.get("repository")
+    raw_head = candidate.get("head")
+    if not all(isinstance(value, str) and value for value in (raw_repository, raw_head)):
+        raise ValueError("completion review subject has no historical repository identity")
+    repository = Path(raw_repository).resolve()
+    if delivered_candidate(repository, raw_head) != candidate:
+        raise ValueError("recorded delivered candidate differs from its Git object")
+    dependencies = subject.get("runtime_dependencies")
+    if not isinstance(dependencies, list):
+        raise ValueError("completion review subject has malformed runtime dependencies")
+    for dependency in dependencies:
+        recorded = dependency.get("candidate") if isinstance(dependency, dict) else None
+        if not isinstance(recorded, dict):
+            raise ValueError("completion review subject has malformed dependency candidate")
+        dependency_repository = recorded.get("repository")
+        dependency_head = recorded.get("head")
+        if not all(
+            isinstance(value, str) and value
+            for value in (dependency_repository, dependency_head)
+        ) or delivered_candidate(Path(dependency_repository), dependency_head) != recorded:
+            raise ValueError("recorded dependency candidate differs from its Git object")
+
+    tracked = subprocess.check_output([
+        "git", "-C", str(repository), "diff-tree", "--root", "--no-commit-id",
+        "--name-only", "-r", "-z", raw_head,
+    ])
+    names = []
+    for item in sorted(set(item for item in tracked.split(b"\0") if item)):
+        relative = item.decode("utf-8", errors="surrogateescape")
+        entry = subprocess.check_output([
+            "git", "-C", str(repository), "ls-tree", "-z", raw_head, "--", relative,
+        ])
+        if not entry:
+            continue
+        metadata = entry.split(b"\t", 1)[0].decode("ascii").split()
+        if len(metadata) == 3 and metadata[1] == "blob":
+            names.append(item)
+    artifacts = context.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("completion review context has malformed artifacts")
+    material_records = artifacts[1:]
+    if len(material_records) != len(names):
+        raise ValueError("historical completion review material count differs")
+    paths: list[Path] = []
+    for encoded, record in zip(names, material_records):
+        relative = encoded.decode("utf-8", errors="surrogateescape")
+        content = subprocess.check_output([
+            "git", "-C", str(repository), "show", f"{raw_head}:{relative}",
+        ])
+        digest = "sha256:" + hashlib.sha256(content).hexdigest()
+        raw_path = record.get("path") if isinstance(record, dict) else None
+        if not isinstance(raw_path, str) or record.get("digest") != digest:
+            raise ValueError("historical completion review material digest differs")
+        path = Path(raw_path).resolve()
+        direct = (repository / relative).resolve()
+        snapshot_suffix = Path(relative).parts
+        if path != direct and path.parts[-len(snapshot_suffix):] != snapshot_suffix:
+            raise ValueError("historical completion review material path differs")
+        paths.append(path)
+    return paths
+
+
 def validate_reviewer_diagnostics(path: Path, run: dict[str, Any]) -> None:
     """Validate the existing Codex stream as procedural execution evidence.
 
@@ -694,7 +778,9 @@ def validate_reviewer_diagnostics(path: Path, run: dict[str, Any]) -> None:
         raise ValueError("reviewer diagnostics decision differs from reviewer output")
 
 
-def configured_repository(task_dir: Path, subject: dict[str, Any]) -> Path:
+def configured_repository(
+    task_dir: Path, subject: dict[str, Any], *, require_recorded_grant: bool = False
+) -> Path:
     candidate = subject.get("delivered_candidate")
     raw = candidate.get("repository") if isinstance(candidate, dict) else None
     if not isinstance(raw, str) or not raw.strip():
@@ -703,6 +789,8 @@ def configured_repository(task_dir: Path, subject: dict[str, Any]) -> Path:
     runner = read_json(task_dir / ".runner" / "runner.json")
     grant = runner.get("access_grant") if isinstance(runner, dict) else None
     directories = grant.get("granted_directories") if isinstance(grant, dict) else None
+    if require_recorded_grant and not (isinstance(directories, list) and directories):
+        raise ValueError("historical completion review has no recorded repository grant")
     if isinstance(directories, list) and directories:
         configured = Path(str(directories[0])).resolve()
         if repository != configured:
@@ -734,8 +822,19 @@ def enforced_policy_families(contract: dict[str, Any]) -> list[str]:
     return families
 
 
-def unsatisfied_policy_families(contract: dict[str, Any], task_dir: Path) -> list[str]:
-    """Validate the public-core reviewer run over the current delivery subject."""
+def unsatisfied_policy_families(
+    contract: dict[str, Any],
+    task_dir: Path,
+    *,
+    allow_historical_candidate: bool = False,
+) -> list[str]:
+    """Validate the public-core reviewer run over its exact delivery subject.
+
+    Ordinary completion requires the subject to remain current. The explicit
+    historical mode is only for write-admission migration after a later commit;
+    it revalidates the recorded Git objects and every review envelope instead
+    of treating terminal prose or a bare ``approved`` field as acceptance.
+    """
     families = enforced_policy_families(contract)
     if not families:
         return []
@@ -760,14 +859,25 @@ def unsatisfied_policy_families(contract: dict[str, Any], task_dir: Path) -> lis
 
     try:
         subject = json.loads(subject_path.read_text(encoding="utf-8"))
-        repository = configured_repository(task_dir, subject)
+        repository = configured_repository(
+            task_dir, subject, require_recorded_grant=allow_historical_candidate
+        )
         runtime = subject.get("review_runtime")
         raw_bin = runtime.get("dev_pipeline_bin") if isinstance(runtime, dict) else None
         if not isinstance(raw_bin, str) or not raw_bin.strip():
             raise ValueError("completion review does not bind its public-core executable")
         dev_pipeline_bin = Path(raw_bin).resolve()
-        if subject != completion_review_subject(task_dir, repository, dev_pipeline_bin):
-            raise ValueError("completion review subject is stale")
+        if allow_historical_candidate:
+            historical = True
+        else:
+            current_subject = completion_review_subject(
+                task_dir, repository, dev_pipeline_bin
+            )
+            historical = subject != current_subject
+            if historical:
+                raise ValueError("completion review subject is stale")
+        if subject.get("effective_contract") != contract:
+            raise ValueError("completion review subject effective contract is stale")
         context = validate_context_packet(json.loads(context_path.read_text(encoding="utf-8")))
         run = json.loads(run_path.read_text(encoding="utf-8"))
         if context["role"] != "diff_review":
@@ -782,18 +892,23 @@ def unsatisfied_policy_families(contract: dict[str, Any], task_dir: Path) -> lis
         expected_digest = "sha256:" + hashlib.sha256(subject_path.read_bytes()).hexdigest()
         if first["path"] != str(subject_path.resolve()) or first["digest"] != expected_digest:
             raise ValueError("completion review does not bind the generated delivery subject")
-        materials = completion_review_bound_materials(
-            task_dir, repository, dev_pipeline_bin
-        )
-        expected_materials = [
-            {
-                "path": str(path.resolve()),
-                "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-            for path in materials
-        ]
-        if context["artifacts"][1:] != expected_materials:
-            raise ValueError("completion review does not directly bind every changed candidate file")
+        if historical:
+            materials = historical_completion_review_materials(subject, context)
+        else:
+            materials = completion_review_bound_materials(
+                task_dir, repository, dev_pipeline_bin
+            )
+            expected_materials = [
+                {
+                    "path": str(path.resolve()),
+                    "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+                for path in materials
+            ]
+            if context["artifacts"][1:] != expected_materials:
+                raise ValueError(
+                    "completion review does not directly bind every changed candidate file"
+                )
         expected_evidence = [
             {
                 "path": str(path),
@@ -834,7 +949,15 @@ def unsatisfied_policy_families(contract: dict[str, Any], task_dir: Path) -> lis
         decision = validate_decision(run.get("decision"), packet)
         validate_reviewer_diagnostics(diagnostics_path, run)
         checked = decision.get("evidence_checked", [])
-        repositories = completion_review_repositories(repository, dev_pipeline_bin)
+        if historical:
+            repositories = [repository]
+            repositories.extend(
+                Path(item["candidate"]["repository"]).resolve()
+                for item in subject.get("runtime_dependencies", [])
+                if isinstance(item, dict) and isinstance(item.get("candidate"), dict)
+            )
+        else:
+            repositories = completion_review_repositories(repository, dev_pipeline_bin)
         material_references = [
             reference
             for path in materials
