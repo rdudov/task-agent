@@ -25,10 +25,25 @@ This module answers two questions at launch time, from observable inputs:
 Material work with no bindable reviewer refuses before the author starts, which
 is the only moment where refusing is still cheap.
 
+Binding a reviewer at launch is worth nothing on its own, so the binding is
+carried through to the two places that can still let the work out unreviewed:
+
+- the admitted pair governs the run. A dev-pipeline launch has to hand the same
+  reviewer to the assurance the core will actually run (`assurance_binding`),
+  and a review launch into this number has to be the family that was bound
+  (`evaluate(review_launch=True)`).
+- the admitted pair governs acceptance. `independent_review_status` answers, from
+  this task's own append-only ledgers, whether the work as it now stands has an
+  approval from that family; the shared completion owner refuses a standard
+  completion that does not.
+
 What this module deliberately does not have is a limit. Review and rework are
 phases of one task (`task_phases`), and `record_review_round` counts rounds
 without ever capping them: the round number is for telling the user that the
 same demonstrated finding came back, not for deciding when to stop fixing it.
+An unapproved round therefore blocks acceptance and nothing else -- the next
+round is always allowed, and it is the approval, never the count, that ends the
+loop.
 """
 
 from __future__ import annotations
@@ -49,6 +64,11 @@ SCHEMA_VERSION = 1
 ADMISSION_RECORD = ".runner/review-admission.json"
 ROUNDS_LEDGER = "reviews/rounds.jsonl"
 
+# Every admission this task number ever made, oldest first. The single-record
+# file above is the current launch; a review launch overwrites it, and the
+# author binding it replaced is exactly what acceptance has to check against.
+ADMISSIONS_LEDGER = "reviews/admissions.jsonl"
+
 # Provider families. Two runners of the same family are the same reviewer for
 # admission purposes: independence is about the provider that judges the work,
 # not about which process invoked it.
@@ -63,6 +83,21 @@ REVIEWER_PREFERENCE = ("codex", "claude", "agent")
 
 MATERIAL = "material"
 READ_ONLY_LOOKUP = "read_only_lookup"
+
+# A launch that is itself the review of this number's work. It is not a third
+# kind of exception: it is the other half of the pair, and what it is checked
+# for is being the family that was bound rather than having a reviewer of its
+# own.
+REVIEW = "review"
+
+# What a reviewer's decision has to say for the work to be accepted, and what it
+# says when it does not. Both vocabularies exist because the decision reaches
+# this module from two directions: a dev-pipeline decision artifact and a
+# `Verdict:` line in a reviewer-authored `findings.md`.
+APPROVED_DECISIONS = frozenset({"approved", "approve", "accept", "accepted"})
+REWORK_DECISIONS = frozenset(
+    {"rework", "rework_required", "changes_requested", "rejected"}
+)
 
 OBLIGATIONS_LEDGER = "reviews/infrastructure-obligations.jsonl"
 
@@ -110,6 +145,40 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Every object an append-only ledger holds, oldest first.
+
+    A malformed line is skipped rather than fatal: these ledgers are the record
+    a refusal is explained from, and losing the readable entries because one
+    line was truncated would hide the decisions that were made.
+    """
+    if not path.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            entries.append(value)
+    return entries
+
+
+def _append_jsonl(path: Path, entry: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
 
@@ -180,8 +249,9 @@ def classify_work(
     workflow: str,
     access_grant: dict[str, Any] | None,
     contract: dict[str, Any],
+    review_launch: bool = False,
 ) -> dict[str, Any]:
-    """Decide whether this launch is material work or the read-only exception."""
+    """Decide whether this launch is material work, a review, or the exception."""
     effects = observed_material_effects(
         task_dir, workflow=workflow, access_grant=access_grant, contract=contract
     )
@@ -192,6 +262,13 @@ def classify_work(
         "material_effects": effects,
         "declared": declaration,
     }
+    if review_launch:
+        # The launch was asked for a reviewer verdict, so it is the review, not
+        # work that needs one. Saying so is what keeps the requirement from
+        # regressing into a review of the review of the review.
+        classification["work_class"] = REVIEW
+        classification["classified_by"] = "declared_review_launch"
+        return classification
     if declared_class == READ_ONLY_LOOKUP and not effects:
         classification["work_class"] = READ_ONLY_LOOKUP
         classification["classified_by"] = "declared_read_only_lookup_with_no_observed_effects"
@@ -295,6 +372,132 @@ def resolve_pair(
     return pair
 
 
+def admissions(task_dir: Path) -> list[dict[str, Any]]:
+    """Every admission decision this task number has recorded, oldest first."""
+    return _read_jsonl(task_dir / ADMISSIONS_LEDGER)
+
+
+def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
+    """The admission that bound a reviewer to this number's material work.
+
+    A number can hold several launches -- the author, the review, the rework,
+    another review -- and only the author ones carry the binding acceptance has
+    to honour. The ledger is consulted rather than the current-launch record,
+    because by the time the reviewer is running, that record describes the
+    reviewer.
+
+    A task whose ledger predates this ledger falls back to its single current
+    record, so an admission made before the ledger existed still binds.
+    """
+    for entry in reversed(admissions(task_dir)):
+        classification = entry.get("classification")
+        work_class = (
+            classification.get("work_class") if isinstance(classification, dict) else None
+        )
+        if work_class == MATERIAL and entry.get("decision") == "admitted":
+            return entry
+    current = recorded_admission(task_dir)
+    classification = current.get("classification")
+    work_class = (
+        classification.get("work_class") if isinstance(classification, dict) else None
+    )
+    if work_class == MATERIAL and current.get("decision") == "admitted":
+        return current
+    return None
+
+
+def resolve_review_launch_pair(
+    task_dir: Path, *, reviewer_runner: str
+) -> dict[str, Any]:
+    """Check that this review is the one the number was promised.
+
+    The binding made before the author started named a family. A review by the
+    author's own family is the substitution this project forbids outright, and a
+    review by some third family is not the one that was bound -- both are
+    refused here rather than discovered in the verdict.
+
+    A number with no author binding of its own is not refused: a review task
+    whose subject is another number is paired by the installation that owns
+    cross-task pairing, and this launcher has nothing to contradict.
+    """
+    reviewer_family = family_of(reviewer_runner)
+    pair: dict[str, Any] = {
+        "reviewer_runner": reviewer_runner,
+        "reviewer_family": reviewer_family,
+        "author_runner": None,
+        "author_family": None,
+        "reviewer_source": "review_launch",
+        "bound": False,
+    }
+    binding = bound_author_admission(task_dir)
+    if binding is None:
+        pair.update(
+            {
+                "bound": True,
+                "outcome": "no_bound_author_in_this_task",
+                "detail": (
+                    "this task number recorded no material author launch, so the "
+                    "review is paired by whoever owns its subject rather than here"
+                ),
+            }
+        )
+        return pair
+    bound_pair = binding.get("pair") if isinstance(binding.get("pair"), dict) else {}
+    author_runner = bound_pair.get("author_runner")
+    author_family = bound_pair.get("author_family") or family_of(author_runner)
+    bound_reviewer = bound_pair.get("reviewer_runner")
+    bound_family = bound_pair.get("reviewer_family") or family_of(bound_reviewer)
+    pair.update({"author_runner": author_runner, "author_family": author_family})
+    if reviewer_family == author_family:
+        pair.update(
+            {
+                "outcome": "review_by_author_family",
+                "detail": (
+                    f"`{reviewer_runner}` is the {author_family} family that authored "
+                    "this task's work, and an author does not review itself"
+                ),
+            }
+        )
+        return pair
+    if bound_family and reviewer_family != bound_family:
+        pair.update(
+            {
+                "outcome": "review_by_unbound_family",
+                "detail": (
+                    f"{bound_family} was bound as this task's independent reviewer "
+                    f"before the author started, and `{reviewer_runner}` is "
+                    f"{reviewer_family}"
+                ),
+            }
+        )
+        return pair
+    pair.update(
+        {
+            "bound": True,
+            "outcome": "bound",
+            "detail": (
+                f"`{reviewer_runner}` is the {reviewer_family} reviewer bound to this "
+                f"task before its {author_family} author started"
+            ),
+        }
+    )
+    return pair
+
+
+def _review_refusal_reason(pair: dict[str, Any]) -> str:
+    return (
+        "task-runner refuses to start this review: it would not be the "
+        f"independent review this task was admitted with -- {pair.get('detail')}."
+    )
+
+
+REVIEW_REFUSAL_ACTION = (
+    "Run the review with the family bound to this task number, or -- if that "
+    "family is unavailable -- leave the work waiting for it. The author's own "
+    "family cannot stand in for it."
+)
+
+
 def _refusal_reason(classification: dict[str, Any], pair: dict[str, Any]) -> str:
     effects = classification.get("material_effects") or []
     because = effects[0] if effects else "it is not declared as an observably read-only lookup"
@@ -332,16 +535,25 @@ def evaluate(
     access_grant: dict[str, Any] | None,
     contract: dict[str, Any],
     declared_reviewer: str | None = None,
+    review_launch: bool = False,
+    assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
 ) -> dict[str, Any]:
     """Produce the full admission record without writing or refusing anything."""
     classification = classify_work(
-        task_dir, workflow=workflow, access_grant=access_grant, contract=contract
+        task_dir,
+        workflow=workflow,
+        access_grant=access_grant,
+        contract=contract,
+        review_launch=review_launch,
     )
     declared = declared_reviewer or classification["declared"].get("reviewer_runner")
-    pair = resolve_pair(
-        author_runner=author_runner, declared_reviewer=declared, which=which
-    )
+    if classification["work_class"] == REVIEW:
+        pair = resolve_review_launch_pair(task_dir, reviewer_runner=author_runner)
+    else:
+        pair = resolve_pair(
+            author_runner=author_runner, declared_reviewer=declared, which=which
+        )
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "evaluated_at": utc_now(),
@@ -351,6 +563,22 @@ def evaluate(
         "pair": pair,
         "rework_rounds": "unlimited",
     }
+    if classification["work_class"] == REVIEW:
+        if pair["bound"]:
+            record["decision"] = "admitted_review"
+            record["message"] = (
+                f"task-runner admitted this launch as the review of task "
+                f"{task_dir.name}: {pair['detail']}. Its verdict decides whether the "
+                "task is accepted, and a verdict of rework returns the same number to "
+                "its author with no limit on further rounds."
+            )
+            return record
+        record["decision"] = "refused"
+        record["refusal_reason"] = _review_refusal_reason(pair)
+        record["refusal_action"] = REVIEW_REFUSAL_ACTION
+        record["message"] = f"{record['refusal_reason']} {REVIEW_REFUSAL_ACTION}"
+        record["infrastructure_defect"] = False
+        return record
     if classification["work_class"] == READ_ONLY_LOOKUP:
         record["decision"] = "exempt"
         record["message"] = (
@@ -367,6 +595,20 @@ def evaluate(
             f"for this {pair['author_family']} author before starting it: {pair['detail']}. "
             "Review and rework stay phases of this task number, with no limit on rounds."
         )
+        if workflow != "standard":
+            # A dev-pipeline run is reviewed by the core, using the assurance the
+            # installation hands it. If that assurance reviews with somebody else
+            # -- or with nobody -- then the pair bound above is a note in a file
+            # and the launch would run unreviewed.
+            binding = assurance_binding(record, assurance)
+            record["assurance_binding"] = binding
+            if not binding["bound"]:
+                refusal = assurance_refusal(binding)
+                record["decision"] = "refused"
+                record["refusal_reason"] = refusal["summary"]
+                record["refusal_action"] = refusal["requested_action"]
+                record["message"] = f"{refusal['summary']} {refusal['requested_action']}"
+                record["infrastructure_defect"] = False
         return record
     record["decision"] = "refused"
     record["refusal_reason"] = _refusal_reason(classification, pair)
@@ -503,24 +745,15 @@ def record_infrastructure_obligation(
     path = task_dir / OBLIGATIONS_LEDGER
     key = _defect_key(reason, reference)
     allocation: dict[str, Any] | None = None
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(value, dict):
-                continue
-            if value.get("event_id") == event_id:
-                return value
-            if value.get("defect_key") == key and value.get("recorded_as"):
-                allocation = {
-                    "recorded_as": value["recorded_as"],
-                    "allocated_through": value.get("allocated_through"),
-                    "reused_existing_number": True,
-                }
+    for value in _read_jsonl(path):
+        if value.get("event_id") == event_id:
+            return value
+        if value.get("defect_key") == key and value.get("recorded_as"):
+            allocation = {
+                "recorded_as": value["recorded_as"],
+                "allocated_through": value.get("allocated_through"),
+                "reused_existing_number": True,
+            }
     if allocation is None and allocate:
         try:
             allocation = allocate_infrastructure_task(
@@ -540,30 +773,13 @@ def record_infrastructure_obligation(
     }
     entry["separate_task_number"] = entry.get("recorded_as") or "unfiled"
     entry["statement"] = obligation_statement(entry)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    _append_jsonl(path, entry)
     return entry
 
 
 def infrastructure_obligations(task_dir: Path) -> list[dict[str, Any]]:
     """Every review-machinery defect this task ran into and must not absorb."""
-    path = task_dir / OBLIGATIONS_LEDGER
-    if not path.exists():
-        return []
-    entries: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            entries.append(value)
-    return entries
+    return _read_jsonl(task_dir / OBLIGATIONS_LEDGER)
 
 
 def admit_launch(
@@ -574,12 +790,18 @@ def admit_launch(
     access_grant: dict[str, Any] | None,
     contract: dict[str, Any],
     declared_reviewer: str | None = None,
+    review_launch: bool = False,
+    assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
 ) -> dict[str, Any]:
     """Record the decision and refuse a material launch with no reviewer.
 
     The record is written for every outcome, including the refusal, because the
-    task's own state is where a caller looks to find out why nothing started.
+    task's own state is where a caller looks to find out why nothing started. It
+    is also appended to the number's admission ledger, because the binding made
+    here has to survive the launches that come after it -- the review that has to
+    be the family that was bound, and the acceptance that has to find its
+    approval.
     """
     record = evaluate(
         task_dir,
@@ -588,6 +810,8 @@ def admit_launch(
         access_grant=access_grant,
         contract=contract,
         declared_reviewer=declared_reviewer,
+        review_launch=review_launch,
+        assurance=assurance,
         which=which,
     )
     if record.pop("infrastructure_defect", False):
@@ -609,6 +833,7 @@ def admit_launch(
             record.get("refusal_reason", "") + " " + obligation["statement"]
         ).strip()
     _write_json(task_dir / ADMISSION_RECORD, record)
+    _append_jsonl(task_dir / ADMISSIONS_LEDGER, record)
     if record["decision"] == "refused":
         raise ReviewAdmissionError(record)
     return record
@@ -616,6 +841,21 @@ def admit_launch(
 
 def recorded_admission(task_dir: Path) -> dict[str, Any]:
     return _read_json(task_dir / ADMISSION_RECORD)
+
+
+def launch_is_review(task_dir: Path) -> bool:
+    """Whether the launch now running was admitted as this number's review.
+
+    Asked of the admission record rather than of the task contract, because
+    `require_review_verdict_contract` leaves its requirement in the contract
+    permanently: after one review, every later author run would look like a
+    review to anything reading that flag, and the rework phase would disappear
+    from the history the acceptance gate measures approvals against.
+    """
+    classification = recorded_admission(task_dir).get("classification")
+    if not isinstance(classification, dict):
+        return False
+    return classification.get("work_class") == REVIEW
 
 
 def finding_identity(finding: Any) -> str:
@@ -643,20 +883,7 @@ def finding_identity(finding: Any) -> str:
 
 
 def _rounds(task_dir: Path) -> list[dict[str, Any]]:
-    path = task_dir / ROUNDS_LEDGER
-    if not path.exists():
-        return []
-    rounds: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            rounds.append(value)
-    return rounds
+    return _read_jsonl(task_dir / ROUNDS_LEDGER)
 
 
 def review_rounds(task_dir: Path) -> list[dict[str, Any]]:
@@ -713,15 +940,230 @@ def record_review_round(
         "recorded_at": recorded_at or utc_now(),
         "event_id": event_id,
         "review_provider": review_provider,
+        "reviewer_family": family_of(review_provider),
         "decision": str(decision.get("decision", "")) or None,
         "finding_ids": identities,
         "repeated_finding_ids": repeated,
     }
     entry["warning"] = repeat_warning(repeated, entry["round"]) if repeated else None
-    path = task_dir / ROUNDS_LEDGER
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    _append_jsonl(task_dir / ROUNDS_LEDGER, entry)
     return entry
+
+
+def round_decision(entry: dict[str, Any]) -> str:
+    """`approved`, `rework`, or `unreadable` for one recorded round."""
+    decision = str(entry.get("decision", "")).strip().lower()
+    if decision in APPROVED_DECISIONS:
+        return "approved"
+    if decision in REWORK_DECISIONS:
+        return "rework"
+    return "unreadable"
+
+
+def review_launch_hint(task_dir: Path, reviewer_runner: str | None) -> str:
+    """How to obtain the review this task is waiting for, in one command.
+
+    A gate that refuses acceptance without saying what would satisfy it reads as
+    a dead end. The review is a phase of this same number, so the command names
+    this task directory rather than a new one.
+    """
+    runner = reviewer_runner or "<independent-runner>"
+    return (
+        "Run the bound review as a phase of this same task number: "
+        f"`task_runner.py start {task_dir} --runner {runner} "
+        "--require-review-verdict`."
+    )
+
+
+def independent_review_status(
+    task_dir: Path, *, author_phases: Iterable[dict[str, Any]] = ()
+) -> dict[str, Any]:
+    """Whether the work as it now stands carries the approval it was admitted with.
+
+    Three things have to hold, and each is read from an append-only record this
+    module or `task_phases` already keeps rather than from anything a run says
+    about itself:
+
+    - the number bound an independent reviewer to material work at all;
+    - its most recent review round approved;
+    - no author work has been recorded since that approval, so the approval is
+      of what is there now rather than of something a later rework replaced.
+
+    `author_phases` are the phase-history entries that mean the author was
+    working -- the caller passes them because `task_phases` owns that vocabulary.
+    Nothing here counts rounds: an unapproved round says "not yet", never "no
+    more".
+    """
+    binding = bound_author_admission(task_dir)
+    status: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "required": binding is not None,
+        "satisfied": True,
+        "rounds": len(_rounds(task_dir)),
+    }
+    if binding is None:
+        status["reason"] = (
+            "this task number bound no independent reviewer to material work"
+        )
+        return status
+    pair = binding.get("pair") if isinstance(binding.get("pair"), dict) else {}
+    reviewer_family = pair.get("reviewer_family")
+    author_family = pair.get("author_family")
+    status.update(
+        {
+            "reviewer_runner": pair.get("reviewer_runner"),
+            "reviewer_family": reviewer_family,
+            "author_family": author_family,
+            "admitted_at": binding.get("evaluated_at"),
+        }
+    )
+    status["action"] = review_launch_hint(task_dir, pair.get("reviewer_runner"))
+    rounds = _rounds(task_dir)
+    if not rounds:
+        status["satisfied"] = False
+        status["reason"] = (
+            f"{reviewer_family} was bound as this task's independent reviewer "
+            "before the author started, and it has recorded no review round yet"
+        )
+        return status
+    last = rounds[-1]
+    status["last_round"] = {
+        "round": last.get("round"),
+        "decision": last.get("decision"),
+        "reviewer_family": last.get("reviewer_family") or family_of(last.get("review_provider")),
+        "recorded_at": last.get("recorded_at"),
+    }
+    outcome = round_decision(last)
+    last_family = status["last_round"]["reviewer_family"]
+    if outcome != "approved":
+        status["satisfied"] = False
+        status["reason"] = (
+            f"review round {last.get('round')} by {last_family} did not approve "
+            f"(decision {last.get('decision')!r}); the task returns to its author "
+            "for rework and another round, of which there is no limit"
+        )
+        return status
+    if author_family and last_family == author_family:
+        status["satisfied"] = False
+        status["reason"] = (
+            f"the approval on record was recorded for the {last_family} family, "
+            "which authored this work; an author's approval of itself is not the "
+            "independent review this task was admitted with"
+        )
+        return status
+    approved_at = str(last.get("recorded_at", ""))
+    later = [
+        entry
+        for entry in author_phases
+        if str(entry.get("entered_at", "")) > approved_at
+    ]
+    if later:
+        status["satisfied"] = False
+        status["author_work_after_approval"] = later[-1]
+        status["reason"] = (
+            f"the approval was recorded at {approved_at}, and the author worked "
+            f"again at {later[-1].get('entered_at')}; what is here now has not been "
+            "reviewed"
+        )
+        return status
+    status["reason"] = (
+        f"review round {last.get('round')} by {last_family} approved this work and "
+        "no author work was recorded after it"
+    )
+    return status
+
+
+def assurance_binding(
+    record: dict[str, Any], assurance: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Check that the assurance a dev-pipeline run will use is the bound pair.
+
+    A dev-pipeline launch does not review anything itself: the core does, using
+    the assurance configuration the installation supplies. So the binding made
+    before the author starts is only real if that configuration names the same
+    reviewer. An assurance that names someone else, reviews with the author's own
+    family, or is missing entirely from a material launch is refused here --
+    after the author has run, the same mismatch costs the attempt.
+    """
+    pair = record.get("pair") if isinstance(record.get("pair"), dict) else {}
+    classification = record.get("classification")
+    work_class = (
+        classification.get("work_class") if isinstance(classification, dict) else None
+    )
+    result: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "bound_reviewer_runner": pair.get("reviewer_runner"),
+        "bound_reviewer_family": pair.get("reviewer_family"),
+        "assurance_review_provider": None,
+        "assurance_strategy": None,
+        "bound": True,
+    }
+    if work_class != MATERIAL or record.get("decision") != "admitted":
+        result["outcome"] = "not_material_work"
+        result["detail"] = "no reviewer was bound to this launch, so none can be contradicted"
+        return result
+    if not isinstance(assurance, dict) or not assurance:
+        result.update(
+            {
+                "bound": False,
+                "outcome": "assurance_missing",
+                "detail": (
+                    "this dev-pipeline launch carries no assurance configuration, so "
+                    f"the {pair.get('reviewer_family')} reviewer bound to it would "
+                    "never be asked to review anything"
+                ),
+            }
+        )
+        return result
+    provider = assurance.get("review_provider")
+    strategy = assurance.get("strategy")
+    result["assurance_review_provider"] = provider
+    result["assurance_strategy"] = strategy
+    if not isinstance(provider, str) or not provider.strip():
+        result.update(
+            {
+                "bound": False,
+                "outcome": "assurance_reviews_nobody",
+                "detail": (
+                    f"the assurance configuration names no review provider (strategy "
+                    f"`{strategy}`), so the {pair.get('reviewer_family')} reviewer "
+                    "bound to this launch would never review it"
+                ),
+            }
+        )
+        return result
+    if family_of(provider) != pair.get("reviewer_family"):
+        result.update(
+            {
+                "bound": False,
+                "outcome": "assurance_reviewer_mismatch",
+                "detail": (
+                    f"{pair.get('reviewer_family')} was bound as this launch's "
+                    f"independent reviewer, and the assurance configuration hands the "
+                    f"review to `{provider}` ({family_of(provider)})"
+                ),
+            }
+        )
+        return result
+    result["outcome"] = "bound"
+    result["detail"] = (
+        f"the assurance configuration reviews with `{provider}`, the "
+        f"{pair.get('reviewer_family')} family bound before the author starts"
+    )
+    return result
+
+
+ASSURANCE_REFUSAL_ACTION = (
+    "Supply the dev-pipeline launch with an assurance configuration whose "
+    "`review_provider` is the family bound to this task, or name that family in "
+    "the task contract's `review_policy.reviewer_runner` so the two agree."
+)
+
+
+def assurance_refusal(binding: dict[str, Any]) -> dict[str, str]:
+    """The refusal text for an assurance that would not run the bound review."""
+    reason = (
+        "task-runner refuses to start the author: this dev-pipeline launch would "
+        f"not be reviewed by the pair it was admitted with -- {binding.get('detail')}."
+    )
+    return {"summary": reason, "requested_action": ASSURANCE_REFUSAL_ACTION}

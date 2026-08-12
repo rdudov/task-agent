@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import task_phases, write_admission
+    from . import review_admission, task_phases, write_admission
     from .task_completion import completion_ready, task_reference, task_status
     from .task_contract import contract_gate_status, load_task_contract
     from .task_runner import (
@@ -44,6 +44,7 @@ try:
         structured_progress,
     )
 except ImportError:
+    import review_admission
     import task_phases
     import write_admission
     from task_completion import completion_ready, task_reference, task_status
@@ -153,6 +154,12 @@ def state(task_dir: Path) -> dict[str, Any]:
         "phase_sequence": task_phases.phase_sequence(task_dir),
         "contract_gate_status": contract_gate_status(contract),
         "completion": {"ready": ready, **({} if ready else {"reason": reason})},
+        # Who has to check this work and whether they have. A product layer
+        # reading this surface can see a task waiting for its review without
+        # parsing the completion refusal's prose.
+        "review": review_admission.independent_review_status(
+            task_dir, author_phases=task_phases.author_work_entries(task_dir)
+        ),
         "actuality": actuality(task_dir),
         "supervision": supervision(task_dir),
         "run_status": read_json(status_path(task_dir)),

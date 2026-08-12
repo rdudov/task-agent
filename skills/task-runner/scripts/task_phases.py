@@ -134,6 +134,25 @@ def phase_sequence(task_dir: Path) -> list[str]:
     return [str(item["phase"]) for item in phase_history(task_dir) if "phase" in item]
 
 
+# The phases in which the author is changing the work. A review approves what
+# these produced, so an entry into one of them after an approval means the
+# approved thing is not what is there now.
+AUTHOR_WORK_PHASES = frozenset({IMPLEMENTATION, REWORK})
+
+
+def author_work_entries(task_dir: Path) -> list[dict[str, Any]]:
+    """Every recorded entry into a phase where the author changed the work.
+
+    This vocabulary belongs here, so the review gate asks for the entries rather
+    than deciding for itself which phase names mean "the author worked".
+    """
+    return [
+        item
+        for item in phase_history(task_dir)
+        if str(item.get("phase")) in AUTHOR_WORK_PHASES
+    ]
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     """Replace the record atomically and durably.
 

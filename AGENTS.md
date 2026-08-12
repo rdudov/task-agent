@@ -90,12 +90,20 @@ Files the user explicitly requested are a separate, user-facing class of output.
   contradict. An author never reviews its own work, so a material launch with no
   independent provider family available is refused up front instead of after a
   spent attempt, and that refusal is delivered to the caller rather than only
-  filed in the task's own state. There is no limit on rework rounds: review and rework stay
-  phases of one task number until the work is accepted, a repeated demonstrated
+  filed in the task's own state. The pair that was bound then governs the run and
+  its acceptance: a dev-pipeline launch must hand the same reviewer to the
+  assurance its core will run, a launch asked for a verdict must be that bound
+  family and not the author's own, and no launch is accepted as complete until
+  that reviewer has approved the work as it now stands. There is no limit on
+  rework rounds: review and rework stay
+  phases of one task number until the work is accepted, an unapproved round
+  refuses acceptance and authorizes the next round rather than ending the loop,
+  a repeated demonstrated
   finding is reported to the user as an execution-quality problem without
   stopping the fixes, and a defect in the review infrastructure is filed under
   its own number through the task-number owner rather than becoming the subject
-  of the task that hit it or a reason to accept unreviewed work.
+  of the task that hit it or a reason to accept unreviewed work. Dependencies
+  are pinned to revisions that impose no round budget of their own.
 - Git write admission is one common-directory-locked check-and-claim operation;
   only provable abandoned no-ops are durably settled before a successor enters,
   unknown liveness refuses a foreign writer, abandoned divergent work remains a

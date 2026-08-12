@@ -22,6 +22,8 @@ def _load(name: str):
 
 review_admission = _load("review_admission")
 task_runner = _load("task_runner")
+task_completion = _load("task_completion")
+task_phases = _load("task_phases")
 
 import application_adapter  # noqa: E402  (`_load` put the scripts directory on the path)
 
@@ -38,6 +40,15 @@ WRITE_GRANT = {
 }
 READ_ONLY_GRANT = {"sandbox_mode": "read-only", "granted_directories": [], "grants_write": False}
 UNGATED = {"gate_status": "ungated", "review_gates": []}
+
+# What an installation hands the dev-pipeline core to have it review at all.
+CODEX_ASSURANCE = {
+    "schema_version": "1.0",
+    "strategy": "cross_provider",
+    "owner_provider": "claude",
+    "review_provider": "codex",
+    "providers": {"claude": {"executable": "claude"}, "codex": {"executable": "codex"}},
+}
 
 
 class ClassificationTests(unittest.TestCase):
@@ -163,11 +174,41 @@ class AdmissionTests(unittest.TestCase):
                 author_runner="claude",
                 access_grant=WRITE_GRANT,
                 contract=UNGATED,
+                assurance=CODEX_ASSURANCE,
                 which=_installed("claude", "codex"),
             )
         self.assertEqual(record["decision"], "admitted")
         self.assertEqual(record["pair"]["reviewer_family"], "Codex")
         self.assertEqual(record["rework_rounds"], "unlimited")
+        self.assertTrue(record["assurance_binding"]["bound"])
+
+    def test_an_admitted_launch_is_appended_to_the_numbers_ledger(self) -> None:
+        """The binding outlives the launch record a later review overwrites."""
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            review_admission.admit_launch(
+                task_dir,
+                workflow="standard",
+                author_runner="claude",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+            )
+            review_admission.admit_launch(
+                task_dir,
+                workflow="standard",
+                author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=UNGATED,
+                review_launch=True,
+                which=_installed("claude", "codex"),
+            )
+            ledger = review_admission.admissions(task_dir)
+            binding = review_admission.bound_author_admission(task_dir)
+        self.assertEqual(len(ledger), 2)
+        self.assertEqual(ledger[-1]["classification"]["work_class"], "review")
+        self.assertEqual(binding["pair"]["author_runner"], "claude")
+        self.assertEqual(binding["pair"]["reviewer_runner"], "codex")
 
     def test_the_read_only_exception_starts_without_a_reviewer(self) -> None:
         contract = {**UNGATED, "review_policy": {"work_class": "read_only_lookup"}}
@@ -495,6 +536,318 @@ class RoundLedgerTests(unittest.TestCase):
                 )
         self.assertTrue(entry["repeated_finding_ids"])
         self.assertIsNotNone(entry["warning"])
+
+
+class AssuranceBindingTests(unittest.TestCase):
+    """A dev-pipeline launch is reviewed by the pair it was admitted with."""
+
+    def _admit(self, task_dir: Path, assurance):
+        return review_admission.admit_launch(
+            task_dir,
+            workflow="dev-pipeline",
+            author_runner="claude",
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            assurance=assurance,
+            which=_installed("claude", "codex"),
+        )
+
+    def test_a_material_launch_without_assurance_is_refused(self) -> None:
+        """Nothing would ask the bound reviewer for anything."""
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                self._admit(Path(raw), None)
+        record = caught.exception.record
+        self.assertEqual(record["decision"], "refused")
+        self.assertEqual(record["assurance_binding"]["outcome"], "assurance_missing")
+        self.assertIn("never be asked to review", record["message"])
+
+    def test_assurance_reviewing_with_another_family_is_refused(self) -> None:
+        assurance = {**CODEX_ASSURANCE, "review_provider": "agent"}
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                self._admit(Path(raw), assurance)
+        record = caught.exception.record
+        self.assertEqual(
+            record["assurance_binding"]["outcome"], "assurance_reviewer_mismatch"
+        )
+
+    def test_assurance_that_reviews_with_nobody_is_refused(self) -> None:
+        assurance = {**CODEX_ASSURANCE, "review_provider": None}
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                self._admit(Path(raw), assurance)
+        self.assertEqual(
+            caught.exception.record["assurance_binding"]["outcome"],
+            "assurance_reviews_nobody",
+        )
+
+    def test_a_standard_launch_needs_no_assurance_configuration(self) -> None:
+        """Standard has no assurance seam; its review is a launch of its own."""
+        with tempfile.TemporaryDirectory() as raw:
+            record = review_admission.admit_launch(
+                Path(raw),
+                workflow="standard",
+                author_runner="claude",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+            )
+        self.assertEqual(record["decision"], "admitted")
+        self.assertNotIn("assurance_binding", record)
+
+
+class ReviewLaunchPairingTests(unittest.TestCase):
+    """The review of a number has to be the family that number was promised."""
+
+    def _author(self, task_dir: Path, author: str = "claude") -> dict:
+        return review_admission.admit_launch(
+            task_dir,
+            workflow="standard",
+            author_runner=author,
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            which=_installed("claude", "codex"),
+        )
+
+    def _review(self, task_dir: Path, reviewer: str) -> dict:
+        return review_admission.admit_launch(
+            task_dir,
+            workflow="standard",
+            author_runner=reviewer,
+            access_grant=READ_ONLY_GRANT,
+            contract=UNGATED,
+            review_launch=True,
+            which=_installed("claude", "codex"),
+        )
+
+    def test_the_bound_family_is_admitted_as_the_review(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._author(task_dir)
+            record = self._review(task_dir, "codex")
+        self.assertEqual(record["decision"], "admitted_review")
+        self.assertEqual(record["classification"]["work_class"], "review")
+        self.assertEqual(record["pair"]["author_family"], "Claude")
+
+    def test_the_authors_own_family_cannot_review_the_number(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._author(task_dir)
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                self._review(task_dir, "claude")
+        record = caught.exception.record
+        self.assertEqual(record["pair"]["outcome"], "review_by_author_family")
+        self.assertIn("does not review itself", record["message"])
+
+    def test_a_family_that_was_not_bound_cannot_review_the_number(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._author(task_dir)
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                self._review(task_dir, "agent")
+        self.assertEqual(
+            caught.exception.record["pair"]["outcome"], "review_by_unbound_family"
+        )
+
+    def test_the_launch_that_is_the_review_is_the_one_admitted_as_one(self) -> None:
+        """The contract keeps `require_review_verdict` forever; admission does not.
+
+        Reading the contract instead would make the author's next run look like
+        another review, and the rework phase the review asked for would never be
+        recorded -- which is exactly the history a stale approval is measured
+        against.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._author(task_dir)
+            self.assertFalse(review_admission.launch_is_review(task_dir))
+            self._review(task_dir, "codex")
+            self.assertTrue(review_admission.launch_is_review(task_dir))
+            self._author(task_dir)
+            self.assertFalse(review_admission.launch_is_review(task_dir))
+
+    def test_a_review_of_someone_elses_number_is_left_to_its_owner(self) -> None:
+        """A review task whose subject is another number is not paired here."""
+        with tempfile.TemporaryDirectory() as raw:
+            record = self._review(Path(raw), "codex")
+        self.assertEqual(record["decision"], "admitted_review")
+        self.assertEqual(record["pair"]["outcome"], "no_bound_author_in_this_task")
+
+
+class IndependentReviewStatusTests(unittest.TestCase):
+    """Acceptance asks whether the work as it stands carries that approval."""
+
+    def _admitted(self, task_dir: Path) -> None:
+        review_admission.admit_launch(
+            task_dir,
+            workflow="standard",
+            author_runner="claude",
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            which=_installed("claude", "codex"),
+        )
+
+    def _round(self, task_dir: Path, decision: str, provider: str = "codex") -> dict:
+        return review_admission.record_review_round(
+            task_dir,
+            event_id=f"event-{decision}-{provider}-{len(review_admission.review_rounds(task_dir))}",
+            decision={"decision": decision},
+            review_provider=provider,
+        )
+
+    def test_an_unadmitted_task_is_not_gated_on_a_review_it_never_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            status = review_admission.independent_review_status(Path(raw))
+        self.assertFalse(status["required"])
+        self.assertTrue(status["satisfied"])
+
+    def test_an_admitted_task_with_no_round_is_not_satisfied(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._admitted(task_dir)
+            status = review_admission.independent_review_status(task_dir)
+        self.assertTrue(status["required"])
+        self.assertFalse(status["satisfied"])
+        self.assertIn("no review round yet", status["reason"])
+        self.assertIn("--require-review-verdict", status["action"])
+
+    def test_a_rework_round_blocks_acceptance_and_allows_another_round(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._admitted(task_dir)
+            self._round(task_dir, "rework")
+            status = review_admission.independent_review_status(task_dir)
+            # Nothing stops the next round: the ledger keeps appending.
+            self._round(task_dir, "rework")
+            after = review_admission.independent_review_status(task_dir)
+        self.assertFalse(status["satisfied"])
+        self.assertIn("no limit", status["reason"])
+        self.assertEqual(after["rounds"], 2)
+
+    def test_an_approval_by_the_bound_family_satisfies_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._admitted(task_dir)
+            self._round(task_dir, "rework")
+            self._round(task_dir, "approved")
+            status = review_admission.independent_review_status(task_dir)
+        self.assertTrue(status["satisfied"])
+        self.assertEqual(status["last_round"]["reviewer_family"], "Codex")
+
+    def test_an_approval_by_the_authors_own_family_does_not_satisfy_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._admitted(task_dir)
+            self._round(task_dir, "approved", provider="claude")
+            status = review_admission.independent_review_status(task_dir)
+        self.assertFalse(status["satisfied"])
+        self.assertIn("authored this work", status["reason"])
+
+    def test_author_work_after_an_approval_needs_another_review(self) -> None:
+        """An approval is of what was there, not of whatever replaced it."""
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._admitted(task_dir)
+            approved = self._round(task_dir, "approved")
+            later = [{"phase": "rework", "entered_at": "2999-01-01T00:00:00+00:00"}]
+            status = review_admission.independent_review_status(
+                task_dir, author_phases=later
+            )
+            earlier = [{"phase": "implementation", "entered_at": "1999-01-01T00:00:00+00:00"}]
+            unaffected = review_admission.independent_review_status(
+                task_dir, author_phases=earlier
+            )
+        self.assertTrue(approved["decision"] == "approved")
+        self.assertFalse(status["satisfied"])
+        self.assertIn("has not been reviewed", status["reason"])
+        self.assertTrue(unaffected["satisfied"])
+
+
+class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
+    """The shared completion decision refuses work the bound reviewer never saw."""
+
+    def _task(self, root: Path) -> Path:
+        task = root / "001-example"
+        (task / ".runner").mkdir(parents=True)
+        (task / "task.md").write_text(
+            '---\nid: 1\nslug: "example"\ntitle: "x"\ndate: 2026-08-11\n'
+            'status: "completed"\n---\n# x\n',
+            encoding="utf-8",
+        )
+        (task / "plan.md").write_text("# Plan\n", encoding="utf-8")
+        (task / "task_contract.json").write_text('{"version": 1}', encoding="utf-8")
+        return task
+
+    def _admit_author(self, task: Path) -> None:
+        review_admission.admit_launch(
+            task,
+            workflow="standard",
+            author_runner="claude",
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            which=_installed("claude", "codex"),
+        )
+        task_phases.record_phase(task, "implementation")
+
+    def test_an_admitted_author_cannot_close_without_the_review(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+        self.assertFalse(ready)
+        self.assertIn("independent review", reason)
+        self.assertIn("--require-review-verdict", reason)
+
+    def test_the_reviewers_published_verdict_becomes_the_round(self) -> None:
+        """A standard review reaches the ledger through its own verdict line."""
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            review_admission.admit_launch(
+                task,
+                workflow="standard",
+                author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=UNGATED,
+                review_launch=True,
+                which=_installed("claude", "codex"),
+            )
+            (task / "findings.md").write_text(
+                "# Findings\n\nThe live evidence is missing.\n\nVerdict: rework\n",
+                encoding="utf-8",
+            )
+            entry = task_runner.record_standard_review_round(task, "codex")
+            rework_ready, rework_reason = task_completion.completion_ready(
+                task, workflow="standard"
+            )
+            # The author fixes it and the same reviewer approves the new state.
+            task_phases.record_phase(task, "rework")
+            (task / "findings.md").write_text(
+                "# Findings\n\nThe live evidence is there now.\n\nVerdict: approved\n",
+                encoding="utf-8",
+            )
+            task_runner.write_json(
+                task_runner.runner_meta_path(task), {"child_started_at": "second-run"}
+            )
+            task_runner.record_standard_review_round(task, "codex")
+            ready, _ = task_completion.completion_ready(task, workflow="standard")
+        self.assertEqual(entry["decision"], "rework")
+        self.assertFalse(rework_ready)
+        self.assertIn("did not approve", rework_reason)
+        self.assertTrue(ready)
+
+    def test_the_author_cannot_record_the_round_that_accepts_its_own_work(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            (task / "findings.md").write_text("Verdict: approved\n", encoding="utf-8")
+            # The author's own launch is not classified as the review, so its
+            # verdict never becomes a round at all.
+            self.assertIsNone(task_runner.record_standard_review_round(task, "claude"))
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+        self.assertFalse(ready)
+        self.assertIn("no review round yet", reason)
 
 
 if __name__ == "__main__":

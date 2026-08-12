@@ -189,7 +189,9 @@ the active virtual environment with an editable checkout:
 ```
 
 The pinned revision includes the core's provider-neutral assurance contract and
-review events. A configured review uses `review_started` and
+review events, and imposes no limit on review rounds: rework and review repeat
+under one task number until the work is accepted, so a pin must never be moved
+back to a revision that stops at a count and asks whether to continue. A configured review uses `review_started` and
 `review_rework_required` for visible review/rework phase transitions;
 `review_approved` keeps the task in review until the following lifecycle event
 advances it. Older installed cores still degrade compatibly by omitting phases

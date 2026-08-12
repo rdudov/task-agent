@@ -46,6 +46,7 @@ try:  # package install
         enforced_review_verdict,
         ensure_task_contract_file,
         load_task_contract,
+        published_review_verdict,
         require_review_verdict_contract,
     )
     from . import review_admission, task_phases, write_admission
@@ -78,6 +79,7 @@ except ImportError:  # direct repository script
         enforced_review_verdict,
         ensure_task_contract_file,
         load_task_contract,
+        published_review_verdict,
         require_review_verdict_contract,
     )
     import review_admission
@@ -1660,6 +1662,22 @@ def report_review_admission_refusal(
     }
 
 
+def configured_assurance(args: argparse.Namespace) -> dict | None:
+    """The assurance configuration this launch would hand to the dev-pipeline core.
+
+    Read here, at the launcher, because this is where the reviewer was bound and
+    where a disagreement between the two is still free to fix. An unreadable file
+    is reported as no assurance at all: a material launch is then refused for the
+    same reason a missing one is, which is the honest reading of "the review this
+    was admitted with will not happen".
+    """
+    configured = getattr(args, "assurance_config", None)
+    if not configured:
+        return None
+    value = read_json(Path(configured))
+    return value or None
+
+
 def cmd_start(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
@@ -1684,7 +1702,9 @@ def cmd_start(args: argparse.Namespace) -> None:
     )
     # Bind the reviewer before the author exists. A material launch that nobody
     # independent can check is cheapest to stop here: after the author runs, the
-    # same missing reviewer costs the whole attempt.
+    # same missing reviewer costs the whole attempt. The same call admits the
+    # other half of the pair: a launch asked for a verdict is the review, and it
+    # has to be the family this number was promised.
     try:
         review_record = review_admission.admit_launch(
             task_dir,
@@ -1693,6 +1713,8 @@ def cmd_start(args: argparse.Namespace) -> None:
             access_grant=access_grant,
             contract=load_task_contract(task_dir),
             declared_reviewer=getattr(args, "reviewer_runner", None),
+            review_launch=bool(getattr(args, "require_review_verdict", False)),
+            assurance=configured_assurance(args),
         )
     except review_admission.ReviewAdmissionError as exc:
         notification = report_review_admission_refusal(task_dir, exc.record, args)
@@ -1955,6 +1977,54 @@ def record_terminal_phase(task_dir: Path, state: str) -> None:
         write_json(status_path(task_dir), status)
 
 
+def record_standard_review_round(task_dir: Path, runner: str) -> dict | None:
+    """Append the round a finished standard review just decided.
+
+    A `dev-pipeline` review reaches the round ledger as a lifecycle event the
+    adapter projects. A standard review publishes its decision as the one
+    canonical `Verdict:` line the contract already requires of it, and without
+    this the same decision would never reach the ledger the acceptance gate
+    reads -- an approved review would leave the task blocked, and a rework
+    verdict would close it.
+
+    The round is keyed on this run, so finalizing twice records one round.
+    """
+    admission = review_admission.recorded_admission(task_dir)
+    classification = admission.get("classification")
+    work_class = (
+        classification.get("work_class") if isinstance(classification, dict) else None
+    )
+    if work_class != review_admission.REVIEW:
+        return None
+    verdict = published_review_verdict(task_dir)
+    if verdict is None:
+        # The completion gate already refuses a review that published no single
+        # verdict. Recording an unreadable round would put a decision nobody made
+        # into the ledger the next round is measured against.
+        return None
+    meta = read_json(runner_meta_path(task_dir))
+    run_key = (
+        meta.get("write_scope_run_id")
+        or meta.get("child_started_at")
+        or admission.get("evaluated_at")
+        or utc_now()
+    )
+    entry = review_admission.record_review_round(
+        task_dir,
+        event_id=f"standard-review:{run_key}",
+        decision={"decision": verdict},
+        review_provider=runner,
+    )
+    append_trace(
+        task_dir,
+        f"Recorded review round {entry['round']} from the {runner} reviewer's "
+        f"published verdict `{verdict}`.",
+    )
+    if entry.get("warning"):
+        append_trace(task_dir, entry["warning"])
+    return entry
+
+
 def finalize_child_lifecycle(
     task_dir: Path,
     workflow: str,
@@ -2023,6 +2093,10 @@ def finalize_child_lifecycle(
             )
             append_trace(task_dir, f"Application standard-run classification failed: {exc}")
             return
+        # The run reached its own end rather than a quota pause, so if it was the
+        # review, its verdict becomes a round before anything asks whether this
+        # task has an approval.
+        record_standard_review_round(task_dir, runner)
 
     task_state = read_json(status_path(task_dir)).get("state")
     if task_state in {"completed", "failed", "blocked"}:
@@ -2221,10 +2295,20 @@ def cmd_run_child(args: argparse.Namespace) -> None:
     # recorded here. A `dev-pipeline` run's phases come from the events its
     # owner emits, and inventing one now would contradict the first of them.
     if args.workflow == "standard":
+        # What this launch was admitted as, not what the contract still asks of
+        # the task: a review leaves `require_review_verdict` in the contract for
+        # good, so reading the contract would turn every later author run into
+        # another review and erase the rework the review asked for.
         entering = task_phases.phase_for_standard_start(
             task_dir,
-            require_review_verdict=bool(getattr(args, "require_review_verdict", False))
-            or enforced_review_verdict(load_task_contract(task_dir)) is not None,
+            require_review_verdict=review_admission.launch_is_review(task_dir)
+            or (
+                not review_admission.recorded_admission(task_dir)
+                and (
+                    bool(getattr(args, "require_review_verdict", False))
+                    or enforced_review_verdict(load_task_contract(task_dir)) is not None
+                )
+            ),
         )
         task_phases.record_phase(
             task_dir,

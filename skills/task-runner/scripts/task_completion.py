@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 try:
+    from . import review_admission, task_phases
     from .application_adapter import (
         ApplicationAdapterError,
         CompletionRequestV1,
@@ -24,6 +25,8 @@ try:
         unsatisfied_review_verdict,
     )
 except ImportError:
+    import review_admission
+    import task_phases
     from application_adapter import (
         ApplicationAdapterError,
         CompletionRequestV1,
@@ -241,6 +244,23 @@ def completion_ready(
     verdict_problems = unsatisfied_review_verdict(contract, task_dir)
     if verdict_problems:
         return False, f"required review verdict is not established: {'; '.join(verdict_problems)}"
+
+    # The reviewer bound before the author started has to have approved what is
+    # here now. Without this, review admission would be a record of an intention:
+    # the launcher would name an independent reviewer and the author could finish
+    # and be accepted without that reviewer ever seeing the work. There is no
+    # round budget in it -- an unapproved round refuses this acceptance and
+    # authorizes the next round, which is the loop the task is supposed to have.
+    review_status = review_admission.independent_review_status(
+        task_dir, author_phases=task_phases.author_work_entries(task_dir)
+    )
+    if review_status["required"] and not review_status["satisfied"]:
+        return False, (
+            "the independent review this task was admitted with is not established: "
+            + str(review_status["reason"])
+            + ". "
+            + str(review_status.get("action", ""))
+        )
 
     # The delivered-candidate policy-family review is a dev-pipeline surface.
     # Standard tasks use their authored live-evidence and verdict gates and do

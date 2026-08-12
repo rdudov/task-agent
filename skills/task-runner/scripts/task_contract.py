@@ -55,6 +55,29 @@ def enforced_review_verdict(contract: dict[str, Any]) -> dict[str, Any] | None:
     return {"path": path, "allowed": normalized}
 
 
+def published_review_verdict(task_dir: Path, path: str = "findings.md") -> str | None:
+    """The one canonical verdict a reviewer published, or None if it is not one.
+
+    One parser for the verdict line: the completion gate asks whether it is
+    satisfied, and the round ledger asks what it said. Two readers of the same
+    line could disagree about what a reviewer decided, which is the last thing
+    that should be ambiguous.
+    """
+    file_path = task_dir / path
+    if not file_path.is_file():
+        return None
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    matches = re.findall(
+        r"^Verdict:[ \t]*(?:\*\*)?([a-z]+)(?:\*\*)?[ \t]*\r?$",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    return matches[0].lower() if len(matches) == 1 else None
+
+
 def unsatisfied_review_verdict(contract: dict[str, Any], task_dir: Path) -> list[str]:
     """Require the reviewer's own findings file and one canonical verdict line."""
     requirement = enforced_review_verdict(contract)
@@ -68,19 +91,14 @@ def unsatisfied_review_verdict(contract: dict[str, Any], task_dir: Path) -> list
     if not path.is_file():
         return [f"{requirement['path']} is absent"]
     try:
-        text = path.read_text(encoding="utf-8")
+        path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         return [f"{requirement['path']} is unreadable: {exc}"]
-    matches = re.findall(
-        r"^Verdict:[ \t]*(?:\*\*)?([a-z]+)(?:\*\*)?[ \t]*\r?$",
-        text,
-        flags=re.IGNORECASE | re.MULTILINE,
-    )
-    if len(matches) != 1:
+    verdict = published_review_verdict(task_dir, requirement["path"])
+    if verdict is None:
         return [
             f"{requirement['path']} must contain exactly one `Verdict: approved|rework` line"
         ]
-    verdict = matches[0].lower()
     if verdict not in requirement["allowed"]:
         allowed = "|".join(requirement["allowed"])
         return [f"{requirement['path']} verdict is {verdict!r}, not one of {allowed}"]

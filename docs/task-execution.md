@@ -44,11 +44,12 @@ write modes perform an exclusive random-file create/delete probe before launch
 and record the grant. Cursor retains task-agent as its primary workspace. In
 the dev-pipeline workflow the same path is the core owner's target repository.
 
-An installation can bind automatic review/rework by passing both
+An installation binds automatic review/rework by passing both
 `--assurance-config` and `--review-packet` to the ordinary task-runner `start`
 entrypoint. Both paths survive detached watcher construction and reach the same
-`dev-pipeline owner` process. Task-agent treats them as opaque installation
-policy and never selects or substitutes a reviewer itself.
+`dev-pipeline owner` process. Task-agent never selects or substitutes a reviewer
+itself; it does refuse a material dev-pipeline launch whose assurance would
+review with a family other than the one admission bound, or with nobody at all.
 
 A launch is also admitted against the review it will need. Material work — a
 write grant, a non-read-only sandbox, a delivery workflow, a gated contract,
@@ -57,7 +58,10 @@ starts unless an independent provider family can be bound as its reviewer, and
 the author is never bound to review itself. The narrow exception is a launch
 declared `review_policy.work_class: "read_only_lookup"` in `task_contract.json`
 that observably does none of those things; a declaration any observation
-contradicts is a mislabel and the launch stays reviewable. Nothing here counts
+contradicts is a mislabel and the launch stays reviewable. The bound reviewer
+then governs the run and its acceptance rather than only being recorded: the
+work is not accepted as complete until that family has approved what is there
+now. Nothing here counts
 rework rounds — review and rework are phases of one number, continued until the
 work is accepted. `skills/task-runner/SKILL.md` owns the rules, the record
 format, and the repeated-finding quality warning.
@@ -92,9 +96,29 @@ already been through, so both present the same vocabulary to a reader.
 `phases.json` holds the current phase and an append-only history with the cause
 of each transition. `task_engine.py phases TASK` prints it, and
 `task_engine.py state TASK` returns it alongside identity, completion readiness,
-actuality and supervision in one JSON document — the surface a downstream
+actuality, supervision, and the state of the independent review the launch was
+admitted with, in one JSON document — the surface a downstream
 consumer uses instead of importing internals. `skills/task-runner/SKILL.md` owns
 the vocabulary, the event mappings and the actuality threshold.
+
+The review phase is not optional for material work. The launcher binds an
+independent provider family before the author starts, and that binding then
+decides both how the run is reviewed and whether it can be accepted: a
+`dev-pipeline` launch must hand the same family to its assurance configuration,
+a launch asked for a verdict must *be* that family, and completion is refused
+until that family's latest recorded round approved the work as it now stands.
+A material `standard` author run therefore ends `blocked` until the review runs
+as a phase of the same number:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
+  --runner codex --require-review-verdict
+```
+
+Rounds are appended to `reviews/rounds.jsonl` without any ceiling, and the
+bindings to `reviews/admissions.jsonl`. An unapproved round refuses acceptance
+and authorizes the next round; nothing counts down, in this project or in the
+dev-pipeline revision it pins.
 
 ## Dev-Pipeline Workflow
 
@@ -107,7 +131,7 @@ the vocabulary, the event mappings and the actuality threshold.
 
 The runner decides nothing about the pipeline itself. `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration: it renders the owner instruction from `task.md`, calls the public CLI, validates the neutral lifecycle events the core emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. The core interprets owner-runtime behavior; the adapter only projects what the core reports.
 
-The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed; a validated quota-wait event is a durable pause and is not rewritten as that failure. Standard and dev-pipeline finalizers share the durable status, plan, live-evidence, and explicit-verdict checks, even when the child wrote `completed` itself. Enforced policy families additionally need an approved digest-bound review for dev-pipeline; standard tasks do not manufacture that profile-specific review surface. That reviewer decides only the two prose policy families against the exact candidate. Live-evidence gates remain owned by the completion predicate, so a pre-terminal policy reviewer neither requires a future delivery/completion receipt nor converts its honest pending state into a policy-family failure.
+The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed; a validated quota-wait event is a durable pause and is not rewritten as that failure. Standard and dev-pipeline finalizers share the durable status, plan, live-evidence, explicit-verdict, and admitted-independent-review checks, even when the child wrote `completed` itself. Enforced policy families additionally need an approved digest-bound review for dev-pipeline; standard tasks do not manufacture that profile-specific review surface. That reviewer decides only the two prose policy families against the exact candidate. Live-evidence gates remain owned by the completion predicate, so a pre-terminal policy reviewer neither requires a future delivery/completion receipt nor converts its honest pending state into a policy-family failure.
 
 For a registered completion-preparation application, a precondition or
 transport refusal is projected with its original reason and an

@@ -23,7 +23,8 @@ It creates or updates:
 - `.runner/prompt.txt`
 - `.runner/runner.json`
 - `.runner/runner.log`
-- `.runner/review-admission.json`
+- `.runner/review-admission.json` for the current launch, and
+  `reviews/admissions.jsonl` for every admission this number has made
 - `reviews/rounds.jsonl` and `reviews/infrastructure-obligations.jsonl`, once a
   review round or a review outage happens
 
@@ -207,13 +208,15 @@ Startup and bookkeeping are not progress. "Preparing the task directory" tells a
 
 It supports `--runner codex` and `--runner claude`, because those are the owner runtimes the dev-pipeline core drives. `--operation start|resume|retry` chooses the lifecycle operation; a retry needs a new `--state-dir` and the previous one, so the earlier attempt stays immutable.
 
-An installation that requires automatic assurance supplies both
-`--assurance-config` and `--review-packet` to the normal `start` entrypoint.
-The runner preserves the two paths across the detached watcher boundary and the
-adapter forwards them to the same public `dev-pipeline owner` process. The
-installation chooses the assurance strategy and reviewer; task-agent does not
-invent either, and omission retains dev-pipeline's explicit unassured
-compatibility path.
+An installation supplies both `--assurance-config` and `--review-packet` to the
+normal `start` entrypoint. The runner preserves the two paths across the detached
+watcher boundary and the adapter forwards them to the same public
+`dev-pipeline owner` process. The installation chooses the assurance strategy and
+reviewer; task-agent does not invent either, but it does check that the reviewer
+chosen is the family review admission bound to the launch. Dev-pipeline's
+unassured path remains for a launch that review admission does not classify as
+material; a material launch without assurance is refused before the author
+starts, because nothing would ever ask its bound reviewer for a review.
 
 For a supported `task_runner.py stop`, the runner first asks the public core to
 bind `handoff request-stop` to the exact active review/rework lock. Only after
@@ -241,8 +244,9 @@ Projection is per-artifact:
 A clean subprocess exit is not a completion. Both profiles consume one durable
 completion decision: task YAML frontmatter is `completed`, `plan.md` has no
 unfinished markers, every required evidence gate's latest section records a
-passing result, any required reviewer verdict is unambiguous, and enforced
-policy families have an approved digest-bound review. A refused completion is
+passing result, any required reviewer verdict is unambiguous, the independent
+review the launch was admitted with has approved the work as it now stands, and
+enforced policy families have an approved digest-bound review. A refused completion is
 `blocked`; when the owner last published an incomplete bound, the record says
 only that the run ended after that published lower bound and does not invent a
 stopping point.
@@ -358,11 +362,50 @@ launch. It happens before the child is spawned, before the launch's application
 policy is prepared, and before Git write admission — the point of it is that no
 author work is spent.
 
+**The binding is carried into the run, not just recorded.** A named reviewer
+that nothing consults is a note in a file, so the same decision governs both
+places where the work could still get out unreviewed:
+
+- a `dev-pipeline` launch is reviewed by the core, using the assurance the
+  installation supplies. The launcher checks that this assurance reviews with the
+  family it just bound: an assurance naming another family, an assurance naming
+  no reviewer, or a material launch carrying no assurance at all is refused, with
+  `assurance_binding` on the decision saying which. There is no unassured path
+  for material dev-pipeline work.
+- a launch asked for a verdict (`--require-review-verdict`) *is* the review. It
+  is admitted as `work_class: review`, and it has to be the family this number
+  was promised: the author's own family is refused as self-review, and a third
+  family is refused as not the reviewer that was bound. A review whose subject is
+  another task number has no binding here to contradict, and is left to whoever
+  owns that pairing.
+
+**Acceptance is bound to it too.** `independent_review_status` answers, from this
+number's own append-only ledgers, whether the work as it now stands carries the
+approval it was admitted with: the last recorded round approved, by a family that
+is not the author's, with no author phase entered since. The shared completion
+decision refuses otherwise, naming the exact command that would obtain the
+review. So a material standard launch can no longer finish and be accepted
+without its reviewer ever seeing it — the author run ends `blocked`, waiting for
+a review phase of the same number:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
+  --runner codex --require-review-verdict
+```
+
+A standard review's decision reaches the ledger from the one canonical `Verdict:`
+line its contract already requires; finding-level repeat detection needs the
+structured findings only a dev-pipeline decision artifact carries.
+
 There is no cap on rework rounds. Review and rework are phases of one task
 number, and the runner has nothing that counts down: `rework_rounds` is recorded
-as `unlimited` for exactly that reason. A technical limit inside one provider
-attempt may end a *process*; continuing the same goal after it needs no user
-permission.
+as `unlimited` for exactly that reason. An unapproved round refuses this
+acceptance and authorizes the next round; it never says "no more". A technical
+limit inside one provider attempt may end a *process*; continuing the same goal
+after it needs no user permission. For the same reason the pinned dev-pipeline
+revision is one with no review-round limit of its own — a dependency that stops
+at a count and asks the user whether to continue would reintroduce the budget
+this project does not have.
 
 What the round ledger at `reviews/rounds.jsonl` is for is quality, not budget.
 Each reviewer decision the dev-pipeline adapter projects is appended with the

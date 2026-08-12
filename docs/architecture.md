@@ -189,10 +189,21 @@ as recorded in the task, because a gate nobody hears is indistinguishable from a
 launch that never happened. The exception is a structurally declared read-only lookup that
 observation does not contradict. A defect in the review machinery is filed as its
 own task through the task-number owner, so the task that hit it keeps its scope
-and waits rather than absorbing an outage. There is no round budget: rework and
-review repeat under one number until the work is accepted, and a demonstrated
+and waits rather than absorbing an outage.
+
+The pair bound at launch is then the pair that runs and the pair that accepts.
+A `dev-pipeline` launch is refused unless the assurance it will hand the core
+reviews with that same family, and a launch asked for a verdict is refused
+unless it is that family — the author's own never stands in for it. The shared
+completion decision refuses acceptance until the bound reviewer's latest round
+approved the work as it now stands, which is what stops a material launch from
+finishing unreviewed and stops an approval from surviving the rework that
+replaced what was approved. There is no round budget: rework and
+review repeat under one number until the work is accepted, an unapproved round
+refuses acceptance and authorizes another round, and a demonstrated
 finding that comes back is reported as an execution-quality signal without
-stopping anything.
+stopping anything. The dev-pipeline revision this project pins is one with no
+review-round limit, so the dependency cannot reintroduce the budget either.
 
 **One writer per repository.** A write-mode child is admitted to a Git repository
 through one repository-locked check-and-claim operation. Unknown PID visibility
