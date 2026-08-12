@@ -101,7 +101,13 @@ def try_send_pipeline_stop_message(
     artifact_paths: list[Path] | None = None,
     destination: str | None = None,
     application: str | None = None,
+    workflow: str = "standard",
 ) -> tuple[bool, str]:
+    """Deliver a stop message, labelled with the workflow it stopped.
+
+    An installation may route or audit by `workflow`, and nothing in the message
+    text tells it which one this was. Only the caller knows, so it says.
+    """
     text = format_pipeline_stop_message(task_dir, summary, requested_action, artifact_paths)
     if application is None:
         try:
@@ -116,7 +122,7 @@ def try_send_pipeline_stop_message(
         ApplicationEventV1(
             task_dir=task_dir,
             kind="pipeline_stopped",
-            workflow="standard",
+            workflow=workflow,
             payload={"message": text},
             destination=destination,
         )

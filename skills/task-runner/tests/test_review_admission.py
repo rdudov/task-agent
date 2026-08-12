@@ -372,7 +372,9 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
         self.addCleanup(sys.modules.pop, module.__name__, None)
         return f"{module.__name__}:adapter"
 
-    def _refuse(self, adapter: _RecordingTransport, root: str) -> tuple[Path, str]:
+    def _refuse(
+        self, adapter: _RecordingTransport, root: str, workflow: str = "dev-pipeline"
+    ) -> tuple[Path, str]:
         task_dir = _workspace_task(root)
         args = argparse.Namespace(
             task_dir=str(task_dir),
@@ -380,7 +382,7 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
             # Naming the author's own family refuses whatever is installed on
             # the host running this test.
             reviewer_runner="claude",
-            workflow="dev-pipeline",
+            workflow=workflow,
             model=None,
             sandbox_mode=None,
             repo=None,
@@ -410,6 +412,15 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
         self.assertEqual(status["state"], "blocked")
         self.assertTrue(status["review_admission"]["notification"]["delivered"])
         self.assertIn("Delivered the review-admission refusal", trace)
+
+    def test_the_delivered_event_carries_the_workflow_that_was_refused(self) -> None:
+        """An adapter that routes or audits by workflow must not be misinformed."""
+        for workflow in ("dev-pipeline", "standard"):
+            with self.subTest(workflow=workflow):
+                adapter = _RecordingTransport()
+                with tempfile.TemporaryDirectory() as raw:
+                    self._refuse(adapter, raw, workflow=workflow)
+                self.assertEqual([event.workflow for event in adapter.events], [workflow])
 
     def test_a_broken_transport_does_not_turn_a_refusal_into_a_launch(self) -> None:
         adapter = _RecordingTransport(fail=True)

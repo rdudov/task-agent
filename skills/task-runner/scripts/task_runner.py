@@ -1644,6 +1644,7 @@ def report_review_admission_refusal(
             artifact_paths=[status_path(task_dir), trace_path(task_dir)],
             destination=getattr(args, "destination", None),
             application=getattr(args, "application", None),
+            workflow=args.workflow,
         )
     except Exception as exc:  # a failed transport must not hide the refusal
         delivered, detail = False, f"delivery raised {type(exc).__name__}: {exc}"
