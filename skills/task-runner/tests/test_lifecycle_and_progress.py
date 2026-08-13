@@ -266,6 +266,12 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("progress.json", prompt)
         self.assertIn("never invent a total", prompt)
 
+    def test_prompt_carries_the_no_code_first_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = self._prompt(tmp)
+        self.assertIn("Before writing code, try in order", prompt)
+        self.assertIn("only then add the smallest necessary code", prompt)
+
     def test_prompt_has_no_hardcoded_absolute_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt = self._prompt(tmp)

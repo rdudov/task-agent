@@ -9,6 +9,11 @@ This skill launches a child CLI agent to execute a task from its task directory.
 
 Use the standard single-child workflow by default. Use the dev-pipeline workflow when a task should run through the evidence-gated dev-pipeline lifecycle instead.
 
+Before implementation, use the canonical no-code-first order: do nothing;
+remove or disable; configure or reuse; simplify; only then add the smallest
+necessary code and state why the observed gap required it. Independent review
+treats avoidable code or needless complexity as a defect.
+
 ## Artifacts
 
 The runner expects:

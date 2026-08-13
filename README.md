@@ -67,6 +67,10 @@ projected as a durable refusal instead of aborting projection, allowing an
 installation to correct any terminal statement already sent. `TASK_AGENT_ROOT`
 selects the installation workspace
 for relative task paths; absolute task paths need no workspace convention.
+Consumer runtimes and services should use this exact reviewed revision and a
+lock file. Editable installs are reserved for isolated contributor virtual
+environments where source edits are intentionally live; they must not back a
+shared runtime or service.
 
 Create a task:
 
@@ -181,12 +185,17 @@ last it wrote.
 The workflow dependency is the separate public repository
 [`rdudov/dev-pipeline`](https://github.com/rdudov/dev-pipeline). It is pinned in
 `requirements.txt` and `requirements.lock`, so the Quick Start installs the
-tested revision. To develop both repositories locally instead, replace it in
-the active virtual environment with an editable checkout:
+tested revision. To develop both repositories locally instead, replace it only
+in an isolated contributor virtual environment with an editable checkout:
 
 ```bash
 .venv/bin/pip install -e /path/to/dev-pipeline
 ```
+
+Both standard-child and dev-pipeline-owner instructions apply the same
+no-code-first order: do nothing, remove/disable, configure/reuse, simplify,
+then add the smallest necessary code and justify why it is needed. Independent
+review applies the corresponding avoidable-complexity criterion.
 
 The pinned revision includes the core's provider-neutral assurance contract and
 review events, and imposes no limit on review rounds: rework and review repeat

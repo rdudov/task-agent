@@ -6,6 +6,12 @@ This repository contains a generic assistant workspace built around autonomous a
 
 Any substantial change to the agent engine must update documentation for both agents and humans in the same change.
 
+Before implementation or architecture review, use this order: do nothing;
+remove or disable unnecessary behavior; configure or reuse the existing path;
+simplify the existing implementation; only then write the smallest necessary
+code. New code carries the burden of proof. A reviewer treats avoidable code or
+a more complex mechanism as a defect even when tests pass.
+
 A substantial change includes:
 
 - task lifecycle or task artifact structure

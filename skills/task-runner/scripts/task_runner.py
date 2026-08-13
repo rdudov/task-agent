@@ -308,6 +308,9 @@ Before doing substantial work:
 7. Append a short note to `{trace_md}` describing what you are doing.
 
 While working:
+- Before writing code, try in order: do nothing; remove or disable; configure or
+  reuse; simplify; only then add the smallest necessary code. Briefly record why
+  the observed gap could not be closed by an earlier option.
 - Keep `{trace_md}` updated with concise chronological notes.
 - Keep `{status_json}` updated with `state`, `current_step`, and `updated_at`.
 - For a long run, publish substantive live progress in `{progress_json}`: a `schema_version: 1`

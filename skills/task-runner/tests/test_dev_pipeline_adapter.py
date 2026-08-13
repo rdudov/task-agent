@@ -890,6 +890,8 @@ class CoreCommandTests(unittest.TestCase):
         self.assertIn("# Example", text)
         self.assertIn("schema_version: 1", text)
         self.assertIn("Never infer or invent a total", text)
+        self.assertIn("Before writing code, use this order", text)
+        self.assertIn("only then add the smallest necessary code", text)
 
     def test_the_adapter_accepts_only_the_versioned_delivery_configuration(self) -> None:
         task_dir = make_task(self.tmp)
