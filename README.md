@@ -50,6 +50,7 @@ git clone https://github.com/rdudov/task-agent.git
 cd task-agent
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
+.venv/bin/pip install -e .
 ```
 
 The repository is also a Python distribution. An application can bind the
