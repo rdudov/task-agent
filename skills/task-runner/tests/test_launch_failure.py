@@ -72,10 +72,10 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
         env = dict(os.environ)
         shadow = Path(tempfile.mkdtemp(prefix="task-agent-shadow-"))
         self.addCleanup(shutil.rmtree, shadow, ignore_errors=True)
-        env["PATH"] = shadow_path_without(shadow, "bwrap", "socat")
         reviewer_stub = shadow / "codex"
         reviewer_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         reviewer_stub.chmod(0o755)
+        env["PATH"] = shadow_path_without(shadow, "bwrap", "socat")
         completed = subprocess.run(
             [
                 sys.executable,
