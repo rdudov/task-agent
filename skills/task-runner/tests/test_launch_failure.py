@@ -73,6 +73,9 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
         shadow = Path(tempfile.mkdtemp(prefix="task-agent-shadow-"))
         self.addCleanup(shutil.rmtree, shadow, ignore_errors=True)
         env["PATH"] = shadow_path_without(shadow, "bwrap", "socat")
+        reviewer_stub = shadow / "codex"
+        reviewer_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        reviewer_stub.chmod(0o755)
         completed = subprocess.run(
             [
                 sys.executable,
@@ -134,7 +137,9 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
             def wait(self, timeout=None):
                 return 1
 
-        with mock.patch.object(module.subprocess, "Popen", return_value=FakeProcess()):
+        with mock.patch.object(
+            module.review_admission, "reviewer_available", return_value=True
+        ), mock.patch.object(module.subprocess, "Popen", return_value=FakeProcess()):
             with self.assertRaises(SystemExit) as caught:
                 module.cmd_start(args)
 
@@ -163,6 +168,8 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
         )
 
         with mock.patch.object(
+            module.review_admission, "reviewer_available", return_value=True
+        ), mock.patch.object(
             module.subprocess, "Popen", side_effect=OSError("cannot fork")
         ):
             with self.assertRaises(SystemExit) as caught:
@@ -198,6 +205,8 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
         )
 
         with mock.patch.object(
+            module.review_admission, "reviewer_available", return_value=True
+        ), mock.patch.object(
             module.subprocess, "Popen", side_effect=OSError("permission denied")
         ):
             with self.assertRaises(SystemExit):
@@ -231,7 +240,9 @@ class ClaudePreflightLifecycleTests(unittest.TestCase):
             module.write_status(self.created, "completed", "already done")
             raise OSError("cannot fork")
 
-        with mock.patch.object(module.subprocess, "Popen", side_effect=keep_completed):
+        with mock.patch.object(
+            module.review_admission, "reviewer_available", return_value=True
+        ), mock.patch.object(module.subprocess, "Popen", side_effect=keep_completed):
             with self.assertRaises(SystemExit):
                 module.cmd_start(args)
 

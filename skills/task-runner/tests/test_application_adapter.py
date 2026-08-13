@@ -162,6 +162,8 @@ class ApplicationAdapterTests(unittest.TestCase):
                 task_runner, "watcher_supervision_boundary", return_value=([], {})
             ), mock.patch.object(
                 task_runner.subprocess, "Popen", WatcherProcess
+            ), mock.patch.object(
+                task_runner.review_admission, "reviewer_available", return_value=True
             ), contextlib.redirect_stdout(io.StringIO()):
                 task_runner.cmd_start(args)
 

@@ -121,6 +121,9 @@ class DetachedWatcherTests(unittest.TestCase):
         stub_dir = Path(tmp) / "bin"
         stub_dir.mkdir()
         stub = stub_dir / "claude"
+        reviewer_stub = stub_dir / "codex"
+        reviewer_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        reviewer_stub.chmod(0o755)
 
         environment = dict(os.environ)
         environment["PATH"] = f"{stub_dir}{os.pathsep}{environment['PATH']}"
