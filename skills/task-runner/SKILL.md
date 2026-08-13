@@ -67,18 +67,23 @@ Access level is expressed once, through `--sandbox-mode`, and mapped per runner:
 
 The workspace root is the directory a full-access child may reach. It defaults to the parent of this checkout and is overridden with `TASK_AGENT_WORKSPACE_ROOT`. Nothing else in the runner hardcodes an absolute path.
 
-Claude children keep the repository as their working directory so `CLAUDE.md`, and through it `AGENTS.md` and the always-on rules, load automatically.
+Workspace-write and full-access Claude children keep the repository as their
+working directory. Read-only reviews instead use their task notebook as cwd;
+Claude discovers applicable `CLAUDE.md`/`AGENTS.md` files from that nested path,
+while the prompt carries the reviewer role and subject explicitly.
 
 Claude's restricted modes depend on its native OS sandbox, which is Linux-specific and needs `bubblewrap` and `socat`. The launcher checks both before starting and **fails closed** when they are missing or the host is not Linux; it never downgrades a requested boundary, because that would make task artifacts claim a confinement that never applied. On such a host, either run the child through Linux or choose `danger-full-access` deliberately.
 
 Read-only review protects the subject, not the reviewer's notebook. Codex maps
-the mode to a workspace-write sandbox rooted at the task directory; Claude uses
-`dontAsk` and an explicit `allowWrite` containing only the task directory and
-`.state/`, then wraps the CLI in a bubblewrap namespace whose host mount is
-read-only and whose only writable rebinds are the notebook, task index, and
-Claude-owned runtime storage. Neither receives native file-writing access to the
-subject. This lets the reviewer search, run tests, write `findings.md`, and close
-its own task while subject-write probes still fail. An admitted review prompt
+the mode to a workspace-write sandbox rooted at the task directory. Claude
+disables its nested sandbox, exposes Read/Grep/Glob/Web/Bash/Write/Edit with
+non-interactive permission bypass, and relies on an outer bubblewrap namespace
+whose host mount is read-only; only the notebook, task index, temporary space,
+and Claude-owned runtime storage are rebound writable. The filesystem boundary
+does not restrict network access, host-process visibility, or signals. It lets
+the reviewer search, write `findings.md`, close its own task, and run tests that
+do not write live host state; such tests must redirect their runtime state to
+the notebook or `/tmp`. An admitted review prompt
 names the reviewer role, subject, author, repository, and required verdict so the
 child reviews rather than re-executing the author task.
 
