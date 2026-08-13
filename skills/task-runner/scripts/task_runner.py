@@ -390,6 +390,16 @@ Before finishing:
 """
 
 
+def review_prompt_identity(
+    task_dir: Path, review_record: dict, required: bool
+) -> tuple[str | None, str | None]:
+    """Name the same-number subject and its admitted author in review prompts."""
+    pair = review_record.get("pair")
+    if not isinstance(pair, dict):
+        pair = {}
+    return (str(task_dir) if required else None, pair.get("author_runner"))
+
+
 def codex_workdir(sandbox_mode: str | None, notebook: Path | None = None) -> Path:
     if sandbox_mode == 'danger-full-access':
         return workspace_root()
@@ -1826,14 +1836,14 @@ def cmd_start(args: argparse.Namespace) -> None:
     )
     if args.workflow == "standard":
         repository = access_directories[0] if access_directories else None
-        admitted_pair = review_record.get("pair")
-        if not isinstance(admitted_pair, dict):
-            admitted_pair = {}
+        review_subject, review_author = review_prompt_identity(
+            task_dir, review_record, bool(getattr(args, "require_review_verdict", False))
+        )
         prompt = build_child_prompt(
             task_dir,
             repository=repository,
-            review_subject=str(task_dir) if getattr(args, "require_review_verdict", False) else None,
-            review_subject_author=admitted_pair.get("author_runner"),
+            review_subject=review_subject,
+            review_subject_author=review_author,
             require_review_verdict=bool(getattr(args, "require_review_verdict", False)),
         )
         runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")

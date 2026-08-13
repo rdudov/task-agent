@@ -292,6 +292,14 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("Verdict: approved", prompt)
         self.assertIn("do not re-execute or repair", prompt)
 
+    def test_review_prompt_identity_reads_author_from_admitted_pair(self) -> None:
+        task_dir = Path("/tmp/009-subject")
+        subject, author = task_runner.review_prompt_identity(
+            task_dir, {"pair": {"author_runner": "codex"}}, True
+        )
+        self.assertEqual(subject, str(task_dir))
+        self.assertEqual(author, "codex")
+
     def test_prompt_has_no_hardcoded_absolute_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt = self._prompt(tmp)
