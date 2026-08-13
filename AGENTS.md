@@ -107,7 +107,10 @@ Files the user explicitly requested are a separate, user-facing class of output.
   launch that started an author binds the pair: the decision is made before any
   author work can be spent and committed where the child is spawned, after every
   preparation that can still refuse, and a refusal arriving past that point
-  withdraws the binding and restores the pair the number already had.
+  withdraws the binding and restores the pair the number already had. That
+  commitment is durable and outstanding until an author is observed to start, so
+  whichever process reaches the refusal withdraws it, and a launch whose
+  processes are all gone binds nothing without anyone acting.
 - Git write admission is one common-directory-locked check-and-claim operation;
   only provable abandoned no-ops are durably settled before a successor enters,
   unknown liveness refuses a foreign writer, abandoned divergent work remains a

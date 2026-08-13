@@ -37,15 +37,19 @@ carried through to the two places that can still let the work out unreviewed:
   approval from that family; the shared completion owner refuses a standard
   completion that does not.
 
-Deciding the pair and binding it to the number are deliberately two acts.
+Deciding the pair and binding it to the number are deliberately separate acts.
 `admit_launch` decides and refuses; `commit_admission` binds, and the launcher
 calls it where the author actually starts, after every preparation that can
-still refuse. A refusal that arrives later still `annul_admission`s the binding.
-The rule this expresses is one sentence: only a launch that started an author
-says who authored this number's work. A launch that ran nothing -- a dry run, an
-application policy that refused, a watcher that never spawned -- would otherwise
-be found as the latest author, which reverses which family may review the work
-and lets the author's own family in as its reviewer.
+still refuse; `confirm_admission` records that the author did start, and until
+it does the commitment is outstanding and binds nothing. A refusal that arrives
+later still `annul_admission`s the binding, and the commitment it withdraws is
+durable rather than held by the launching process, because the failures that end
+such a launch routinely outlive that process. The rule all of this expresses is
+one sentence: only a launch that started an author says who authored this
+number's work. A launch that ran nothing -- a dry run, an application policy that
+refused, a watcher that never spawned, a parent that died before it spawned one
+-- would otherwise be found as the latest author, which reverses which family may
+review the work and lets the author's own family in as its reviewer.
 
 What this module deliberately does not have is a limit. Review and rework are
 phases of one task (`task_phases`), and `record_review_round` counts rounds
@@ -85,6 +89,16 @@ ADMISSIONS_LEDGER = "reviews/admissions.jsonl"
 # launch it names never started an author, so the pair it recorded never became
 # this number's binding and the pair before it still is.
 ANNULLED_ADMISSION = "annulled_admission"
+
+# A binding that has been committed and whose author has not been observed to
+# start yet. It is a file rather than a variable in the launching process
+# because the processes that can end such a launch outlive that process: the
+# detached watcher fails before its child long after the parent that committed
+# the binding is gone, and a parent killed between the commit and the spawn
+# leaves nobody at all. It carries the exact preceding record, so a withdrawal
+# restores what was there rather than approximating it, and the launch token, so
+# only the launch that made the commitment can settle it.
+ADMISSION_COMMITMENT = ".runner/review-admission-commitment.json"
 
 # Provider families. Two runners of the same family are the same reviewer for
 # admission purposes: independence is about the provider that judges the work,
@@ -408,6 +422,14 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
 
     A withdrawn admission is skipped: its launch was refused before it started
     an author, so the pair it named never governed any work in this number.
+
+    An admission whose commitment is still outstanding is skipped for the same
+    reason before anybody withdraws it. Withdrawal needs a process to perform it,
+    and the launches that most need withdrawing are the ones whose processes are
+    gone -- a parent killed between committing and spawning the watcher leaves no
+    one to call anything. Reading the commitment instead means the binding of a
+    launch that started no author is never the answer here, whether or not
+    anything survived to say so.
     """
     entries = admissions(task_dir)
     withdrawn = {
@@ -415,6 +437,9 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
         for entry in entries
         if entry.get("kind") == ANNULLED_ADMISSION and entry.get("annuls")
     }
+    outstanding = admission_commitment(task_dir)
+    if outstanding:
+        withdrawn.add(outstanding.get("admission_id"))
     for entry in reversed(entries):
         if entry.get("kind") == ANNULLED_ADMISSION:
             continue
@@ -427,6 +452,8 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
         if work_class == MATERIAL and entry.get("decision") == "admitted":
             return entry
     current = recorded_admission(task_dir)
+    if current.get("admission_id") in withdrawn:
+        return None
     classification = current.get("classification")
     work_class = (
         classification.get("work_class") if isinstance(classification, dict) else None
@@ -899,7 +926,9 @@ def admit_launch(
     return record
 
 
-def commit_admission(task_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+def commit_admission(
+    task_dir: Path, record: dict[str, Any], *, launch_token: str | None = None
+) -> dict[str, Any]:
     """Bind this launch to the number, and hand back what withdraws it again.
 
     This is the only writer of the binding, and the caller calls it where the
@@ -910,39 +939,114 @@ def commit_admission(task_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
     number's work: that reverses which family may review it and admits the
     author's own family in place of the reviewer that was bound.
 
-    The receipt carries the exact preceding state of the current-launch record,
-    so `annul_admission` can restore it rather than approximate it.
+    The commitment is written before the binding it withdraws, and it is written
+    to the task rather than kept by the caller. A receipt that lives only in the
+    committing process is a receipt every failure that outlives that process
+    cannot use: the detached watcher refusing before its child, and the parent
+    killed between the commit and the spawn, are exactly the launches that start
+    no author. Until `confirm_admission` records that an author did start, this
+    commitment is outstanding and `bound_author_admission` does not read the
+    binding it made -- so a launch nobody is left to withdraw still binds
+    nothing.
     """
     path = task_dir / ADMISSION_RECORD
     receipt = {
+        "schema_version": SCHEMA_VERSION,
         "admission_id": record.get("admission_id"),
+        "launch_token": launch_token,
         "committed_at": utc_now(),
         "previous_record_existed": path.exists(),
         "previous_record": _read_json(path) or None,
     }
+    _write_json(task_dir / ADMISSION_COMMITMENT, receipt)
     _write_json(path, record)
     _append_jsonl(task_dir / ADMISSIONS_LEDGER, record)
     return receipt
 
 
+def admission_commitment(task_dir: Path) -> dict[str, Any] | None:
+    """The committed binding whose author has not been observed to start.
+
+    Its presence is the whole difference between a launch that bound this number
+    and a launch that only got as far as saying it would.
+    """
+    receipt = _read_json(task_dir / ADMISSION_COMMITMENT)
+    return receipt if receipt.get("admission_id") else None
+
+
+def _outstanding_commitment(
+    task_dir: Path,
+    receipt: dict[str, Any] | None,
+    launch_token: str | None,
+) -> dict[str, Any] | None:
+    """The outstanding commitment a caller is entitled to settle, if any.
+
+    A caller settles the launch it is part of and no other. An identity that
+    does not match the outstanding commitment means this launch's commitment was
+    already settled -- confirmed by an author that started, or withdrawn by
+    whichever process got there first -- and settling whatever is outstanding
+    now would be settling somebody else's launch.
+    """
+    commitment = admission_commitment(task_dir)
+    if commitment is None:
+        return None
+    if receipt and receipt.get("admission_id") != commitment.get("admission_id"):
+        return None
+    if launch_token is not None and commitment.get("launch_token") != launch_token:
+        return None
+    return commitment
+
+
+def confirm_admission(
+    task_dir: Path,
+    *,
+    receipt: dict[str, Any] | None = None,
+    launch_token: str | None = None,
+) -> dict[str, Any] | None:
+    """Record that this launch's author started, so its binding is final.
+
+    Called where the author process exists and nowhere else. From here the
+    binding is this number's, and no later failure withdraws it: the work the
+    author may already be writing has to keep the reviewer it was admitted with,
+    and handing that work back to the pair the number had before it would be the
+    same reversal from the other side.
+    """
+    commitment = _outstanding_commitment(task_dir, receipt, launch_token)
+    if commitment is None:
+        return None
+    (task_dir / ADMISSION_COMMITMENT).unlink(missing_ok=True)
+    return commitment
+
+
 def annul_admission(
-    task_dir: Path, receipt: dict[str, Any] | None, *, reason: str
+    task_dir: Path,
+    receipt: dict[str, Any] | None = None,
+    *,
+    reason: str,
+    launch_token: str | None = None,
 ) -> dict[str, Any] | None:
     """Withdraw a committed binding whose author never started after all.
 
     Some refusals live past the moment of commitment -- the watcher may fail to
-    spawn, and the child may fail before it runs -- and the binding they leave
-    behind is exactly as wrong as one committed too early: a launch that wrote
-    nothing would be this number's latest author. The ledger is append-only, so
-    the withdrawal is appended as its own fact, and the current-launch record is
-    put back to the byte state it had before the commit.
+    spawn, the watcher may refuse before its child, and the child may fail before
+    it runs -- and the binding they leave behind is exactly as wrong as one
+    committed too early: a launch that wrote nothing would be this number's
+    latest author. The ledger is append-only, so the withdrawal is appended as
+    its own fact, and the current-launch record is put back to the byte state it
+    had before the commit.
+
+    The commitment on disk decides, not the caller's copy of it: any process that
+    can still end this launch may withdraw it, and only one of them does. A
+    confirmed commitment is gone from disk, so a refusal arriving after the
+    author started withdraws nothing.
     """
-    if not receipt or not receipt.get("admission_id"):
+    commitment = _outstanding_commitment(task_dir, receipt, launch_token)
+    if commitment is None:
         return None
     entry = {
         "schema_version": SCHEMA_VERSION,
         "kind": ANNULLED_ADMISSION,
-        "annuls": receipt["admission_id"],
+        "annuls": commitment["admission_id"],
         "recorded_at": utc_now(),
         "reason": reason,
         "statement": (
@@ -953,11 +1057,15 @@ def annul_admission(
     }
     _append_jsonl(task_dir / ADMISSIONS_LEDGER, entry)
     path = task_dir / ADMISSION_RECORD
-    previous = receipt.get("previous_record")
+    previous = commitment.get("previous_record")
     if previous:
         _write_json(path, previous)
-    elif not receipt.get("previous_record_existed") and path.exists():
+    elif not commitment.get("previous_record_existed") and path.exists():
         path.unlink()
+    # Cleared last: while it is there the admission binds nothing, so a process
+    # that dies part way through a withdrawal leaves the same answer the
+    # withdrawal was going to give.
+    (task_dir / ADMISSION_COMMITMENT).unlink(missing_ok=True)
     return entry
 
 

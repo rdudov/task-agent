@@ -127,6 +127,14 @@ either never appends its binding or withdraws it with an `annulled_admission`
 entry, so the family that actually wrote the work stays the number's author and
 the reviewer bound to it stays the family that may review it.
 
+A committed binding is outstanding, in `.runner/review-admission-commitment.json`,
+until the process that spawns the child confirms that an author started. Any
+process that can still end the launch withdraws it — the parent through its own
+abort, the detached watcher through its pre-child failure, each settling only the
+launch token it belongs to — and while the commitment is outstanding the binding
+it made is not read as the number's binding, so a launch whose parent and watcher
+are both gone is answered correctly with nobody left to act.
+
 ## Dev-Pipeline Workflow
 
 `--workflow dev-pipeline` delegates a task to the standalone `dev-pipeline` CLI, which drives an evidence-gated Codex or Claude owner session against a target repository:

@@ -1897,11 +1897,17 @@ def cmd_start(args: argparse.Namespace) -> None:
         parent's backstop for when it could not.
 
         None of these started an author, so none of them may leave this number's
-        review binding behind either: the binding committed just above is
-        withdrawn, and the pair the number had before this launch stands.
+        review binding behind either: while the commitment made just above is
+        still outstanding it is withdrawn here, and the pair the number had
+        before this launch stands. The commitment is read from the task by launch
+        token rather than carried in this closure, because this process is not
+        the only one that can reach this outcome and may not be alive when it is
+        reached -- and because a child that did start has already ended the
+        commitment, so a refusal to read its startup record does not take the
+        binding away from work that exists.
         """
         withdrawn = review_admission.annul_admission(
-            task_dir, admission_receipt, reason=detail
+            task_dir, reason=detail, launch_token=launch_token
         )
         if withdrawn:
             append_trace(task_dir, withdrawn["statement"])
@@ -1933,11 +1939,16 @@ def cmd_start(args: argparse.Namespace) -> None:
     # the family that actually wrote the work review and close it.
     #
     # It is committed before the spawn rather than after the startup handshake
-    # because the watcher reads this record to decide which phase it enters. The
-    # refusals that live past this line -- a watcher that cannot be spawned, a
-    # watcher that refuses before its child, a startup record that never arrives
-    # -- all reach `abort_start`, which withdraws the binding again.
-    admission_receipt = review_admission.commit_admission(task_dir, review_record)
+    # because the watcher reads this record to decide which phase it enters, so
+    # the commitment is outstanding until an author is actually started: while it
+    # is, the binding it made is not this number's binding, and no process has to
+    # be alive for that to be the answer. The refusals that live past this line
+    # -- a watcher that cannot be spawned, a watcher that refuses before its
+    # child, a startup record that never arrives -- reach `abort_start` here or
+    # `report_launch_failure` in the watcher, and either withdraws it explicitly.
+    review_admission.commit_admission(
+        task_dir, review_record, launch_token=launch_token
+    )
 
     try:
         process = subprocess.Popen(
@@ -2226,7 +2237,25 @@ def report_launch_failure(task_dir: Path, args: argparse.Namespace, exc: Excepti
 
     Everything before the child exists shares this path, because a refusal that
     leaves the task reading `running` is worse than the refusal it reports.
+
+    This is the watcher's own end of the launch, and the watcher is supervised
+    independently of the parent that committed the review binding. Reaching here
+    means no author of this launch exists, so the binding is withdrawn before the
+    pending claim is released -- the parent may be gone, and releasing the claim
+    while a launch that started nobody is on record as this number's latest
+    author is precisely how the bound reviewer loses the work to the family that
+    wrote it. A launch token that does not match the outstanding commitment
+    withdraws nothing: this failure is then not the one that ended it.
     """
+    launch_token = getattr(args, "launch_token", None)
+    if launch_token is not None:
+        withdrawn = review_admission.annul_admission(
+            task_dir,
+            reason=f"the watcher failed before starting a child: {exc}",
+            launch_token=launch_token,
+        )
+        if withdrawn:
+            append_trace(task_dir, withdrawn["statement"])
     finish_runner_meta(
         task_dir,
         {
@@ -2405,6 +2434,13 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             "child_started_at": child_started_at,
         },
     )
+    # The author of this launch now exists, which is the only event that makes
+    # its committed pair this number's binding. It is recorded here, by the
+    # process that started the author, rather than at the parent's handshake:
+    # the parent may never read that handshake, and the work this child is
+    # already free to write must keep the reviewer it was admitted with.
+    if launch_token is not None:
+        review_admission.confirm_admission(task_dir, launch_token=launch_token)
     if direct_lock is not None:
         direct_lock.close()
     print(

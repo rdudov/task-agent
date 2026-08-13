@@ -23,8 +23,10 @@ It creates or updates:
 - `.runner/prompt.txt`
 - `.runner/runner.json`
 - `.runner/runner.log`
-- `.runner/review-admission.json` for the current launch, and
-  `reviews/admissions.jsonl` for every admission this number has made
+- `.runner/review-admission.json` for the current launch,
+  `.runner/review-admission-commitment.json` while a committed binding is waiting
+  for its author to start, and `reviews/admissions.jsonl` for every admission
+  this number has made
 - `reviews/rounds.jsonl` and `reviews/infrastructure-obligations.jsonl`, once a
   review round or a review outage happens
 
@@ -373,6 +375,21 @@ restore the previous record: the ledger is append-only, so a withdrawal is a fac
 added rather than history edited, and `bound_author_admission` skips what was
 withdrawn.
 
+**The withdrawal outlives the process that committed.** The commitment is written
+to `.runner/review-admission-commitment.json` with the launch token, not kept in
+the launching process, because the failures that end such a launch are routinely
+reached without it: the detached watcher is supervised independently and can
+refuse before its child long after the parent is gone, and a parent killed
+between committing and spawning leaves no process at all. So the parent's
+`abort_start` and the watcher's `report_launch_failure` both withdraw — whichever
+gets there, once, for its own launch token, and before the pending launch claim
+is released, since releasing it is what makes the task startable again.
+`confirm_admission`, called by the process that spawns the child, is what ends
+the commitment; until then `bound_author_admission` does not read the binding it
+made, so a launch nobody is left to withdraw still binds nothing. After it, the
+binding is final: the author may already be writing, and a late refusal must not
+hand that work back to the pair the number had before it.
+
 `--dry-run` never reaches that commit, and is additionally evaluated and refused
 exactly like a real start — that report is what preparing a launch is for —
 without writing its refusal or allocating a number for a review outage it merely
@@ -382,7 +399,8 @@ Every one of those paths used to leave a launch that wrote no line of work
 recorded as the latest author, which is enough to lock the bound reviewer out of
 its own number as "the author's own family" and admit the family that wrote the
 work in its place. The sibling Git write admission has always worked this way: a
-dry run opens no write scope.
+dry run opens no write scope, and an abandoned claim is resolved by measurement
+rather than by trusting the claimant to still be alive.
 
 **The binding is carried into the run, not just recorded.** A named reviewer
 that nothing consults is a note in a file, so the same decision governs both

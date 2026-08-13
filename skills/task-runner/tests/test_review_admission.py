@@ -37,12 +37,15 @@ def _installed(*runners: str):
 def _launch(task_dir: Path, **admission) -> dict:
     """Admit a launch and start it, which is what binds the number.
 
-    The launcher decides the pair first and commits it only where the author
-    actually starts, so a test that needs the number bound has to do both. Tests
-    about launches that never start call `admit_launch` on its own.
+    The launcher decides the pair first, commits it only where the author
+    actually starts, and confirms the commitment once the author exists, so a
+    test that needs the number bound has to do all three. Tests about launches
+    that never start call `admit_launch` on its own, and tests about launches
+    that committed and then started nobody stop after `commit_admission`.
     """
     record = review_admission.admit_launch(task_dir, **admission)
     review_admission.commit_admission(task_dir, record)
+    review_admission.confirm_admission(task_dir)
     return record
 
 
@@ -248,9 +251,19 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(review_admission.admissions(task_dir), [])
                 self.assertIsNone(review_admission.bound_author_admission(task_dir))
 
+                # Committed, but with no author observed to start yet: the
+                # commitment is outstanding, so it is still not the binding.
                 review_admission.commit_admission(task_dir, record)
+                self.assertIsNone(review_admission.bound_author_admission(task_dir))
+                self.assertEqual(
+                    review_admission.admission_commitment(task_dir)["admission_id"],
+                    record["admission_id"],
+                )
+
+                review_admission.confirm_admission(task_dir)
                 binding = review_admission.bound_author_admission(task_dir)
                 self.assertEqual(binding["pair"]["reviewer_runner"], "codex")
+                self.assertIsNone(review_admission.admission_commitment(task_dir))
                 self.assertEqual(
                     review_admission.recorded_admission(task_dir)["admission_id"],
                     record["admission_id"],
@@ -375,6 +388,10 @@ class AdmissionTests(unittest.TestCase):
                 which=_installed("claude"),
             )
         self.assertEqual(record["decision"], "exempt")
+
+
+class _StopAfterSpawn(Exception):
+    """Ends a launch at the point the child exists, before it is supervised."""
 
 
 def _workspace_task(root: str, name: str = "001-subject") -> Path:
@@ -740,6 +757,277 @@ class OnlyAStartedLaunchAuthorsTheNumberTests(unittest.TestCase):
         self.assertEqual(current["admission_id"], author["admission_id"])
         self.assertTrue(bound_review["bound"])
         self.assertIn("withdrew the review binding", trace)
+
+
+class TheWithdrawalOutlivesTheProcessThatCommittedTests(unittest.TestCase):
+    """A launch that started no author binds nothing, parent alive or not.
+
+    Making the withdrawal an act of the parent's own closure made it an act only
+    a live parent could perform. The detached watcher is supervised
+    independently: it can refuse before it spawns anything long after the parent
+    is gone, release the pending launch claim, and leave the phantom author on
+    record -- the same reversal, reached from the process the parent does not
+    control. And a parent killed between committing and spawning leaves nobody
+    to withdraw anything at all.
+    """
+
+    def _bound_number(self, root: str) -> tuple[Path, dict]:
+        task_dir = _workspace_task(root)
+        author = _launch(
+            task_dir,
+            workflow="standard",
+            author_runner="claude",
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            which=_installed("claude", "codex"),
+        )
+        return task_dir, author
+
+    def _committed_launch(
+        self, task_dir: Path, runner: str, token: str, application: str | None = None
+    ) -> dict:
+        """What a parent leaves behind after committing and before spawning."""
+        proposed = review_admission.admit_launch(
+            task_dir,
+            workflow="standard",
+            author_runner=runner,
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            which=_installed("claude", "codex"),
+        )
+        review_admission.commit_admission(task_dir, proposed, launch_token=token)
+        prompt = task_runner.runner_prompt_path(task_dir)
+        prompt.parent.mkdir(parents=True, exist_ok=True)
+        prompt.write_text("Do the work.\n", encoding="utf-8")
+        prepared = task_runner.prepared_application_launch(
+            argparse.Namespace(
+                task_dir=str(task_dir),
+                runner=runner,
+                workflow="standard",
+                application=application,
+                destination=None,
+                memory_limit=None,
+                launch_token=None,
+            ),
+            task_dir,
+        )
+        task_runner.update_runner_meta(
+            task_dir,
+            {
+                "runner": runner,
+                "workflow": "standard",
+                "application": prepared,
+                "launch_pending": {"token": token, "started_at": task_runner.utc_now()},
+            },
+        )
+        return proposed
+
+    def test_a_watcher_preflight_failure_withdraws_what_its_parent_committed(self) -> None:
+        """The watcher's own end of the launch owns the withdrawal.
+
+        No parent runs here at all: the commitment is on disk, the pending claim
+        is on disk, and the watcher refuses before it spawns a child. The pair
+        has to be back before the claim is released, because releasing the claim
+        is what makes the task startable again with the phantom author in place.
+        """
+        adapter = _RecordingTransport()
+        module = types.ModuleType("task_agent_transport_orphan_watcher_1094")
+        module.adapter = adapter
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+
+        observed: dict = {}
+        released = task_runner.finish_runner_meta
+
+        def watch_release(task_dir, extra):
+            observed["binding_when_released"] = review_admission.bound_author_admission(
+                task_dir
+            )
+            return released(task_dir, extra)
+
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, author = self._bound_number(raw)
+            proposed = self._committed_launch(
+                task_dir, "codex", "orphaned-launch", f"{module.__name__}:adapter"
+            )
+            args = argparse.Namespace(
+                task_dir=str(task_dir),
+                runner="codex",
+                runner_resolution="explicit_flag",
+                workflow="standard",
+                launch_token="orphaned-launch",
+                model=None,
+                sandbox_mode=None,
+                repo=None,
+                application=f"{module.__name__}:adapter",
+                destination=None,
+                memory_limit=None,
+                require_review_verdict=False,
+            )
+            with mock.patch.object(
+                task_runner, "prepare_access_grant", side_effect=SystemExit("no sandbox here")
+            ), mock.patch.object(task_runner, "finish_runner_meta", watch_release):
+                with self.assertRaises(SystemExit):
+                    task_runner.cmd_run_child(args)
+
+            binding = review_admission.bound_author_admission(task_dir)
+            meta = json.loads(
+                (task_dir / ".runner" / "runner.json").read_text(encoding="utf-8")
+            )
+            withdrawals = [
+                entry
+                for entry in review_admission.admissions(task_dir)
+                if entry.get("kind") == review_admission.ANNULLED_ADMISSION
+            ]
+            bound_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="codex"
+            )
+            author_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="claude"
+            )
+            trace = (task_dir / "trace.md").read_text(encoding="utf-8")
+
+        # The claim is released, which is the whole hazard: the number is
+        # startable again, and it is startable with its real author's pair.
+        self.assertNotIn("launch_pending", meta)
+        self.assertEqual(observed["binding_when_released"]["admission_id"], author["admission_id"])
+        self.assertEqual(binding["admission_id"], author["admission_id"])
+        self.assertEqual(binding["pair"]["author_family"], "Claude")
+        self.assertEqual(binding["pair"]["reviewer_family"], "Codex")
+        self.assertEqual([entry["annuls"] for entry in withdrawals], [proposed["admission_id"]])
+        self.assertIsNone(review_admission.admission_commitment(task_dir))
+        self.assertTrue(bound_review["bound"])
+        self.assertEqual(author_review["outcome"], "review_by_author_family")
+        self.assertIn("withdrew the review binding", trace)
+
+    def test_a_spawned_author_confirms_the_commitment_that_binds_it(self) -> None:
+        """The commitment stops being outstanding where the author appears.
+
+        Nothing else in a launch can say this. Without the confirmation at the
+        spawn, every real launch would leave its commitment outstanding, and the
+        number would keep answering with the pair of some earlier launch while
+        its actual author worked.
+        """
+        adapter = _RecordingTransport()
+        module = types.ModuleType("task_agent_transport_spawned_author_1094")
+        module.adapter = adapter
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+
+        class _Spawned:
+            """A child that exists, which is all the confirmation is about."""
+
+            pid = 4242
+
+            def wait(self) -> int:
+                raise _StopAfterSpawn()
+
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, author = self._bound_number(raw)
+            spawned = self._committed_launch(
+                task_dir, "codex", "spawning-launch", f"{module.__name__}:adapter"
+            )
+            args = argparse.Namespace(
+                task_dir=str(task_dir),
+                runner="codex",
+                runner_resolution="explicit_flag",
+                workflow="standard",
+                launch_token="spawning-launch",
+                model=None,
+                sandbox_mode=None,
+                repo=None,
+                application=f"{module.__name__}:adapter",
+                destination=None,
+                memory_limit=None,
+                require_review_verdict=False,
+            )
+            with mock.patch.object(
+                task_runner.subprocess, "Popen", return_value=_Spawned()
+            ):
+                with self.assertRaises(_StopAfterSpawn):
+                    task_runner.cmd_run_child(args)
+
+            binding = review_admission.bound_author_admission(task_dir)
+            outstanding = review_admission.admission_commitment(task_dir)
+
+        self.assertIsNone(outstanding)
+        self.assertEqual(binding["admission_id"], spawned["admission_id"])
+        self.assertEqual(binding["pair"]["author_family"], "Codex")
+        self.assertNotEqual(binding["admission_id"], author["admission_id"])
+
+    def test_a_parent_lost_before_the_watcher_exists_binds_nothing(self) -> None:
+        """Nobody is left to withdraw it, so nothing has to be.
+
+        The commitment is outstanding and stays outstanding, and an outstanding
+        commitment is not a binding. The number answers with the pair whose
+        author actually ran, for reviewers and for acceptance alike.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, author = self._bound_number(raw)
+            self._committed_launch(task_dir, "codex", "vanished-parent")
+
+            binding = review_admission.bound_author_admission(task_dir)
+            bound_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="codex"
+            )
+            author_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="claude"
+            )
+            status = review_admission.independent_review_status(task_dir)
+
+        self.assertEqual(binding["admission_id"], author["admission_id"])
+        self.assertEqual(binding["pair"]["author_family"], "Claude")
+        self.assertTrue(bound_review["bound"])
+        self.assertEqual(author_review["outcome"], "review_by_author_family")
+        self.assertEqual(status["reviewer_family"], "Codex")
+        self.assertEqual(status["author_family"], "Claude")
+
+    def test_a_launch_that_started_its_author_keeps_the_binding(self) -> None:
+        """The rule cuts both ways, and the other way is a reversal too.
+
+        Once the author exists it may be writing work, and that work keeps the
+        reviewer it was admitted with. A refusal arriving after the author
+        started -- a parent that cannot read the startup record it was handed --
+        withdraws nothing, because handing started work back to the pair the
+        number had before it is the same substitution from the other side.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, author = self._bound_number(raw)
+            started = self._committed_launch(task_dir, "codex", "started-launch")
+            confirmed = review_admission.confirm_admission(
+                task_dir, launch_token="started-launch"
+            )
+            late = review_admission.annul_admission(
+                task_dir,
+                reason="the parent could not read the startup record.",
+                launch_token="started-launch",
+            )
+
+            binding = review_admission.bound_author_admission(task_dir)
+
+        self.assertEqual(confirmed["admission_id"], started["admission_id"])
+        self.assertIsNone(late)
+        self.assertEqual(binding["admission_id"], started["admission_id"])
+        self.assertNotEqual(binding["admission_id"], author["admission_id"])
+
+    def test_only_the_launch_that_committed_may_settle_the_commitment(self) -> None:
+        """A settlement is about one launch, and it says which one it is."""
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, _ = self._bound_number(raw)
+            proposed = self._committed_launch(task_dir, "codex", "this-launch")
+
+            self.assertIsNone(
+                review_admission.confirm_admission(task_dir, launch_token="another-launch")
+            )
+            self.assertIsNone(
+                review_admission.annul_admission(
+                    task_dir, reason="an unrelated failure.", launch_token="another-launch"
+                )
+            )
+            outstanding = review_admission.admission_commitment(task_dir)
+
+        self.assertEqual(outstanding["admission_id"], proposed["admission_id"])
+        self.assertEqual(outstanding["launch_token"], "this-launch")
 
 
 class RoundLedgerTests(unittest.TestCase):

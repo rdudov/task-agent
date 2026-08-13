@@ -192,15 +192,26 @@ own task through the task-number owner, so the task that hit it keeps its scope
 and waits rather than absorbing an outage.
 
 Only a launch that started an author binds anything, because the admission names
-the family that authored this number's work. Deciding and binding are therefore
-two acts: the decision happens before any author work can be spent, and the
-binding is committed where the watcher is spawned, after every preparation that
-can still refuse — the application launch policy among them. A refusal that
-arrives past that point withdraws the binding by appending an `annulled_admission`
-entry to the append-only ledger and restoring the record it replaced. A
-`--dry-run` preparation never reaches the commit at all, and is additionally
-evaluated and refused identically without writing its refusal or allocating an
-outage number.
+the family that authored this number's work. Deciding, binding and confirming are
+therefore three acts: the decision happens before any author work can be spent,
+the binding is committed where the watcher is spawned, after every preparation
+that can still refuse — the application launch policy among them — and the
+commitment is confirmed by the process that spawns the child, which is the only
+event that means an author exists. A refusal that arrives past the commit
+withdraws the binding by appending an `annulled_admission` entry to the
+append-only ledger and restoring the record it replaced. A `--dry-run`
+preparation never reaches the commit at all, and is additionally evaluated and
+refused identically without writing its refusal or allocating an outage number.
+
+The commitment is durable rather than held by the launching process, because the
+processes that end such a launch outlive it: the detached watcher refuses before
+its child while the parent is already gone, and a parent killed between
+committing and spawning leaves nobody at all. So whichever process reaches the
+refusal performs the withdrawal, each launch settles only its own commitment by
+launch token, and an outstanding commitment binds nothing while it stands — a
+launch whose processes all died is answered without anybody acting. The rule cuts
+both ways: once the author exists, its work keeps the reviewer it was admitted
+with, and a refusal arriving after that withdraws nothing.
 
 The pair bound at launch is then the pair that runs and the pair that accepts.
 A `dev-pipeline` launch is refused unless the assurance it will hand the core
