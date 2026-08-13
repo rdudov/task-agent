@@ -1829,8 +1829,14 @@ def cmd_start(args: argparse.Namespace) -> None:
         prompt = build_child_prompt(
             task_dir,
             repository=repository,
-            review_subject=getattr(args, "review_subject", None),
-            review_subject_author=getattr(args, "review_subject_author", None),
+            review_subject=(
+                review_record.get("subject_task")
+                or getattr(args, "review_subject", None)
+            ),
+            review_subject_author=(
+                review_record.get("author_runner")
+                or getattr(args, "review_subject_author", None)
+            ),
             require_review_verdict=bool(getattr(args, "require_review_verdict", False)),
         )
         runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
