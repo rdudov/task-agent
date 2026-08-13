@@ -191,10 +191,16 @@ observation does not contradict. A defect in the review machinery is filed as it
 own task through the task-number owner, so the task that hit it keeps its scope
 and waits rather than absorbing an outage.
 
-Only a launch that runs binds anything: a `--dry-run` preparation is evaluated
-and refused identically, and commits no admission record, no ledger entry and no
-outage number, because the admission names the family that authored this number's
-work and a preparation has authored none of it.
+Only a launch that started an author binds anything, because the admission names
+the family that authored this number's work. Deciding and binding are therefore
+two acts: the decision happens before any author work can be spent, and the
+binding is committed where the watcher is spawned, after every preparation that
+can still refuse — the application launch policy among them. A refusal that
+arrives past that point withdraws the binding by appending an `annulled_admission`
+entry to the append-only ledger and restoring the record it replaced. A
+`--dry-run` preparation never reaches the commit at all, and is additionally
+evaluated and refused identically without writing its refusal or allocating an
+outage number.
 
 The pair bound at launch is then the pair that runs and the pair that accepts.
 A `dev-pipeline` launch is refused unless the assurance it will hand the core

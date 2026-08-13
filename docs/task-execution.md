@@ -120,6 +120,13 @@ bindings to `reviews/admissions.jsonl`. An unapproved round refuses acceptance
 and authorizes the next round; nothing counts down, in this project or in the
 dev-pipeline revision it pins.
 
+A binding reaches that ledger only from a launch that started an author. A
+launch refused before its child — by the application launch policy, by a watcher
+that could not be spawned, or by a watcher that refused before its own child —
+either never appends its binding or withdraws it with an `annulled_admission`
+entry, so the family that actually wrote the work stays the number's author and
+the reviewer bound to it stays the family that may review it.
+
 ## Dev-Pipeline Workflow
 
 `--workflow dev-pipeline` delegates a task to the standalone `dev-pipeline` CLI, which drives an evidence-gated Codex or Claude owner session against a target repository:

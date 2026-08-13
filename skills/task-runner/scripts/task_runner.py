@@ -1700,17 +1700,19 @@ def cmd_start(args: argparse.Namespace) -> None:
     access_directories, access_grant = prepare_access_grant(
         args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
     )
-    # Bind the reviewer before the author exists. A material launch that nobody
+    # Decide the reviewer before the author exists. A material launch that nobody
     # independent can check is cheapest to stop here: after the author runs, the
     # same missing reviewer costs the whole attempt. The same call admits the
     # other half of the pair: a launch asked for a verdict is the review, and it
     # has to be the family this number was promised.
     #
-    # A dry run is evaluated and refused identically and commits nothing. The
-    # admission says which family authored this number's work, and a preparation
-    # that starts no child has authored none of it: committing its binding let a
-    # `--dry-run` on the other family lock the bound reviewer out and admit the
-    # author's own family in its place.
+    # Deciding is not binding. The admission says which family authored this
+    # number's work, so it is committed further down, where the author actually
+    # starts -- everything between here and there can still refuse, and a launch
+    # that ran nothing must not be found later as this number's latest author.
+    # `committing` is about this launch's own records, not about the binding: a
+    # dry run is evaluated and refused identically and writes neither its refusal
+    # nor the outage number another number owes.
     committing = not args.dry_run
     try:
         review_record = review_admission.admit_launch(
@@ -1752,6 +1754,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             + review_record["message"]
         ),
     )
+    admission_receipt: dict | None = None
 
     try:
         application_launch = prepared_application_launch(args, task_dir)
@@ -1892,7 +1895,16 @@ def cmd_start(args: argparse.Namespace) -> None:
         a failure, not ongoing work, so none of them may leave `running` behind.
         The watcher records its own terminal state when it can; this is the
         parent's backstop for when it could not.
+
+        None of these started an author, so none of them may leave this number's
+        review binding behind either: the binding committed just above is
+        withdrawn, and the pair the number had before this launch stands.
         """
+        withdrawn = review_admission.annul_admission(
+            task_dir, admission_receipt, reason=detail
+        )
+        if withdrawn:
+            append_trace(task_dir, withdrawn["statement"])
         terminal_extra = dict(meta_extra or {})
         current_meta = read_json(runner_meta_path(task_dir))
         terminal_extra.setdefault("launch_error", detail)
@@ -1911,6 +1923,21 @@ def cmd_start(args: argparse.Namespace) -> None:
             append_trace(task_dir, detail)
         ownership_lock.close()
         raise SystemExit(detail)
+
+    # The last act before the launch becomes real, and the only thing that makes
+    # this launch the author of this number. Everything above it -- the
+    # application launch policy, the workflow command, the prompt, the runner
+    # metadata -- can still refuse, and every one of those refusals used to leave
+    # a launch that started nothing recorded as this number's latest author:
+    # enough to lock the bound reviewer out as "the author's own family" and let
+    # the family that actually wrote the work review and close it.
+    #
+    # It is committed before the spawn rather than after the startup handshake
+    # because the watcher reads this record to decide which phase it enters. The
+    # refusals that live past this line -- a watcher that cannot be spawned, a
+    # watcher that refuses before its child, a startup record that never arrives
+    # -- all reach `abort_start`, which withdraws the binding again.
+    admission_receipt = review_admission.commit_admission(task_dir, review_record)
 
     try:
         process = subprocess.Popen(

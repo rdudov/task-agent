@@ -362,15 +362,27 @@ launch. It happens before the child is spawned, before the launch's application
 policy is prepared, and before Git write admission — the point of it is that no
 author work is spent.
 
-**Only a launch that runs binds anything.** `--dry-run` is evaluated and refused
-exactly like a real start — that report is what preparing a launch is for — and
-it writes no admission record, appends nothing to `reviews/admissions.jsonl`, and
-allocates no number for a review outage it merely predicted. The admission says
-which family authored this number's work; a preparation has authored none of it.
-While it did commit that binding, a `--dry-run` on the other family was enough to
-lock the bound reviewer out of its own number and admit the author's own family
-in its place. The sibling Git write admission has always worked this way: a dry
-run opens no write scope.
+**Only a launch that started an author binds anything.** The admission says which
+family authored this number's work, so it is decided early and committed late:
+`admit_launch` decides and refuses, and `commit_admission` — called where the
+watcher is spawned, after the application launch policy, the workflow command and
+the prompt — is the single act that makes this launch the number's author.
+Refusals that arrive after it, from the watcher that could not be spawned or the
+watcher that refused before its child, append an `annulled_admission` entry and
+restore the previous record: the ledger is append-only, so a withdrawal is a fact
+added rather than history edited, and `bound_author_admission` skips what was
+withdrawn.
+
+`--dry-run` never reaches that commit, and is additionally evaluated and refused
+exactly like a real start — that report is what preparing a launch is for —
+without writing its refusal or allocating a number for a review outage it merely
+predicted.
+
+Every one of those paths used to leave a launch that wrote no line of work
+recorded as the latest author, which is enough to lock the bound reviewer out of
+its own number as "the author's own family" and admit the family that wrote the
+work in its place. The sibling Git write admission has always worked this way: a
+dry run opens no write scope.
 
 **The binding is carried into the run, not just recorded.** A named reviewer
 that nothing consults is a note in a file, so the same decision governs both

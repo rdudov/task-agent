@@ -37,6 +37,16 @@ carried through to the two places that can still let the work out unreviewed:
   approval from that family; the shared completion owner refuses a standard
   completion that does not.
 
+Deciding the pair and binding it to the number are deliberately two acts.
+`admit_launch` decides and refuses; `commit_admission` binds, and the launcher
+calls it where the author actually starts, after every preparation that can
+still refuse. A refusal that arrives later still `annul_admission`s the binding.
+The rule this expresses is one sentence: only a launch that started an author
+says who authored this number's work. A launch that ran nothing -- a dry run, an
+application policy that refused, a watcher that never spawned -- would otherwise
+be found as the latest author, which reverses which family may review the work
+and lets the author's own family in as its reviewer.
+
 What this module deliberately does not have is a limit. Review and rework are
 phases of one task (`task_phases`), and `record_review_round` counts rounds
 without ever capping them: the round number is for telling the user that the
@@ -54,6 +64,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -68,6 +79,12 @@ ROUNDS_LEDGER = "reviews/rounds.jsonl"
 # file above is the current launch; a review launch overwrites it, and the
 # author binding it replaced is exactly what acceptance has to check against.
 ADMISSIONS_LEDGER = "reviews/admissions.jsonl"
+
+# The ledger is append-only, so a binding is withdrawn by appending the fact
+# that it was withdrawn rather than by editing history. This entry says that the
+# launch it names never started an author, so the pair it recorded never became
+# this number's binding and the pair before it still is.
+ANNULLED_ADMISSION = "annulled_admission"
 
 # Provider families. Two runners of the same family are the same reviewer for
 # admission purposes: independence is about the provider that judges the work,
@@ -388,8 +405,21 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
 
     A task whose ledger predates this ledger falls back to its single current
     record, so an admission made before the ledger existed still binds.
+
+    A withdrawn admission is skipped: its launch was refused before it started
+    an author, so the pair it named never governed any work in this number.
     """
-    for entry in reversed(admissions(task_dir)):
+    entries = admissions(task_dir)
+    withdrawn = {
+        entry.get("annuls")
+        for entry in entries
+        if entry.get("kind") == ANNULLED_ADMISSION and entry.get("annuls")
+    }
+    for entry in reversed(entries):
+        if entry.get("kind") == ANNULLED_ADMISSION:
+            continue
+        if entry.get("admission_id") in withdrawn:
+            continue
         classification = entry.get("classification")
         work_class = (
             classification.get("work_class") if isinstance(classification, dict) else None
@@ -556,6 +586,10 @@ def evaluate(
         )
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        # Names this evaluation for as long as the ledger keeps it. Two launches
+        # can be evaluated inside the same second, so a withdrawal has to point
+        # at an identity rather than at a timestamp.
+        "admission_id": uuid.uuid4().hex,
         "evaluated_at": utc_now(),
         "workflow": workflow,
         "task_dir": str(task_dir),
@@ -809,21 +843,22 @@ def admit_launch(
     which: Callable[[str], str | None] = shutil.which,
     persist: bool = True,
 ) -> dict[str, Any]:
-    """Record the decision and refuse a material launch with no reviewer.
+    """Decide this launch, and refuse a material launch with no reviewer.
 
-    The record is written for every outcome, including the refusal, because the
-    task's own state is where a caller looks to find out why nothing started. It
-    is also appended to the number's admission ledger, because the binding made
-    here has to survive the launches that come after it -- the review that has to
-    be the family that was bound, and the acceptance that has to find its
-    approval.
+    Deciding is all this does. An admitted decision is handed back uncommitted,
+    because it says who authored this number's work and who may review it, and a
+    launch that never starts an author has authored none of it. `commit_admission`
+    is the single act that turns the decision into this number's binding, and the
+    caller performs it at the point where the author actually starts -- after
+    every preparation that can still refuse. Nothing else writes the binding.
 
-    `persist=False` is a launch that is only being prepared and will not run. It
+    A refusal is recorded here, because it binds nobody and because the task's
+    own state is where a caller looks to find out why nothing started.
+
+    `persist=False` is a launch that is only being prepared and will not run: it
     is evaluated and refused exactly like a real one -- that report is the whole
-    point of preparing it -- but it writes none of the above, because this record
-    says who authored this number's work and who may review it. A preparation has
-    authored nothing, and committing its binding would let a command that starts
-    no child hand the work to the author's own family. The sibling write
+    point of preparing it -- and it writes nothing at all, neither its own
+    refusal nor the outage number another number owes. The sibling write
     admission already works this way: a dry run opens no write scope.
     """
     record = evaluate(
@@ -856,12 +891,74 @@ def admit_launch(
         record["refusal_reason"] = (
             record.get("refusal_reason", "") + " " + obligation["statement"]
         ).strip()
-    if persist:
-        _write_json(task_dir / ADMISSION_RECORD, record)
-        _append_jsonl(task_dir / ADMISSIONS_LEDGER, record)
     if record["decision"] == "refused":
+        if persist:
+            _write_json(task_dir / ADMISSION_RECORD, record)
+            _append_jsonl(task_dir / ADMISSIONS_LEDGER, record)
         raise ReviewAdmissionError(record)
     return record
+
+
+def commit_admission(task_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+    """Bind this launch to the number, and hand back what withdraws it again.
+
+    This is the only writer of the binding, and the caller calls it where the
+    author actually starts. Everything a launch does before that -- evaluating
+    the pair, refusing, reporting the refusal, loading an application policy,
+    building a command -- can still end in nothing running, and a launch that
+    ran nothing must not be found later as the family that authored this
+    number's work: that reverses which family may review it and admits the
+    author's own family in place of the reviewer that was bound.
+
+    The receipt carries the exact preceding state of the current-launch record,
+    so `annul_admission` can restore it rather than approximate it.
+    """
+    path = task_dir / ADMISSION_RECORD
+    receipt = {
+        "admission_id": record.get("admission_id"),
+        "committed_at": utc_now(),
+        "previous_record_existed": path.exists(),
+        "previous_record": _read_json(path) or None,
+    }
+    _write_json(path, record)
+    _append_jsonl(task_dir / ADMISSIONS_LEDGER, record)
+    return receipt
+
+
+def annul_admission(
+    task_dir: Path, receipt: dict[str, Any] | None, *, reason: str
+) -> dict[str, Any] | None:
+    """Withdraw a committed binding whose author never started after all.
+
+    Some refusals live past the moment of commitment -- the watcher may fail to
+    spawn, and the child may fail before it runs -- and the binding they leave
+    behind is exactly as wrong as one committed too early: a launch that wrote
+    nothing would be this number's latest author. The ledger is append-only, so
+    the withdrawal is appended as its own fact, and the current-launch record is
+    put back to the byte state it had before the commit.
+    """
+    if not receipt or not receipt.get("admission_id"):
+        return None
+    entry = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": ANNULLED_ADMISSION,
+        "annuls": receipt["admission_id"],
+        "recorded_at": utc_now(),
+        "reason": reason,
+        "statement": (
+            "task-runner withdrew the review binding of a launch that never started "
+            f"an author: {reason} The pair this number had before it stands, and the "
+            "reviewer bound to that pair is still the one that may review this work."
+        ),
+    }
+    _append_jsonl(task_dir / ADMISSIONS_LEDGER, entry)
+    path = task_dir / ADMISSION_RECORD
+    previous = receipt.get("previous_record")
+    if previous:
+        _write_json(path, previous)
+    elif not receipt.get("previous_record_existed") and path.exists():
+        path.unlink()
+    return entry
 
 
 def recorded_admission(task_dir: Path) -> dict[str, Any]:

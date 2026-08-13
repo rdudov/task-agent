@@ -103,7 +103,11 @@ Files the user explicitly requested are a separate, user-facing class of output.
   stopping the fixes, and a defect in the review infrastructure is filed under
   its own number through the task-number owner rather than becoming the subject
   of the task that hit it or a reason to accept unreviewed work. Dependencies
-  are pinned to revisions that impose no round budget of their own.
+  are pinned to revisions that impose no round budget of their own. Only a
+  launch that started an author binds the pair: the decision is made before any
+  author work can be spent and committed where the child is spawned, after every
+  preparation that can still refuse, and a refusal arriving past that point
+  withdraws the binding and restores the pair the number already had.
 - Git write admission is one common-directory-locked check-and-claim operation;
   only provable abandoned no-ops are durably settled before a successor enters,
   unknown liveness refuses a foreign writer, abandoned divergent work remains a

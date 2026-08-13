@@ -8,6 +8,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def _load(name: str):
@@ -31,6 +32,18 @@ import application_adapter  # noqa: E402  (`_load` put the scripts directory on 
 def _installed(*runners: str):
     executables = {review_admission.RUNNER_EXECUTABLES[runner] for runner in runners}
     return lambda name: f"/usr/bin/{name}" if name in executables else None
+
+
+def _launch(task_dir: Path, **admission) -> dict:
+    """Admit a launch and start it, which is what binds the number.
+
+    The launcher decides the pair first and commits it only where the author
+    actually starts, so a test that needs the number bound has to do both. Tests
+    about launches that never start call `admit_launch` on its own.
+    """
+    record = review_admission.admit_launch(task_dir, **admission)
+    review_admission.commit_admission(task_dir, record)
+    return record
 
 
 WRITE_GRANT = {
@@ -186,7 +199,7 @@ class AdmissionTests(unittest.TestCase):
         """The binding outlives the launch record a later review overwrites."""
         with tempfile.TemporaryDirectory() as raw:
             task_dir = Path(raw)
-            review_admission.admit_launch(
+            _launch(
                 task_dir,
                 workflow="standard",
                 author_runner="claude",
@@ -194,7 +207,7 @@ class AdmissionTests(unittest.TestCase):
                 contract=UNGATED,
                 which=_installed("claude", "codex"),
             )
-            review_admission.admit_launch(
+            _launch(
                 task_dir,
                 workflow="standard",
                 author_runner="codex",
@@ -210,24 +223,80 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(binding["pair"]["author_runner"], "claude")
         self.assertEqual(binding["pair"]["reviewer_runner"], "codex")
 
-    def test_a_prepared_launch_evaluates_without_committing_anything(self) -> None:
-        """`--dry-run` gets the same answer and leaves no binding behind."""
+    def test_an_admitted_decision_binds_nothing_until_the_launch_starts(self) -> None:
+        """Deciding is not binding, whether or not the launch means to run.
+
+        A `--dry-run` gets the same answer and leaves no binding behind, and so
+        does a real launch that is still being prepared: the pair becomes this
+        number's binding at the moment its author starts, and not before.
+        """
+        for persist in (True, False):
+            with self.subTest(persist=persist), tempfile.TemporaryDirectory() as raw:
+                task_dir = Path(raw)
+                record = review_admission.admit_launch(
+                    task_dir,
+                    workflow="standard",
+                    author_runner="claude",
+                    access_grant=WRITE_GRANT,
+                    contract=UNGATED,
+                    which=_installed("claude", "codex"),
+                    persist=persist,
+                )
+                self.assertEqual(record["decision"], "admitted")
+                self.assertEqual(record["pair"]["reviewer_family"], "Codex")
+                self.assertEqual(review_admission.recorded_admission(task_dir), {})
+                self.assertEqual(review_admission.admissions(task_dir), [])
+                self.assertIsNone(review_admission.bound_author_admission(task_dir))
+
+                review_admission.commit_admission(task_dir, record)
+                binding = review_admission.bound_author_admission(task_dir)
+                self.assertEqual(binding["pair"]["reviewer_runner"], "codex")
+                self.assertEqual(
+                    review_admission.recorded_admission(task_dir)["admission_id"],
+                    record["admission_id"],
+                )
+
+    def test_a_withdrawn_binding_leaves_the_previous_pair_in_charge(self) -> None:
+        """A launch refused after it committed authored nothing either."""
         with tempfile.TemporaryDirectory() as raw:
             task_dir = Path(raw)
-            record = review_admission.admit_launch(
+            _launch(
                 task_dir,
                 workflow="standard",
                 author_runner="claude",
                 access_grant=WRITE_GRANT,
                 contract=UNGATED,
                 which=_installed("claude", "codex"),
-                persist=False,
             )
-            self.assertEqual(record["decision"], "admitted")
-            self.assertEqual(record["pair"]["reviewer_family"], "Codex")
-            self.assertEqual(review_admission.recorded_admission(task_dir), {})
-            self.assertEqual(review_admission.admissions(task_dir), [])
-            self.assertIsNone(review_admission.bound_author_admission(task_dir))
+            refused = review_admission.admit_launch(
+                task_dir,
+                workflow="standard",
+                author_runner="codex",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+            )
+            receipt = review_admission.commit_admission(task_dir, refused)
+            withdrawn = review_admission.annul_admission(
+                task_dir, receipt, reason="the watcher could not be started."
+            )
+
+            binding = review_admission.bound_author_admission(task_dir)
+            current = review_admission.recorded_admission(task_dir)
+            bound_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="codex"
+            )
+            author_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="claude"
+            )
+            # The withdrawal is appended rather than erasing what happened.
+            self.assertEqual(len(review_admission.admissions(task_dir)), 3)
+        self.assertEqual(withdrawn["annuls"], refused["admission_id"])
+        self.assertEqual(binding["pair"]["author_family"], "Claude")
+        self.assertEqual(binding["pair"]["reviewer_family"], "Codex")
+        self.assertEqual(current["pair"]["author_family"], "Claude")
+        self.assertTrue(bound_review["bound"])
+        self.assertEqual(author_review["outcome"], "review_by_author_family")
 
     def test_a_preparation_cannot_rebind_the_number_it_prepared_for(self) -> None:
         """The pair belongs to the launch that ran, not to one that was drafted.
@@ -239,7 +308,7 @@ class AdmissionTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as raw:
             task_dir = Path(raw)
-            review_admission.admit_launch(
+            _launch(
                 task_dir,
                 workflow="standard",
                 author_runner="claude",
@@ -562,6 +631,117 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
         self.assertIn("transport is down", notification["detail"])
 
 
+class OnlyAStartedLaunchAuthorsTheNumberTests(unittest.TestCase):
+    """A launch refused before its author started has authored nothing.
+
+    The dry-run repair stated that only a launch which runs may bind the pair,
+    and then equated "not a dry run" with "ran". Every refusal between the
+    admission and the child was still binding the number -- the application
+    launch policy first among them -- which left a launch that wrote no line of
+    work recorded as the latest author: enough to refuse the bound reviewer as
+    "the author's own family" and admit the family that wrote the work to review
+    and close it.
+    """
+
+    def _bound_number(self, root: str) -> tuple[Path, dict]:
+        """A number whose Claude author started with Codex bound to review it."""
+        task_dir = _workspace_task(root)
+        author = _launch(
+            task_dir,
+            workflow="standard",
+            author_runner="claude",
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            which=_installed("claude", "codex"),
+        )
+        return task_dir, author
+
+    def _start(self, task_dir: Path, runner: str, application: str) -> str:
+        args = argparse.Namespace(
+            task_dir=str(task_dir),
+            runner=runner,
+            workflow="standard",
+            model=None,
+            sandbox_mode=None,
+            repo=None,
+            dry_run=False,
+            application=application,
+            destination=None,
+        )
+        # Both families count as installed, so the launch is admitted here for
+        # the same reason it is on a host that has them: what is under test is
+        # what happens to the binding after that.
+        with mock.patch.object(
+            task_runner.review_admission,
+            "reviewer_available",
+            lambda runner, which=None: runner in {"claude", "codex"},
+        ):
+            with self.assertRaises(SystemExit) as caught:
+                task_runner.cmd_start(args)
+        return str(caught.exception)
+
+    def test_an_application_policy_refusal_leaves_the_author_binding_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, author = self._bound_number(raw)
+            message = self._start(
+                task_dir, "codex", "task_agent_absent_application_1094:adapter"
+            )
+
+            ledger = review_admission.admissions(task_dir)
+            binding = review_admission.bound_author_admission(task_dir)
+            bound_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="codex"
+            )
+            author_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="claude"
+            )
+            started = (task_dir / ".runner" / "runner.json").exists()
+
+        self.assertIn("Application launch policy refused the run", message)
+        self.assertFalse(started)
+        # Nothing was appended: the refused launch is not a second author.
+        self.assertEqual(
+            [entry["admission_id"] for entry in ledger], [author["admission_id"]]
+        )
+        self.assertEqual(binding["pair"]["author_family"], "Claude")
+        self.assertEqual(binding["pair"]["reviewer_family"], "Codex")
+        # And the pair still works the way the number was promised it would.
+        self.assertTrue(bound_review["bound"])
+        self.assertEqual(author_review["outcome"], "review_by_author_family")
+
+    def test_a_watcher_that_never_spawns_withdraws_the_binding_it_made(self) -> None:
+        """The refusals that live past the commit put the pair back themselves."""
+        adapter = _RecordingTransport()
+        module = types.ModuleType("task_agent_transport_watcher_probe_1094")
+        module.adapter = adapter
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, author = self._bound_number(raw)
+            with mock.patch.object(
+                task_runner.subprocess,
+                "Popen",
+                side_effect=OSError("no process could be created"),
+            ):
+                message = self._start(task_dir, "codex", f"{module.__name__}:adapter")
+
+            binding = review_admission.bound_author_admission(task_dir)
+            current = review_admission.recorded_admission(task_dir)
+            bound_review = review_admission.resolve_review_launch_pair(
+                task_dir, reviewer_runner="codex"
+            )
+            trace = (task_dir / "trace.md").read_text(encoding="utf-8")
+            status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+
+        self.assertIn("could not start the task watcher", message)
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(binding["admission_id"], author["admission_id"])
+        self.assertEqual(current["admission_id"], author["admission_id"])
+        self.assertTrue(bound_review["bound"])
+        self.assertIn("withdrew the review binding", trace)
+
+
 class RoundLedgerTests(unittest.TestCase):
     def _record(self, task_dir: Path, event_id: str, *findings: str):
         return review_admission.record_review_round(
@@ -685,7 +865,7 @@ class ReviewLaunchPairingTests(unittest.TestCase):
     """The review of a number has to be the family that number was promised."""
 
     def _author(self, task_dir: Path, author: str = "claude") -> dict:
-        return review_admission.admit_launch(
+        return _launch(
             task_dir,
             workflow="standard",
             author_runner=author,
@@ -695,7 +875,7 @@ class ReviewLaunchPairingTests(unittest.TestCase):
         )
 
     def _review(self, task_dir: Path, reviewer: str) -> dict:
-        return review_admission.admit_launch(
+        return _launch(
             task_dir,
             workflow="standard",
             author_runner=reviewer,
@@ -763,7 +943,7 @@ class IndependentReviewStatusTests(unittest.TestCase):
     """Acceptance asks whether the work as it stands carries that approval."""
 
     def _admitted(self, task_dir: Path) -> None:
-        review_admission.admit_launch(
+        _launch(
             task_dir,
             workflow="standard",
             author_runner="claude",
@@ -880,7 +1060,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
         return task
 
     def _admit_author(self, task: Path) -> None:
-        review_admission.admit_launch(
+        _launch(
             task,
             workflow="standard",
             author_runner="claude",
@@ -904,7 +1084,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             task = self._task(Path(raw))
             self._admit_author(task)
-            review_admission.admit_launch(
+            _launch(
                 task,
                 workflow="standard",
                 author_runner="codex",
