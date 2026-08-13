@@ -1826,17 +1826,14 @@ def cmd_start(args: argparse.Namespace) -> None:
     )
     if args.workflow == "standard":
         repository = access_directories[0] if access_directories else None
+        admitted_pair = review_record.get("pair")
+        if not isinstance(admitted_pair, dict):
+            admitted_pair = {}
         prompt = build_child_prompt(
             task_dir,
             repository=repository,
-            review_subject=(
-                review_record.get("subject_task")
-                or getattr(args, "review_subject", None)
-            ),
-            review_subject_author=(
-                review_record.get("author_runner")
-                or getattr(args, "review_subject_author", None)
-            ),
+            review_subject=str(task_dir) if getattr(args, "require_review_verdict", False) else None,
+            review_subject_author=admitted_pair.get("author_runner"),
             require_review_verdict=bool(getattr(args, "require_review_verdict", False)),
         )
         runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
