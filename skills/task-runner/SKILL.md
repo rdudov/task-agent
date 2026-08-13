@@ -358,12 +358,14 @@ The declaration only holds while nothing contradicts it. Declare
 `classified_by: declared_read_only_lookup_contradicted_by_observation`. Calling
 work trivial in `task.md` classifies nothing at all.
 
-**Can a reviewer be bound?** A reviewer is independent when it is a different
-provider family (`Codex`, `Claude`, `Cursor`) from the author *and* its CLI is
-installed here. `--reviewer-runner`, or `review_policy.reviewer_runner`, names
-one explicitly; otherwise the first installed independent family is bound. The
-author is never its own reviewer, whoever is unavailable — a launch with no
-independent family installed is refused, not downgraded.
+**Can a reviewer be bound?** Independent review is between the two supported
+review families: Codex work is reviewed by Claude, and Claude work by Codex,
+when that CLI is installed. Cursor is an author compatibility runtime, never a
+reviewer. `--reviewer-runner`, or `review_policy.reviewer_runner`, can name
+Codex or Claude explicitly; otherwise the installed family independent from the
+author is bound. The author is never its own reviewer, whoever is unavailable —
+a launch with no supported independent family installed is refused, not
+downgraded.
 
 The refusal exits non-zero with its reason in its own words, and leaves the task
 `blocked` with the same message in `status.json` and `trace.md`. It is also
@@ -446,8 +448,7 @@ without its reviewer ever seeing it — the author run ends `blocked`, waiting f
 a review phase of the same number:
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
-  --runner codex --require-review-verdict
+.venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
 A standard review's decision reaches the ledger from the one canonical `Verdict:`

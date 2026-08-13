@@ -108,9 +108,12 @@ RUNNER_FAMILIES = {"codex": "Codex", "claude": "Claude", "agent": "Cursor"}
 # What has to be on PATH for a family to be a reviewer we can actually bind.
 RUNNER_EXECUTABLES = {"codex": "codex", "claude": "claude", "agent": "cursor-agent"}
 
+# Cursor is an author compatibility runtime, never an independent reviewer.
+REVIEW_RUNNERS = ("codex", "claude")
+
 # Preference order when nobody named a reviewer. Deterministic so the recorded
 # decision is reproducible from the same host.
-REVIEWER_PREFERENCE = ("codex", "claude", "agent")
+REVIEWER_PREFERENCE = REVIEW_RUNNERS
 
 MATERIAL = "material"
 READ_ONLY_LOOKUP = "read_only_lookup"
@@ -341,6 +344,10 @@ def resolve_pair(
             pair["detail"] = (
                 f"the declared reviewer `{declared_reviewer}` is not a runner this launcher knows"
             )
+            return pair
+        if declared_reviewer not in REVIEW_RUNNERS:
+            pair["outcome"] = "reviewer_not_supported"
+            pair["detail"] = "Cursor is an author compatibility runtime, not a reviewer"
             return pair
         if family_of(declared_reviewer) == author_family:
             pair["outcome"] = "reviewer_is_author_family"
@@ -1197,11 +1204,9 @@ def review_launch_hint(task_dir: Path, reviewer_runner: str | None) -> str:
     a dead end. The review is a phase of this same number, so the command names
     this task directory rather than a new one.
     """
-    runner = reviewer_runner or "<independent-runner>"
     return (
         "Run the bound review as a phase of this same task number: "
-        f"`task_runner.py start {task_dir} --runner {runner} "
-        "--require-review-verdict`."
+        f"`task_runner.py review {task_dir}`."
     )
 
 

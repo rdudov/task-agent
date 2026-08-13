@@ -146,6 +146,22 @@ class PairingTests(unittest.TestCase):
         self.assertFalse(pair["bound"])
         self.assertEqual(pair["outcome"], "no_independent_runner_installed")
 
+    def test_cursor_is_never_selected_as_an_independent_reviewer(self) -> None:
+        pair = review_admission.resolve_pair(
+            author_runner="claude", which=_installed("claude", "agent")
+        )
+        self.assertFalse(pair["bound"])
+        self.assertEqual(pair["outcome"], "no_independent_runner_installed")
+
+    def test_declared_cursor_reviewer_is_refused(self) -> None:
+        pair = review_admission.resolve_pair(
+            author_runner="claude",
+            declared_reviewer="agent",
+            which=_installed("claude", "agent"),
+        )
+        self.assertFalse(pair["bound"])
+        self.assertEqual(pair["outcome"], "reviewer_not_supported")
+
     def test_a_declared_reviewer_of_the_authors_family_is_refused(self) -> None:
         pair = review_admission.resolve_pair(
             author_runner="claude",
@@ -157,7 +173,7 @@ class PairingTests(unittest.TestCase):
 
     def test_a_declared_reviewer_that_is_not_installed_is_refused(self) -> None:
         pair = review_admission.resolve_pair(
-            author_runner="claude", declared_reviewer="agent", which=_installed("claude", "codex")
+            author_runner="claude", declared_reviewer="codex", which=_installed("claude")
         )
         self.assertFalse(pair["bound"])
         self.assertEqual(pair["outcome"], "reviewer_unavailable")
@@ -1227,6 +1243,53 @@ class ReviewLaunchPairingTests(unittest.TestCase):
         self.assertEqual(record["pair"]["outcome"], "no_bound_author_in_this_task")
 
 
+class ReviewCommandTests(unittest.TestCase):
+    def test_review_command_uses_the_bound_family_and_read_only_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            _launch(
+                task_dir,
+                workflow="standard",
+                author_runner="claude",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+            )
+            args = argparse.Namespace(
+                task_dir=str(task_dir),
+                repo="/srv/target-repo",
+                model=None,
+                application=None,
+                destination=None,
+                memory_limit=None,
+                dry_run=True,
+            )
+            with mock.patch.object(task_runner, "cmd_start") as start:
+                task_runner.cmd_review(args)
+
+        start.assert_called_once_with(args)
+        self.assertEqual(args.runner, "codex")
+        self.assertEqual(args.workflow, "standard")
+        self.assertEqual(args.sandbox_mode, "read-only")
+        self.assertTrue(args.require_review_verdict)
+
+    def test_review_command_refuses_a_legacy_cursor_binding(self) -> None:
+        args = argparse.Namespace(task_dir="/tmp/task")
+        admission = {"pair": {"reviewer_runner": "agent"}}
+        with mock.patch.object(
+            review_admission, "bound_author_admission", return_value=admission
+        ), self.assertRaises(SystemExit, msg="Cursor cannot review"):
+            task_runner.cmd_review(args)
+
+    def test_review_is_visible_in_top_level_help(self) -> None:
+        with mock.patch.object(sys, "argv", ["task_runner.py", "--help"]):
+            with self.assertRaises(SystemExit) as caught:
+                with mock.patch("sys.stdout") as output:
+                    task_runner.parse_args()
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn("review", "".join(call.args[0] for call in output.write.call_args_list))
+
+
 class IndependentReviewStatusTests(unittest.TestCase):
     """Acceptance asks whether the work as it stands carries that approval."""
 
@@ -1262,7 +1325,7 @@ class IndependentReviewStatusTests(unittest.TestCase):
         self.assertTrue(status["required"])
         self.assertFalse(status["satisfied"])
         self.assertIn("no review round yet", status["reason"])
-        self.assertIn("--require-review-verdict", status["action"])
+        self.assertIn("task_runner.py review", status["action"])
 
     def test_a_rework_round_blocks_acceptance_and_allows_another_round(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1365,7 +1428,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             ready, reason = task_completion.completion_ready(task, workflow="standard")
         self.assertFalse(ready)
         self.assertIn("independent review", reason)
-        self.assertIn("--require-review-verdict", reason)
+        self.assertIn("task_runner.py review", reason)
 
     def test_the_reviewers_published_verdict_becomes_the_round(self) -> None:
         """A standard review reaches the ledger through its own verdict line."""
@@ -1424,7 +1487,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             ready, reason = task_completion.completion_ready(task, workflow="standard")
         self.assertFalse(ready)
         self.assertIn("Codex was bound", reason)
-        self.assertIn("--require-review-verdict", reason)
+        self.assertIn("task_runner.py review", reason)
 
     def test_the_author_cannot_record_the_round_that_accepts_its_own_work(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

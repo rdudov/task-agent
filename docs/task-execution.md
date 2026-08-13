@@ -111,14 +111,18 @@ A material `standard` author run therefore ends `blocked` until the review runs
 as a phase of the same number:
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example \
-  --runner codex --require-review-verdict
+.venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
 Rounds are appended to `reviews/rounds.jsonl` without any ceiling, and the
 bindings to `reviews/admissions.jsonl`. An unapproved round refuses acceptance
 and authorizes the next round; nothing counts down, in this project or in the
 dev-pipeline revision it pins.
+
+These remaining records are deliberately narrow: admissions preserve the
+author/reviewer promise across phases, rounds preserve the latest decision, and
+phase history detects author work after approval. The launcher owns all three;
+an installation adds transport and resource policy, not another pairing record.
 
 A binding reaches that ledger only from a launch that started an author. A
 launch refused before its child — by the application launch policy, by a watcher

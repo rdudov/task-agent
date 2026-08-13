@@ -122,6 +122,20 @@ an additional workspace/access root for Codex, Claude, or Cursor Agent while
 the task-agent checkout remains the primary workspace.
 Write modes verify writability before launch and record the result.
 
+Material work binds an independent reviewer before its author starts. When the
+author finishes, run that reviewer as the next phase of the same task; the
+launcher selects the already-bound family and gives it read-only access:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example \
+  --repo /path/to/target-repo
+```
+
+Three records remain because they answer different acceptance questions:
+admissions preserve who promised to review, rounds preserve what that reviewer
+decided, and phase history detects author work after approval. Installations add
+transport and resource policy; they do not keep another pairing record.
+
 Only one task may hold a repository in write mode at a time. A write-mode launch
 uses one Git-repository-locked check-and-claim operation, and is refused while
 another task is writing there or has changed it without closing its own gates.
@@ -237,12 +251,12 @@ that the registered finalizer owns.
 The same adapter can return a launch memory policy for `--memory-limit`, attach
 native-session arguments to a standard `start|resume|retry`, classify the
 supervised exit as an exact quota wait for its scheduler, and add
-installation-specific completion problems such as cross-family verdict binding
-or an unresolved document receipt. The public runner still owns the process,
+installation-specific completion problems such as an unresolved document
+receipt. The public runner still owns the process,
 session-state persistence, event ordering, artifact projection, and completion
 refusal. A child-written terminal state is rechecked through the same durable
-engine gate before acceptance. An application owns only its resource values, transport receipts,
-pairing rules, and scheduler. API v1 is importable as
+engine gate before acceptance. An application owns only its resource values,
+transport receipts, and scheduler. API v1 is importable as
 `task_agent.application_adapter`; session state refuses secret-bearing keys.
 For standard runs the parent forwards the registration, operation, and opaque
 destination to the detached watcher, which reuses the exact prepared session

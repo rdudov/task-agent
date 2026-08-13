@@ -2092,6 +2092,25 @@ def cmd_start(args: argparse.Namespace) -> None:
     print(json.dumps(meta, indent=2))
 
 
+def cmd_review(args: argparse.Namespace) -> None:
+    """Run the reviewer already bound to this task's material author."""
+    task_dir = resolve_task_dir(args.task_dir)
+    admission = review_admission.bound_author_admission(task_dir)
+    pair = admission.get("pair") if isinstance(admission, dict) else None
+    reviewer = pair.get("reviewer_runner") if isinstance(pair, dict) else None
+    if reviewer not in review_admission.REVIEW_RUNNERS:
+        raise SystemExit(
+            "This task has no bound reviewer from a started material author launch."
+        )
+    args.runner = reviewer
+    args.workflow = "standard"
+    args.require_review_verdict = True
+    args.reviewer_runner = None
+    args.sandbox_mode = "read-only"
+    args.operation = "start"
+    cmd_start(args)
+
+
 def record_terminal_phase(task_dir: Path, state: str) -> None:
     """Close the phase for a terminal state, whoever wrote that state.
 
@@ -2917,7 +2936,7 @@ def parse_args() -> argparse.Namespace:
     start_parser.add_argument("--model", help="Optional model override for the resolved runner.")
     start_parser.add_argument(
         "--reviewer-runner",
-        choices=list(CLI_RUNNERS),
+        choices=list(review_admission.REVIEW_RUNNERS),
         default=None,
         help=(
             "Provider family that must review this launch. Omit to bind the first "
@@ -2983,6 +3002,19 @@ def parse_args() -> argparse.Namespace:
     )
     start_parser.add_argument("--dry-run", action="store_true", help="Prepare artifacts without launching the child process.")
     start_parser.set_defaults(func=cmd_start)
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Run the independent reviewer bound to this task's author.",
+    )
+    review_parser.add_argument("task_dir", help="Task directory path.")
+    review_parser.add_argument("--repo", help="Read-only target repository for the reviewer.")
+    review_parser.add_argument("--model", help="Optional reviewer model override.")
+    review_parser.add_argument("--application", help="Versioned installation adapter.")
+    review_parser.add_argument("--destination", help="Opaque delivery destination.")
+    review_parser.add_argument("--memory-limit")
+    review_parser.add_argument("--dry-run", action="store_true")
+    review_parser.set_defaults(func=cmd_review)
 
     run_child_parser = subparsers.add_parser("_run-child", help=argparse.SUPPRESS)
     run_child_parser.add_argument("task_dir", help="Task directory path.")
