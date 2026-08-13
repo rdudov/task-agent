@@ -49,17 +49,39 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         self.assertEqual(command[command.index("-C") + 1], str(notebook))
         self.assertIn("sandbox_workspace_write.exclude_slash_tmp=true", command)
 
-    def test_claude_read_only_can_write_only_its_notebook_and_index(self) -> None:
+    def test_claude_read_only_notebook_uses_outer_boundary_tools(self) -> None:
         notebook = task_runner.repo_root() / "tasks" / "001-review"
         command = task_runner.claude_access_arguments(
             "read-only", {"needs_weaker_nested_sandbox": False}, notebook
         )
-        self.assertIn("Bash", command[command.index("--tools") + 1])
+        tools = command[command.index("--tools") + 1]
+        self.assertIn("Bash", tools)
+        self.assertIn("Write", tools)
+        self.assertIn("Edit", tools)
+        self.assertIn("--dangerously-skip-permissions", command)
         settings = json.loads(command[command.index("--settings") + 1])
-        self.assertEqual(
-            settings["sandbox"]["filesystem"]["allowWrite"],
-            [str(notebook), str(task_runner.repo_root() / ".state")],
-        )
+        self.assertFalse(settings["sandbox"]["enabled"])
+
+    def test_claude_read_only_command_has_outer_mount_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            notebook = Path(raw) / "001-review"
+            notebook.mkdir()
+            prompt = Path(raw) / "prompt.txt"
+            prompt.write_text("review", encoding="utf-8")
+            command = task_runner.build_command(
+                "claude",
+                prompt,
+                task_runner.repo_root(),
+                None,
+                "read-only",
+                notebook,
+                [task_runner.repo_root()],
+            )
+        self.assertEqual(command[0], "bwrap")
+        self.assertEqual(command[1:4], ["--ro-bind", "/", "/"])
+        self.assertIn(str(notebook), command)
+        self.assertIn("claude", command)
+        self.assertLess(command.index("--"), command.index("claude"))
 
     def test_second_live_run_is_refused_before_metadata_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

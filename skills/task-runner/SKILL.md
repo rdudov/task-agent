@@ -63,7 +63,7 @@ Access level is expressed once, through `--sandbox-mode`, and mapped per runner:
 | --- | --- | --- |
 | `workspace-write` (standard default) | `--sandbox workspace-write`, cwd repo root | `acceptEdits`, native sandbox writable only in cwd/temp |
 | `danger-full-access` | `--sandbox danger-full-access`, cwd workspace root | permission bypass plus `--add-dir <workspace root>` |
-| `read-only` | task directory writable through a scoped `workspace-write`; subject remains outside writable roots | `Read`, `Grep`, `Glob`, and sandboxed Bash; only the task directory and `.state/` are writable |
+| `read-only` | task directory writable through a scoped `workspace-write`; subject remains outside writable roots | `Read`, `Grep`, `Glob`, and sandboxed Bash inside an outer read-only mount namespace; only the task directory, `.state/`, and Claude runtime storage are writable |
 
 The workspace root is the directory a full-access child may reach. It defaults to the parent of this checkout and is overridden with `TASK_AGENT_WORKSPACE_ROOT`. Nothing else in the runner hardcodes an absolute path.
 
@@ -74,9 +74,13 @@ Claude's restricted modes depend on its native OS sandbox, which is Linux-specif
 Read-only review protects the subject, not the reviewer's notebook. Codex maps
 the mode to a workspace-write sandbox rooted at the task directory; Claude uses
 `dontAsk` and an explicit `allowWrite` containing only the task directory and
-`.state/`. Neither receives native file-writing access to the subject. This lets
-the reviewer search, run tests, write `findings.md`, and close its own task while
-subject-write probes still fail.
+`.state/`, then wraps the CLI in a bubblewrap namespace whose host mount is
+read-only and whose only writable rebinds are the notebook, task index, and
+Claude-owned runtime storage. Neither receives native file-writing access to the
+subject. This lets the reviewer search, run tests, write `findings.md`, and close
+its own task while subject-write probes still fail. An admitted review prompt
+names the reviewer role, subject, author, repository, and required verdict so the
+child reviews rather than re-executing the author task.
 
 Restricted runs load only the project settings source, so `CLAUDE.md`, rules, and skills stay discoverable while user and local permission history does not load. They fail before launch if a checked-in `.claude/settings.json` contains hooks, other command-bearing configuration, plugins, non-read permission allow rules, added directories, unsandboxed excluded commands, extra write paths, filesystem disablement, proxy or network allowances, or Unix sockets.
 

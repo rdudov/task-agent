@@ -272,6 +272,26 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("Before writing code, try in order", prompt)
         self.assertIn("only then add the smallest necessary code", prompt)
 
+    def test_review_prompt_names_role_subject_author_repository_and_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "001-review"
+            task_dir.mkdir()
+            repository = Path(tmp) / "subject"
+            repository.mkdir()
+            prompt = task_runner.build_child_prompt(
+                task_dir,
+                repository=repository,
+                review_subject="009-subject",
+                review_subject_author="codex",
+                require_review_verdict=True,
+            )
+        self.assertIn("Role: independent reviewer", prompt)
+        self.assertIn("`009-subject`", prompt)
+        self.assertIn("`codex`", prompt)
+        self.assertIn(str(repository), prompt)
+        self.assertIn("Verdict: approved", prompt)
+        self.assertIn("do not re-execute or repair", prompt)
+
     def test_prompt_has_no_hardcoded_absolute_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             prompt = self._prompt(tmp)

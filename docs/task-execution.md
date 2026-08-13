@@ -268,9 +268,12 @@ Before reporting success, check that the artifact is complete against its source
 For read-only reviews, the subject stays outside every writable root while the
 reviewer's own task directory and `.state/` remain writable. Codex implements
 this as a scoped workspace-write sandbox rooted at the notebook; Claude uses
-`dontAsk`, sandboxed Bash, and an explicit allow-list. This boundary permits
-search, tests, `findings.md`, and canonical task closure without granting edits
-to the reviewed repository.
+`dontAsk`, sandboxed Bash, an explicit allow-list, and an outer bubblewrap mount
+namespace that makes the host tree read-only before rebinding only the notebook,
+task index, and Claude-owned runtime storage. This boundary permits search,
+tests, `findings.md`, and canonical task closure without granting edits to the
+reviewed repository. The admitted-review prompt explicitly names the reviewer
+role, subject, author, target repository, and required single-line verdict.
 
 ## Progress Artifacts
 

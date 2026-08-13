@@ -284,7 +284,14 @@ def ensure_task_contract(task_dir: Path) -> None:
     runner_dir(task_dir).mkdir(parents=True, exist_ok=True)
 
 
-def build_child_prompt(task_dir: Path) -> str:
+def build_child_prompt(
+    task_dir: Path,
+    *,
+    repository: Path | None = None,
+    review_subject: str | None = None,
+    review_subject_author: str | None = None,
+    require_review_verdict: bool = False,
+) -> str:
     task_dir = task_dir.resolve()
     task_md = task_dir / 'task.md'
     plan_md = task_dir / 'plan.md'
@@ -295,7 +302,22 @@ def build_child_prompt(task_dir: Path) -> str:
     preferences_md = user_preferences_path(task_dir)
     deliverables_dir = task_dir / 'deliverables'
     manifest_json = deliverables_dir / 'manifest.json'
+    role = ""
+    if require_review_verdict:
+        role = f"""
+Role: independent reviewer.
+- Review the existing work for subject `{review_subject or task_dir}` written by
+  `{review_subject_author or 'the recorded author'}`; do not re-execute or repair it.
+- The configured target repository is `{repository}`.
+- Record concrete findings in `{task_dir / 'findings.md'}` and end that file with
+  exactly one line: `Verdict: approved` or `Verdict: rework`.
+- Treat the subject and target repository as read-only. Writes are limited to this
+  review task's own artifacts.
+"""
+    elif repository is not None:
+        role = f"\nConfigured target repository: `{repository}`.\n"
     return f"""You are the child execution agent for task directory: {task_dir}
+{role}
 
 Before doing substantial work:
 1. Read `{task_md}`
@@ -463,17 +485,18 @@ def claude_access_arguments(
         sandbox_settings["enableWeakerNestedSandbox"] = True
 
     if sandbox_mode == "read-only":
-        permission_mode = "dontAsk"
         read_only_tools = "Read,Grep,Glob,WebFetch,WebSearch"
         if notebook is None:
+            permission_mode = "dontAsk"
             tool_arguments = ["--tools", read_only_tools]
         else:
-            # The subject remains read-only. Bash is admitted only so the child
-            # can search, test, and maintain its own durable review notebook.
-            tool_arguments = ["--tools", f"{read_only_tools},Bash"]
-            sandbox_settings["filesystem"] = {
-                "allowWrite": [str(notebook), str(repo_root() / ".state")]
-            }
+            # build_command wraps this form in an outer mount namespace. That
+            # namespace, not Claude's --add-dir mount, is the write boundary.
+            # Native writes and Bash are therefore safe and necessary for the
+            # reviewer to maintain its own task artifacts and run tests.
+            tool_arguments = ["--tools", f"{read_only_tools},Bash,Write,Edit"]
+            sandbox_settings = {"enabled": False}
+            permission_mode = None
     elif sandbox_mode == "workspace-write":
         # Claude's sandbox defaults to writes in cwd and its session temp dir.
         # acceptEdits authorizes native file tools only within Claude's granted
@@ -497,8 +520,7 @@ def claude_access_arguments(
         "--setting-sources",
         "project",
         *tool_arguments,
-        "--permission-mode",
-        permission_mode,
+        *(["--permission-mode", permission_mode] if permission_mode else ["--dangerously-skip-permissions"]),
         "--settings",
         json.dumps({"sandbox": sandbox_settings}, separators=(",", ":")),
     ]
@@ -912,6 +934,36 @@ def build_command(
             command.extend(["--model", resolved_model])
         command.extend(application_arguments)
         command.append(prompt)
+        if resolved_sandbox_mode == "read-only" and notebook is not None:
+            # Claude's own sandbox currently makes cwd and --add-dir writable
+            # even when its permission policy says otherwise. An outer mount
+            # namespace is the enforceable boundary: the host is read-only and
+            # only the review notebook, task index and runtime-owned Claude
+            # session storage are rebound writable.
+            writable_runtime = [
+                path
+                for path in (
+                    Path.home() / ".claude",
+                    Path.home() / ".claude.json",
+                    Path.home() / ".cache",
+                )
+                if path.exists()
+            ]
+            boundary = [
+                "bwrap",
+                "--ro-bind", "/", "/",
+                "--dev-bind", "/dev", "/dev",
+                "--proc", "/proc",
+                "--tmpfs", "/tmp",
+                "--bind", str(notebook), str(notebook),
+            ]
+            state = repo_root() / ".state"
+            if state.exists():
+                boundary.extend(["--bind", str(state), str(state)])
+            for path in writable_runtime:
+                boundary.extend(["--bind", str(path), str(path)])
+            boundary.extend(["--chdir", str(notebook), "--"])
+            command = [*boundary, *command]
         return command
 
     if runner == "agent":
@@ -1773,7 +1825,14 @@ def cmd_start(args: argparse.Namespace) -> None:
         **dev_pipeline_options(args),
     )
     if args.workflow == "standard":
-        prompt = build_child_prompt(task_dir)
+        repository = access_directories[0] if access_directories else None
+        prompt = build_child_prompt(
+            task_dir,
+            repository=repository,
+            review_subject=getattr(args, "review_subject", None),
+            review_subject_author=getattr(args, "review_subject_author", None),
+            require_review_verdict=bool(getattr(args, "require_review_verdict", False)),
+        )
         runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
     else:
         runner_prompt_path(task_dir).write_text(
