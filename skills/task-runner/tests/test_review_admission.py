@@ -752,6 +752,8 @@ class OnlyAStartedLaunchAuthorsTheNumberTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             task_dir, author = self._bound_number(raw)
+            prior_findings = "# Findings\n\nVerdict: approved\n"
+            (task_dir / "findings.md").write_text(prior_findings, encoding="utf-8")
             with mock.patch.object(
                 task_runner.subprocess,
                 "Popen",
@@ -766,6 +768,7 @@ class OnlyAStartedLaunchAuthorsTheNumberTests(unittest.TestCase):
             )
             trace = (task_dir / "trace.md").read_text(encoding="utf-8")
             status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+            findings = (task_dir / "findings.md").read_text(encoding="utf-8")
 
         self.assertIn("could not start the task watcher", message)
         self.assertEqual(status["state"], "failed")
@@ -773,6 +776,7 @@ class OnlyAStartedLaunchAuthorsTheNumberTests(unittest.TestCase):
         self.assertEqual(current["admission_id"], author["admission_id"])
         self.assertTrue(bound_review["bound"])
         self.assertIn("withdrew the review binding", trace)
+        self.assertEqual(findings, prior_findings)
 
 
 class TheWithdrawalOutlivesTheProcessThatCommittedTests(unittest.TestCase):
@@ -1500,6 +1504,101 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             ready, reason = task_completion.completion_ready(task, workflow="standard")
         self.assertFalse(ready)
         self.assertIn("no review round yet", reason)
+
+    def test_approved_standard_review_completes_canonical_metadata_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            task_md = (task / "task.md").read_text(encoding="utf-8")
+            (task / "task.md").write_text(
+                task_md.replace('status: "completed"', 'status: "blocked"'),
+                encoding="utf-8",
+            )
+            self._admit_author(task)
+            _launch(
+                task,
+                workflow="standard",
+                author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=UNGATED,
+                review_launch=True,
+                which=_installed("claude", "codex"),
+            )
+            (task / "findings.md").write_text(
+                "# Findings\n\nVerdict: approved\n", encoding="utf-8"
+            )
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "blocked", "current_step": "waiting for review"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "codex", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(task_completion.task_status(task), "completed")
+            self.assertEqual(status["state"], "completed")
+            self.assertEqual(status["review_result"], "approved")
+            self.assertEqual(review_admission.review_rounds(task)[-1]["decision"], "approved")
+
+    def test_refused_completion_demotes_premature_completed_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed", "current_step": "child claimed completion"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(task_completion.task_status(task), "blocked")
+            self.assertEqual(status["state"], "blocked")
+            self.assertIn("independent review", status["current_step"])
+
+    def test_child_written_blocked_state_is_canonical_for_observers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "blocked", "current_step": "waiting for review"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            self.assertEqual(task_completion.task_status(task), "blocked")
+            self.assertEqual(
+                task_runner.read_json(task_runner.status_path(task))["state"], "blocked"
+            )
+
+    def test_child_written_failed_state_is_canonical_for_observers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "failed", "current_step": "child reported failure"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 1)
+
+            self.assertEqual(task_completion.task_status(task), "blocked")
+            self.assertEqual(
+                task_runner.read_json(task_runner.status_path(task))["state"], "failed"
+            )
+
+    def test_nonzero_exit_is_canonical_for_observers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "running", "current_step": "child running"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 7)
+
+            self.assertEqual(task_completion.task_status(task), "blocked")
+            self.assertEqual(
+                task_runner.read_json(task_runner.status_path(task))["state"], "failed"
+            )
 
 
 if __name__ == "__main__":

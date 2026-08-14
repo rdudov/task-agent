@@ -432,7 +432,7 @@ class ApplicationAdapterTests(unittest.TestCase):
 
     def test_standard_exit_hook_can_preserve_exact_quota_wait(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            task = self._task(Path(raw))
+            task = self._task(Path(raw) / "tasks")
             started = task_runner.prepared_application_launch(self._args(), task)
             task_runner.write_json(
                 task_runner.runner_meta_path(task),
@@ -450,6 +450,7 @@ class ApplicationAdapterTests(unittest.TestCase):
             )
             status = json.loads(task_runner.status_path(task).read_text(encoding="utf-8"))
             self.assertEqual(status["state"], "waiting_for_quota")
+            self.assertEqual(task_completion.task_status(task), "blocked")
             self.assertEqual(
                 status["quota_wait"]["resets_at"], "2026-08-12T00:00:00Z"
             )

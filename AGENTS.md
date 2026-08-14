@@ -144,8 +144,16 @@ Before delegation, the parent agent should ensure `task.md` and `plan.md` contai
 Both standard and dev-pipeline runs use the same durable completion decision.
 Exit code zero is refused unless task frontmatter is `completed`, the plan has no
 unfinished markers, required evidence has a latest passing result, and required
-review gates are established. A cross-review task may require its author to
-publish exactly one canonical `Verdict:` line in `findings.md`.
+review gates are established. A standard author run whose review is still
+missing is reconciled to `blocked` frontmatter, even if the child prematurely
+wrote `completed`; a successful admitted review records its round first and may
+perform the canonical `completed` transition after every other gate passes. A
+failed, blocked, or paused run likewise reconciles canonical frontmatter to
+`blocked`, so runtime failure cannot remain hidden behind a stale completed
+card. A cross-review task may require its reviewer to publish exactly one canonical
+`Verdict:` line in `findings.md`; prior canonical lines are cleared when a new
+review process starts because historical decisions live in `reviews/rounds.jsonl`;
+a launch that creates no reviewer preserves the prior line.
 
 Substantial implementation work should preserve at least one no-mock end-to-end verification path for the primary function being changed. Services, APIs, daemons, and workers should include a smoke check against the real runtime entrypoint in the target launch mode.
 

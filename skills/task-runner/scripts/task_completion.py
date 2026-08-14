@@ -106,9 +106,9 @@ def task_status(task_dir: Path) -> str:
         return "unknown"
 
 
-def complete_task_metadata(task_dir: Path) -> None:
-    """Close a task through the canonical metadata command or fail visibly."""
-    if task_status(task_dir) == "completed":
+def set_task_metadata_status(task_dir: Path, status: str) -> None:
+    """Write task state through the canonical metadata command or fail visibly."""
+    if task_status(task_dir) == status:
         return
     command = (
         [sys.executable, str(TASKS_INDEX_PATH)]
@@ -118,7 +118,7 @@ def complete_task_metadata(task_dir: Path) -> None:
     env = os.environ.copy()
     env["TASKS_INDEX_ROOT"] = str(task_dir.resolve().parents[1])
     result = subprocess.run(
-        [*command, "set-status", task_reference(task_dir), "completed"],
+        [*command, "set-status", task_reference(task_dir), status],
         capture_output=True,
         text=True,
         env=env,
@@ -126,13 +126,24 @@ def complete_task_metadata(task_dir: Path) -> None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(
-            "canonical task metadata owner refused completion: "
+            f"canonical task metadata owner refused status {status!r}: "
             + (detail or f"exit {result.returncode}")
         )
-    if task_status(task_dir) != "completed":
+    if task_status(task_dir) != status:
         raise RuntimeError(
-            "canonical task metadata owner returned success without persisting completed status"
+            "canonical task metadata owner returned success without persisting "
+            f"status {status!r}"
         )
+
+
+def complete_task_metadata(task_dir: Path) -> None:
+    """Close a task through the canonical metadata owner."""
+    set_task_metadata_status(task_dir, "completed")
+
+
+def block_task_metadata(task_dir: Path) -> None:
+    """Keep a refused close visible through the canonical metadata owner."""
+    set_task_metadata_status(task_dir, "blocked")
 
 
 def completion_workflow(task_dir: Path, explicit: str | None = None) -> str | None:
@@ -203,7 +214,7 @@ def completion_ready(
 
     status = task_status(task_dir)
     if status != "completed" and not (
-        defer_task_status and status == "in_progress"
+        defer_task_status and status in {"in_progress", "blocked"}
     ):
         return False, f"task.md frontmatter status is {status!r}, not 'completed'"
 

@@ -114,6 +114,18 @@ as a phase of the same number:
 .venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
+That blocked state is canonical metadata, not only a runtime annotation: if an
+author prematurely wrote `completed`, the finalizer restores `blocked` through
+`tasks_index.py` whenever the run is refused, failed, blocked, or paused. A new
+admitted review process begins with no stale canonical `Verdict:` lines in
+`findings.md`; prior decisions remain in the append-only rounds ledger, and a
+launch failure restores the prior line because no reviewer started. After any
+installation-specific quota disposition is handled, a clean review exit records
+the new round. If it is approved and every other completion gate passes, the
+same finalizer uses `tasks_index.py` to set `completed`, rechecks the full
+predicate, and closes `status.json` and the phase without a separate bookkeeping
+run.
+
 Rounds are appended to `reviews/rounds.jsonl` without any ceiling, and the
 bindings to `reviews/admissions.jsonl`. An unapproved round refuses acceptance
 and authorizes the next round; nothing counts down, in this project or in the

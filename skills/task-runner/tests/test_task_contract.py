@@ -8,6 +8,7 @@ import pytest
 
 from task_contract import (
     COMPLETION_REVIEW_QUESTION,
+    clear_published_review_verdicts,
     delivered_candidate,
     historical_completion_review_materials,
     parse_task_markdown_contract,
@@ -114,6 +115,29 @@ def test_required_review_verdict_must_be_authors_own_unambiguous_line(tmp_path: 
     assert unsatisfied_review_verdict(contract, tmp_path)
     (tmp_path / "findings.md").write_text("Verdict: approved\n", encoding="utf-8")
     assert unsatisfied_review_verdict(contract, tmp_path) == []
+
+
+def test_a_new_review_clears_only_prior_canonical_verdict_lines(tmp_path: Path) -> None:
+    findings = tmp_path / "findings.md"
+    findings.write_text(
+        "# Findings\n\nVerdict: rework\n\nPrior detail stays.\n"
+        "Not a Verdict: approved sentence.\n\nVerdict: **approved**\n",
+        encoding="utf-8",
+    )
+
+    assert clear_published_review_verdicts(tmp_path) == 2
+    assert findings.read_text(encoding="utf-8") == (
+        "# Findings\n\n\nPrior detail stays.\n"
+        "Not a Verdict: approved sentence.\n\n"
+    )
+    assert clear_published_review_verdicts(tmp_path) == 0
+
+
+def test_unreadable_prior_findings_refuse_verdict_cleanup(tmp_path: Path) -> None:
+    (tmp_path / "findings.md").write_bytes(b"\xffVerdict: approved\n")
+
+    with pytest.raises(UnicodeError):
+        clear_published_review_verdicts(tmp_path)
 
 
 def test_historical_review_materials_revalidate_the_recorded_git_object(

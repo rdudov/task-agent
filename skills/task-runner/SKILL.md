@@ -452,8 +452,19 @@ a review phase of the same number:
 ```
 
 A standard review's decision reaches the ledger from the one canonical `Verdict:`
-line its contract already requires; finding-level repeat detection needs the
-structured findings only a dev-pipeline decision artifact carries.
+line its contract already requires. When a new admitted review starts, the
+runner removes prior canonical verdict lines from `findings.md` while retaining
+the surrounding findings; historical decisions already live in
+`reviews/rounds.jsonl`. A launch that creates no reviewer restores the prior
+line. After installation-specific pause handling, a clean reviewer exit records
+the round before completion is evaluated. An approval that passes every other
+gate closes task frontmatter through `tasks_index.py` and leaves `status.json`
+completed. A
+refused, failed, blocked, or paused run reconciles frontmatter to `blocked`, so
+an observer that reads the canonical metadata cannot mistake unfinished work for
+finished work.
+Finding-level repeat detection needs the structured findings only a dev-pipeline
+decision artifact carries.
 
 There is no cap on rework rounds. Review and rework are phases of one task
 number, and the runner has nothing that counts down: `rework_rounds` is recorded

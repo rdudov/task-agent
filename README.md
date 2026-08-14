@@ -273,9 +273,14 @@ CLI fails before an owner process is started.
 The same resolver is used by normal runs, direct adapter invocation, and
 `review-candidate`.
 
-The owner closes task frontmatter through `tasks_index.py`, completes every plan
-step, and records passing live evidence. A completion reported without those
-durable gates is blocked. For a contract with mandatory prose policy families,
+Task frontmatter is written only through `tasks_index.py`. An author completes
+every plan step and records passing live evidence; if review is still missing,
+or a run fails, blocks, or pauses, the finalizer keeps the frontmatter blocked.
+A clean approved standard review records its round after installation-specific
+pause handling and performs the completed transition itself after every other
+gate passes. Verdict cleanup is committed only when the reviewer process starts.
+A completion reported without those durable gates is blocked. For
+a contract with mandatory prose policy families,
 run the bounded reviewer over the final committed candidate:
 
 ```bash

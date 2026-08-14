@@ -78,6 +78,29 @@ def published_review_verdict(task_dir: Path, path: str = "findings.md") -> str |
     return matches[0].lower() if len(matches) == 1 else None
 
 
+def clear_published_review_verdicts(task_dir: Path, path: str = "findings.md") -> int:
+    """Remove canonical verdict lines before a new admitted review starts.
+
+    Review history belongs to ``reviews/rounds.jsonl``.  Leaving an earlier
+    round's canonical line in the current reviewer's output makes the one parser
+    shared by the ledger and completion gate unable to read the new decision.
+    Non-verdict findings stay in place so the reviewer retains the task record.
+    """
+    file_path = task_dir / path
+    if not file_path.is_file():
+        return 0
+    lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    verdict_line = re.compile(
+        r"^Verdict:[ \t]*(?:\*\*)?[a-z]+(?:\*\*)?[ \t]*$",
+        flags=re.IGNORECASE,
+    )
+    retained = [line for line in lines if not verdict_line.fullmatch(line.rstrip("\r\n"))]
+    removed = len(lines) - len(retained)
+    if removed:
+        file_path.write_text("".join(retained), encoding="utf-8")
+    return removed
+
+
 def unsatisfied_review_verdict(contract: dict[str, Any], task_dir: Path) -> list[str]:
     """Require the reviewer's own findings file and one canonical verdict line."""
     requirement = enforced_review_verdict(contract)

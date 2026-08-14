@@ -32,7 +32,12 @@ try:  # package install
         INTERRUPTED_COMPLETION_KIND,
         try_send_pipeline_stop_message,
     )
-    from .task_completion import application_completion_ready, completion_ready
+    from .task_completion import (
+        application_completion_ready,
+        block_task_metadata,
+        complete_task_metadata,
+        completion_ready,
+    )
     from .task_contract import (
         COMPLETION_REVIEW_CONTEXT,
         COMPLETION_REVIEW_EXCLUSIONS,
@@ -43,6 +48,7 @@ try:  # package install
         completion_review_bound_materials,
         completion_review_evidence,
         completion_review_subject,
+        clear_published_review_verdicts,
         enforced_review_verdict,
         ensure_task_contract_file,
         load_task_contract,
@@ -65,7 +71,12 @@ except ImportError:  # direct repository script
         INTERRUPTED_COMPLETION_KIND,
         try_send_pipeline_stop_message,
     )
-    from task_completion import application_completion_ready, completion_ready
+    from task_completion import (
+        application_completion_ready,
+        block_task_metadata,
+        complete_task_metadata,
+        completion_ready,
+    )
     from task_contract import (
         COMPLETION_REVIEW_CONTEXT,
         COMPLETION_REVIEW_EXCLUSIONS,
@@ -76,6 +87,7 @@ except ImportError:  # direct repository script
         completion_review_bound_materials,
         completion_review_evidence,
         completion_review_subject,
+        clear_published_review_verdicts,
         enforced_review_verdict,
         ensure_task_contract_file,
         load_task_contract,
@@ -2188,6 +2200,7 @@ def finalize_child_lifecycle(
     A child that exits non-zero before writing a terminal state would otherwise
     leave `running` behind, which reads as work still in progress.
     """
+    review_round = None
     if workflow == "standard":
         metadata = read_json(runner_meta_path(task_dir))
         registration = metadata.get("application")
@@ -2234,6 +2247,13 @@ def finalize_child_lifecycle(
                     f"Application handled the standard run as `{disposition.state}`: "
                     f"{disposition.current_step}",
                 )
+                try:
+                    block_task_metadata(task_dir)
+                except RuntimeError as exc:
+                    append_trace(
+                        task_dir,
+                        f"Could not reconcile unfinished task metadata: {exc}",
+                    )
                 return
         except (ApplicationAdapterError, OSError, TypeError, ValueError) as exc:
             write_status(
@@ -2243,23 +2263,66 @@ def finalize_child_lifecycle(
                 {"runner": runner, "workflow": workflow, "exit_code": return_code},
             )
             append_trace(task_dir, f"Application standard-run classification failed: {exc}")
+            try:
+                block_task_metadata(task_dir)
+            except RuntimeError as metadata_exc:
+                append_trace(
+                    task_dir,
+                    f"Could not reconcile failed task metadata: {metadata_exc}",
+                )
             return
-        # The run reached its own end rather than a quota pause, so if it was the
-        # review, its verdict becomes a round before anything asks whether this
-        # task has an approval.
-        record_standard_review_round(task_dir, runner)
+        # A quota pause returns above without depositing a review round. Once
+        # the application confirms the run reached its own end, a clean
+        # reviewer decision belongs in the ledger before completion reads it.
+        if return_code == 0:
+            review_round = record_standard_review_round(task_dir, runner)
+        # An approved review owns the task's terminal bookkeeping. Check every
+        # other gate while allowing the expected pre-terminal metadata state,
+        # then use the canonical metadata owner and verify the full predicate.
+        if review_round and review_round.get("decision") == "approved":
+            ready, reason = completion_ready(
+                task_dir, workflow=workflow, defer_task_status=True
+            )
+            if ready:
+                try:
+                    complete_task_metadata(task_dir)
+                    ready, reason = completion_ready(task_dir, workflow=workflow)
+                except RuntimeError as exc:
+                    ready, reason = False, str(exc)
+                if ready:
+                    write_status(
+                        task_dir,
+                        "completed",
+                        "Independent review approved and all completion gates passed",
+                        {
+                            "runner": runner,
+                            "workflow": workflow,
+                            "exit_code": return_code,
+                            "review_round": review_round.get("round"),
+                            "review_result": "approved",
+                        },
+                    )
+                    append_trace(
+                        task_dir,
+                        "Approved independent review completed canonical task metadata; "
+                        "all completion gates passed.",
+                    )
 
     task_state = read_json(status_path(task_dir)).get("state")
     if task_state in {"completed", "failed", "blocked"}:
-        # The child recorded its own terminal state, so there is nothing to
-        # correct — but the phase still has to close. A child writes
-        # `status.json` itself and knows nothing about phases, so a run that
-        # ended well would otherwise stay in the phase it was working in, and
-        # the task's own history would never show how it finished.
+        # The child recorded its own runtime state, but canonical metadata and
+        # the phase still have to agree with it. A child writes `status.json`
+        # itself and knows nothing about phases, so a run that ended well would
+        # otherwise stay in the phase it was working in, and a blocked run could
+        # remain hidden behind premature `completed` frontmatter.
         if task_state == "completed":
             ready, reason = completion_ready(task_dir, workflow=workflow)
             if not ready:
                 refusal = completion_refusal(task_dir, reason)
+                try:
+                    block_task_metadata(task_dir)
+                except RuntimeError as exc:
+                    refusal = completion_refusal(task_dir, f"{reason}; {exc}")
                 write_status(
                     task_dir,
                     "blocked",
@@ -2274,6 +2337,14 @@ def finalize_child_lifecycle(
                 append_trace(task_dir, refusal["summary"])
                 return
             write_admission.record_completion_acceptance(task_dir)
+        else:
+            try:
+                block_task_metadata(task_dir)
+            except RuntimeError as exc:
+                append_trace(
+                    task_dir,
+                    f"Could not reconcile {task_state} task metadata: {exc}",
+                )
         record_terminal_phase(task_dir, task_state)
         return
     if workflow == "dev-pipeline" and task_state == "waiting":
@@ -2288,6 +2359,10 @@ def finalize_child_lifecycle(
             write_admission.record_completion_acceptance(task_dir)
             return
         refusal = completion_refusal(task_dir, reason)
+        try:
+            block_task_metadata(task_dir)
+        except RuntimeError as exc:
+            refusal = completion_refusal(task_dir, f"{reason}; {exc}")
         write_status(
             task_dir,
             "blocked",
@@ -2323,6 +2398,10 @@ def finalize_child_lifecycle(
         detail,
         {"runner": runner, "workflow": workflow, "exit_code": return_code},
     )
+    try:
+        block_task_metadata(task_dir)
+    except RuntimeError as exc:
+        append_trace(task_dir, f"Could not reconcile failed task metadata: {exc}")
     append_trace(task_dir, trace_detail)
 
 
@@ -2500,8 +2579,18 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             )
             raise SystemExit(1)
 
+    review_findings_snapshot = None
+    removed_verdicts = 0
     try:
         log_handle = runner_log_path(task_dir).open("ab")
+        if args.workflow == "standard" and review_admission.launch_is_review(task_dir):
+            requirement = enforced_review_verdict(load_task_contract(task_dir)) or {}
+            findings_path = task_dir / requirement.get("path", "findings.md")
+            if findings_path.is_file():
+                review_findings_snapshot = (findings_path, findings_path.read_bytes())
+            removed_verdicts = clear_published_review_verdicts(
+                task_dir, requirement.get("path", "findings.md")
+            )
         process = subprocess.Popen(
             command,
             cwd=root,
@@ -2513,8 +2602,23 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             preexec_fn=child_resource_limiter(application_launch.get("memory_limit_bytes")),
         )
     except Exception as exc:
+        if review_findings_snapshot is not None:
+            findings_path, prior_bytes = review_findings_snapshot
+            try:
+                findings_path.write_bytes(prior_bytes)
+            except OSError as restore_exc:
+                exc = RuntimeError(
+                    f"{exc}; could not restore prior canonical review verdict: {restore_exc}"
+                )
         report_launch_failure(task_dir, args, exc)
         raise SystemExit(1)
+
+    if removed_verdicts:
+        append_trace(
+            task_dir,
+            f"Cleared {removed_verdicts} prior canonical verdict line(s) before the new "
+            "review; round history remains in reviews/rounds.jsonl.",
+        )
 
     child_started_at = utc_now()
     # Read the child's identity now, while it is certainly the process just
