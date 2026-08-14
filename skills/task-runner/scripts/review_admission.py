@@ -17,13 +17,15 @@ This module answers two questions at launch time, from observable inputs:
    declaration contradicted by a write grant is not an exception, it is a
    mislabel, and the launch stays reviewable.
 
-2. Can an independent reviewer be bound to it? A reviewer is independent when
-   it is a different provider family from the author and its CLI is actually
-   installed here. The author is never its own reviewer, no matter what is
-   unavailable.
+2. Which assurance strategy did the installation select, and can it be bound?
+   Without configuration the strict historical default still requires another
+   installed provider family. Explicit `isolated_same_provider` instead binds a
+   new read-only session of the same provider, while `live_acceptance_only`
+   binds named live evidence and deliberately claims no model verdict.
 
-Material work with no bindable reviewer refuses before the author starts, which
-is the only moment where refusing is still cheap.
+Material work whose selected strategy cannot be satisfied refuses before the
+author starts, which is the only moment where refusing is still cheap. A missing
+configured provider never selects a weaker strategy.
 
 Binding a reviewer at launch is worth nothing on its own, so the binding is
 carried through to the two places that can still let the work out unreviewed:
@@ -73,6 +75,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from dev_pipeline.assurance import validate_assurance_config
+
 
 SCHEMA_VERSION = 1
 
@@ -103,17 +107,31 @@ ADMISSION_COMMITMENT = ".runner/review-admission-commitment.json"
 # Provider families. Two runners of the same family are the same reviewer for
 # admission purposes: independence is about the provider that judges the work,
 # not about which process invoked it.
-RUNNER_FAMILIES = {"codex": "Codex", "claude": "Claude", "agent": "Cursor"}
+RUNNER_FAMILIES = {
+    "codex": "Codex",
+    "claude": "Claude",
+    "agent": "Cursor",
+    "cursor": "Cursor",  # provider name used by dev-pipeline ledgers/config
+}
+RUNNER_TO_PROVIDER = {"codex": "codex", "claude": "claude", "agent": "cursor"}
+PROVIDER_TO_RUNNER = {provider: runner for runner, provider in RUNNER_TO_PROVIDER.items()}
 
 # What has to be on PATH for a family to be a reviewer we can actually bind.
 RUNNER_EXECUTABLES = {"codex": "codex", "claude": "claude", "agent": "cursor-agent"}
 
-# Cursor is an author compatibility runtime, never an independent reviewer.
-REVIEW_RUNNERS = ("codex", "claude")
+# Every provider driver can run the fresh read-only session required by the
+# public assurance contract. The no-configuration default remains deliberately
+# narrower: it is the historical Codex/Claude cross-family policy.
+REVIEW_RUNNERS = ("codex", "claude", "agent")
+CROSS_PROVIDER_DEFAULT_REVIEWERS = ("codex", "claude")
 
 # Preference order when nobody named a reviewer. Deterministic so the recorded
 # decision is reproducible from the same host.
-REVIEWER_PREFERENCE = REVIEW_RUNNERS
+REVIEWER_PREFERENCE = CROSS_PROVIDER_DEFAULT_REVIEWERS
+
+CROSS_PROVIDER = "cross_provider"
+ISOLATED_SAME_PROVIDER = "isolated_same_provider"
+LIVE_ACCEPTANCE_ONLY = "live_acceptance_only"
 
 MATERIAL = "material"
 READ_ONLY_LOOKUP = "read_only_lookup"
@@ -154,7 +172,7 @@ REFUSAL_ACTION = (
 
 
 class ReviewAdmissionError(RuntimeError):
-    """A material launch that has no independent reviewer to bind."""
+    """A material launch whose selected assurance cannot be bound."""
 
     def __init__(self, record: dict[str, Any]) -> None:
         super().__init__(record["message"])
@@ -321,13 +339,29 @@ def reviewer_available(runner: str, which: Callable[[str], str | None] = shutil.
     return bool(executable) and which(executable) is not None
 
 
+def configured_provider_available(
+    assurance: dict[str, Any], provider: str, which: Callable[[str], str | None]
+) -> bool:
+    """Resolve the executable named by the accepted installation contract."""
+    providers = assurance.get("providers")
+    installation = providers.get(provider) if isinstance(providers, dict) else None
+    executable = installation.get("executable") if isinstance(installation, dict) else None
+    if not isinstance(executable, str) or not executable.strip():
+        return False
+    path = Path(executable)
+    if path.is_absolute():
+        return path.is_file() and os.access(path, os.X_OK)
+    return which(executable) is not None
+
+
 def resolve_pair(
     *,
     author_runner: str,
     declared_reviewer: str | None = None,
+    assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
 ) -> dict[str, Any]:
-    """Bind an independent reviewer to this author, or say precisely why not."""
+    """Bind the reviewer required by installation assurance, or the strict default."""
     author_family = family_of(author_runner)
     pair: dict[str, Any] = {
         "author_runner": author_runner,
@@ -336,7 +370,105 @@ def resolve_pair(
         "reviewer_family": None,
         "reviewer_source": None,
         "bound": False,
+        "assurance_strategy": CROSS_PROVIDER,
+        "assurance_source": "default_cross_provider",
     }
+    if assurance:
+        pair["assurance_source"] = "installation_config"
+        try:
+            validate_assurance_config(assurance)
+        except ValueError as exc:
+            pair.update(
+                {
+                    "outcome": "invalid_assurance_configuration",
+                    "detail": f"the installation assurance configuration is invalid: {exc}",
+                }
+            )
+            return pair
+        strategy = str(assurance["strategy"])
+        owner = str(assurance["owner_provider"])
+        pair["assurance_strategy"] = strategy
+        if owner != RUNNER_TO_PROVIDER.get(author_runner):
+            pair.update(
+                {
+                    "outcome": "assurance_owner_mismatch",
+                    "detail": (
+                        f"assurance strategy `{strategy}` names `{owner}` as owner, "
+                        f"but this launch selected `{author_runner}`"
+                    ),
+                }
+            )
+            return pair
+        if not configured_provider_available(assurance, owner, which):
+            pair.update(
+                {
+                    "outcome": "configured_owner_unavailable",
+                    "detail": (
+                        f"assurance strategy `{strategy}` requires owner `{owner}`, "
+                        "whose configured executable is unavailable"
+                    ),
+                }
+            )
+            return pair
+        reviewer_provider = assurance.get("review_provider")
+        reviewer = (
+            PROVIDER_TO_RUNNER.get(str(reviewer_provider))
+            if reviewer_provider is not None
+            else None
+        )
+        if declared_reviewer and declared_reviewer != reviewer:
+            pair.update(
+                {
+                    "outcome": "declared_reviewer_conflicts_with_assurance",
+                    "detail": (
+                        f"assurance strategy `{strategy}` selects reviewer "
+                        f"`{reviewer_provider}`, but the launch declared `{declared_reviewer}`"
+                    ),
+                }
+            )
+            return pair
+        if strategy == LIVE_ACCEPTANCE_ONLY:
+            pair.update(
+                {
+                    "reviewer_source": "installation_assurance",
+                    "bound": True,
+                    "outcome": LIVE_ACCEPTANCE_ONLY,
+                    "detail": (
+                        "assurance strategy `live_acceptance_only` requires the "
+                        "configured live scenarios and intentionally names no model reviewer"
+                    ),
+                    "live_scenarios": list(assurance.get("live_scenarios", [])),
+                }
+            )
+            return pair
+        assert isinstance(reviewer_provider, str)  # validated by dev-pipeline
+        assert isinstance(reviewer, str)
+        pair["reviewer_source"] = "installation_assurance"
+        if not configured_provider_available(assurance, reviewer_provider, which):
+            pair.update(
+                {
+                    "outcome": "configured_reviewer_unavailable",
+                    "detail": (
+                        f"assurance strategy `{strategy}` requires reviewer "
+                        f"`{reviewer_provider}`, whose configured executable is unavailable; "
+                        "the strategy is not downgraded"
+                    ),
+                }
+            )
+            return pair
+        pair.update(
+            {
+                "reviewer_runner": reviewer,
+                "reviewer_family": family_of(reviewer),
+                "bound": True,
+                "outcome": "bound",
+                "detail": (
+                    f"assurance strategy `{strategy}` binds `{reviewer_provider}` in a fresh "
+                    "read-only session"
+                ),
+            }
+        )
+        return pair
     if declared_reviewer:
         pair["reviewer_source"] = "declared"
         if declared_reviewer not in RUNNER_FAMILIES:
@@ -345,9 +477,13 @@ def resolve_pair(
                 f"the declared reviewer `{declared_reviewer}` is not a runner this launcher knows"
             )
             return pair
-        if declared_reviewer not in REVIEW_RUNNERS:
+        if declared_reviewer not in CROSS_PROVIDER_DEFAULT_REVIEWERS:
             pair["outcome"] = "reviewer_not_supported"
-            pair["detail"] = "Cursor is an author compatibility runtime, not a reviewer"
+            pair["detail"] = (
+                "Cursor is not a reviewer under the no-configuration cross-provider "
+                "default; it can review only when installation assurance explicitly "
+                "selects a supported strategy"
+            )
             return pair
         if family_of(declared_reviewer) == author_family:
             pair["outcome"] = "reviewer_is_author_family"
@@ -475,10 +611,10 @@ def resolve_review_launch_pair(
 ) -> dict[str, Any]:
     """Check that this review is the one the number was promised.
 
-    The binding made before the author started named a family. A review by the
-    author's own family is the substitution this project forbids outright, and a
-    review by some third family is not the one that was bound -- both are
-    refused here rather than discovered in the verdict.
+    The binding made before the author started named a strategy and provider. A
+    same-family review is valid only for explicit session isolation; under the
+    default or cross-provider strategy it remains forbidden. A third provider is
+    never the one that was bound.
 
     A number with no author binding of its own is not refused: a review task
     whose subject is another number is paired by the installation that owns
@@ -511,8 +647,21 @@ def resolve_review_launch_pair(
     author_family = bound_pair.get("author_family") or family_of(author_runner)
     bound_reviewer = bound_pair.get("reviewer_runner")
     bound_family = bound_pair.get("reviewer_family") or family_of(bound_reviewer)
+    strategy = bound_pair.get("assurance_strategy", CROSS_PROVIDER)
+    pair["assurance_strategy"] = strategy
     pair.update({"author_runner": author_runner, "author_family": author_family})
-    if reviewer_family == author_family:
+    if strategy == LIVE_ACCEPTANCE_ONLY:
+        pair.update(
+            {
+                "outcome": "model_review_not_selected",
+                "detail": (
+                    "assurance strategy `live_acceptance_only` intentionally has no "
+                    "model reviewer; its configured live evidence decides acceptance"
+                ),
+            }
+        )
+        return pair
+    if reviewer_family == author_family and strategy != ISOLATED_SAME_PROVIDER:
         pair.update(
             {
                 "outcome": "review_by_author_family",
@@ -540,8 +689,8 @@ def resolve_review_launch_pair(
             "bound": True,
             "outcome": "bound",
             "detail": (
-                f"`{reviewer_runner}` is the {reviewer_family} reviewer bound to this "
-                f"task before its {author_family} author started"
+                f"`{reviewer_runner}` is the {reviewer_family} reviewer bound under "
+                f"assurance strategy `{strategy}` before its {author_family} author started"
             ),
         }
     )
@@ -565,6 +714,13 @@ REVIEW_REFUSAL_ACTION = (
 def _refusal_reason(classification: dict[str, Any], pair: dict[str, Any]) -> str:
     effects = classification.get("material_effects") or []
     because = effects[0] if effects else "it is not declared as an observably read-only lookup"
+    if pair.get("assurance_source") == "installation_config":
+        return (
+            "task-runner refuses to start the author: this launch needs assurance "
+            f"strategy `{pair.get('assurance_strategy')}` because {because}, but that "
+            f"strategy cannot be admitted -- {pair.get('detail')}. The configured "
+            "assurance level is not silently downgraded."
+        )
     return (
         "task-runner refuses to start the author: this launch needs an independent "
         f"reviewer because {because}, and none can be bound -- {pair.get('detail')}. "
@@ -573,7 +729,16 @@ def _refusal_reason(classification: dict[str, Any], pair: dict[str, Any]) -> str
 
 
 def _refusal_message(classification: dict[str, Any], pair: dict[str, Any]) -> str:
-    return f"{_refusal_reason(classification, pair)} {REFUSAL_ACTION}"
+    return f"{_refusal_reason(classification, pair)} {_refusal_action(pair)}"
+
+
+def _refusal_action(pair: dict[str, Any]) -> str:
+    if pair.get("assurance_source") == "installation_config":
+        return (
+            "Restore the provider required by that installation configuration, or "
+            "change the installation's assurance strategy explicitly before retrying."
+        )
+    return REFUSAL_ACTION
 
 
 def refusal_notification(record: dict[str, Any]) -> dict[str, str]:
@@ -616,7 +781,10 @@ def evaluate(
         pair = resolve_review_launch_pair(task_dir, reviewer_runner=author_runner)
     else:
         pair = resolve_pair(
-            author_runner=author_runner, declared_reviewer=declared, which=which
+            author_runner=author_runner,
+            declared_reviewer=declared,
+            assurance=assurance,
+            which=which,
         )
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -629,6 +797,8 @@ def evaluate(
         "task_dir": str(task_dir),
         "classification": classification,
         "pair": pair,
+        "assurance_strategy": pair.get("assurance_strategy", CROSS_PROVIDER),
+        "assurance_source": pair.get("assurance_source", "bound_author_admission"),
         "rework_rounds": "unlimited",
     }
     if classification["work_class"] == REVIEW:
@@ -658,11 +828,24 @@ def evaluate(
         return record
     if pair["bound"]:
         record["decision"] = "admitted"
-        record["message"] = (
-            f"task-runner bound {pair['reviewer_family']} as the independent reviewer "
-            f"for this {pair['author_family']} author before starting it: {pair['detail']}. "
-            "Review and rework stay phases of this task number, with no limit on rounds."
-        )
+        if pair.get("assurance_strategy") == LIVE_ACCEPTANCE_ONLY:
+            record["message"] = (
+                "task-runner admitted this author under assurance strategy "
+                f"`live_acceptance_only`: {pair['detail']}. No model verdict is "
+                "claimed; completion is gated by the named live scenarios."
+            )
+        else:
+            independence = (
+                "isolated same-provider reviewer"
+                if pair.get("assurance_strategy") == ISOLATED_SAME_PROVIDER
+                else "independent cross-provider reviewer"
+            )
+            record["message"] = (
+                f"task-runner bound {pair['reviewer_family']} as the {independence} "
+                f"for this {pair['author_family']} author under assurance strategy "
+                f"`{pair.get('assurance_strategy')}` before starting it: {pair['detail']}. "
+                "Review and rework stay phases of this task number, with no limit on rounds."
+            )
         if workflow != "standard":
             # A dev-pipeline run is reviewed by the core, using the assurance the
             # installation hands it. If that assurance reviews with somebody else
@@ -680,9 +863,12 @@ def evaluate(
         return record
     record["decision"] = "refused"
     record["refusal_reason"] = _refusal_reason(classification, pair)
-    record["refusal_action"] = REFUSAL_ACTION
+    record["refusal_action"] = _refusal_action(pair)
     record["message"] = _refusal_message(classification, pair)
-    record["infrastructure_defect"] = pair.get("outcome") in INFRASTRUCTURE_OUTCOMES
+    record["infrastructure_defect"] = pair.get("outcome") in (
+        INFRASTRUCTURE_OUTCOMES
+        | {"configured_owner_unavailable", "configured_reviewer_unavailable"}
+    )
     return record
 
 
@@ -1215,11 +1401,11 @@ def independent_review_status(
 ) -> dict[str, Any]:
     """Whether the work as it now stands carries the approval it was admitted with.
 
-    Three things have to hold, and each is read from an append-only record this
+    For model-review strategies three things have to hold, each read from an append-only record this
     module or `task_phases` already keeps rather than from anything a run says
     about itself:
 
-    - the number bound an independent reviewer to material work at all;
+    - the number bound the configured reviewer to material work at all;
     - its most recent review round approved, and the family that approved is the
       family that binding named -- not merely some family other than the
       author's, because a third family is not the review this work was admitted
@@ -1245,6 +1431,11 @@ def independent_review_status(
         )
         return status
     pair = binding.get("pair") if isinstance(binding.get("pair"), dict) else {}
+    strategy = str(
+        binding.get("assurance_strategy")
+        or pair.get("assurance_strategy")
+        or CROSS_PROVIDER
+    )
     reviewer_family = pair.get("reviewer_family")
     author_family = pair.get("author_family")
     status.update(
@@ -1253,8 +1444,24 @@ def independent_review_status(
             "reviewer_family": reviewer_family,
             "author_family": author_family,
             "admitted_at": binding.get("evaluated_at"),
+            "assurance_strategy": strategy,
         }
     )
+    if strategy == LIVE_ACCEPTANCE_ONLY:
+        status["required"] = False
+        if _rounds(task_dir):
+            status["satisfied"] = False
+            status["reason"] = (
+                "assurance strategy `live_acceptance_only` names no model reviewer, "
+                "but a model review round is recorded"
+            )
+        else:
+            status["reason"] = (
+                "assurance strategy `live_acceptance_only` requires configured live "
+                "evidence and intentionally claims no model review"
+            )
+        status.pop("action", None)
+        return status
     status["action"] = review_launch_hint(task_dir, pair.get("reviewer_runner"))
     rounds = _rounds(task_dir)
     if not rounds:
@@ -1281,7 +1488,11 @@ def independent_review_status(
             "for rework and another round, of which there is no limit"
         )
         return status
-    if author_family and last_family == author_family:
+    if (
+        strategy != ISOLATED_SAME_PROVIDER
+        and author_family
+        and last_family == author_family
+    ):
         status["satisfied"] = False
         status["reason"] = (
             f"the approval on record was recorded for the {last_family} family, "
@@ -1321,9 +1532,14 @@ def independent_review_status(
             "reviewed"
         )
         return status
+    isolation = (
+        " in a separate read-only session"
+        if strategy == ISOLATED_SAME_PROVIDER
+        else ""
+    )
     status["reason"] = (
-        f"review round {last.get('round')} by {last_family} approved this work and "
-        "no author work was recorded after it"
+        f"review round {last.get('round')} by {last_family}{isolation} approved this "
+        "work and no author work was recorded after it"
     )
     return status
 
@@ -1336,9 +1552,9 @@ def assurance_binding(
     A dev-pipeline launch does not review anything itself: the core does, using
     the assurance configuration the installation supplies. So the binding made
     before the author starts is only real if that configuration names the same
-    reviewer. An assurance that names someone else, reviews with the author's own
-    family, or is missing entirely from a material launch is refused here --
-    after the author has run, the same mismatch costs the attempt.
+    reviewer or live-evidence strategy. A disagreement or missing assurance on a
+    material dev-pipeline launch is refused here; same-provider isolation and
+    live-only are explicit strategies, not fallbacks.
     """
     pair = record.get("pair") if isinstance(record.get("pair"), dict) else {}
     classification = record.get("classification")
@@ -1374,6 +1590,22 @@ def assurance_binding(
     strategy = assurance.get("strategy")
     result["assurance_review_provider"] = provider
     result["assurance_strategy"] = strategy
+    if strategy == LIVE_ACCEPTANCE_ONLY:
+        if pair.get("assurance_strategy") != LIVE_ACCEPTANCE_ONLY:
+            result.update(
+                {
+                    "bound": False,
+                    "outcome": "assurance_strategy_mismatch",
+                    "detail": "admission and dev-pipeline assurance strategies disagree",
+                }
+            )
+            return result
+        result["outcome"] = LIVE_ACCEPTANCE_ONLY
+        result["detail"] = (
+            "assurance strategy `live_acceptance_only` intentionally binds no model "
+            "reviewer and requires its configured live scenarios"
+        )
+        return result
     if not isinstance(provider, str) or not provider.strip():
         result.update(
             {

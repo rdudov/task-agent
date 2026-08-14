@@ -65,6 +65,21 @@ CODEX_ASSURANCE = {
     "review_provider": "codex",
     "providers": {"claude": {"executable": "claude"}, "codex": {"executable": "codex"}},
 }
+SAME_PROVIDER_ASSURANCE = {
+    "schema_version": "1.0",
+    "strategy": "isolated_same_provider",
+    "owner_provider": "claude",
+    "review_provider": "claude",
+    "providers": {"claude": {"executable": "claude"}},
+}
+LIVE_ONLY_ASSURANCE = {
+    "schema_version": "1.0",
+    "strategy": "live_acceptance_only",
+    "owner_provider": "claude",
+    "review_provider": None,
+    "providers": {"claude": {"executable": "claude"}},
+    "live_scenarios": ["real_user_path"],
+}
 
 
 class ClassificationTests(unittest.TestCase):
@@ -145,6 +160,36 @@ class PairingTests(unittest.TestCase):
         )
         self.assertFalse(pair["bound"])
         self.assertEqual(pair["outcome"], "no_independent_runner_installed")
+
+    def test_isolated_same_provider_binds_a_fresh_session_on_one_provider(self) -> None:
+        pair = review_admission.resolve_pair(
+            author_runner="claude",
+            assurance=SAME_PROVIDER_ASSURANCE,
+            which=_installed("claude"),
+        )
+        self.assertTrue(pair["bound"])
+        self.assertEqual(pair["reviewer_runner"], "claude")
+        self.assertEqual(pair["assurance_strategy"], "isolated_same_provider")
+
+    def test_live_acceptance_only_binds_scenarios_not_a_model(self) -> None:
+        pair = review_admission.resolve_pair(
+            author_runner="claude",
+            assurance=LIVE_ONLY_ASSURANCE,
+            which=_installed("claude"),
+        )
+        self.assertTrue(pair["bound"])
+        self.assertIsNone(pair["reviewer_runner"])
+        self.assertEqual(pair["live_scenarios"], ["real_user_path"])
+
+    def test_unavailable_configured_reviewer_does_not_downgrade(self) -> None:
+        pair = review_admission.resolve_pair(
+            author_runner="claude",
+            assurance=CODEX_ASSURANCE,
+            which=_installed("claude"),
+        )
+        self.assertFalse(pair["bound"])
+        self.assertEqual(pair["outcome"], "configured_reviewer_unavailable")
+        self.assertIn("not downgraded", pair["detail"])
 
     def test_cursor_is_never_selected_as_an_independent_reviewer(self) -> None:
         pair = review_admission.resolve_pair(
@@ -1134,25 +1179,32 @@ class AssuranceBindingTests(unittest.TestCase):
         self.assertEqual(record["assurance_binding"]["outcome"], "assurance_missing")
         self.assertIn("never be asked to review", record["message"])
 
-    def test_assurance_reviewing_with_another_family_is_refused(self) -> None:
-        assurance = {**CODEX_ASSURANCE, "review_provider": "agent"}
+    def test_invalid_assurance_is_refused_before_pair_binding(self) -> None:
+        assurance = {**CODEX_ASSURANCE, "review_provider": "claude"}
         with tempfile.TemporaryDirectory() as raw:
             with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
                 self._admit(Path(raw), assurance)
         record = caught.exception.record
-        self.assertEqual(
-            record["assurance_binding"]["outcome"], "assurance_reviewer_mismatch"
-        )
+        self.assertEqual(record["pair"]["outcome"], "invalid_assurance_configuration")
+        self.assertEqual(record["assurance_strategy"], "cross_provider")
 
-    def test_assurance_that_reviews_with_nobody_is_refused(self) -> None:
-        assurance = {**CODEX_ASSURANCE, "review_provider": None}
+    def test_cross_provider_config_selects_its_own_available_reviewer(self) -> None:
+        assurance = {
+            **CODEX_ASSURANCE,
+            "review_provider": "cursor",
+            "providers": {
+                **CODEX_ASSURANCE["providers"],
+                "cursor": {"executable": "cursor-agent"},
+            },
+        }
         with tempfile.TemporaryDirectory() as raw:
-            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
-                self._admit(Path(raw), assurance)
-        self.assertEqual(
-            caught.exception.record["assurance_binding"]["outcome"],
-            "assurance_reviews_nobody",
-        )
+            record = review_admission.admit_launch(
+                Path(raw), workflow="dev-pipeline", author_runner="claude",
+                access_grant=WRITE_GRANT, contract=UNGATED, assurance=assurance,
+                which=_installed("claude", "agent"),
+            )
+        self.assertEqual(record["pair"]["reviewer_runner"], "agent")
+        self.assertEqual(record["assurance_binding"]["outcome"], "bound")
 
     def test_a_standard_launch_needs_no_assurance_configuration(self) -> None:
         """Standard has no assurance seam; its review is a launch of its own."""
@@ -1167,6 +1219,17 @@ class AssuranceBindingTests(unittest.TestCase):
             )
         self.assertEqual(record["decision"], "admitted")
         self.assertNotIn("assurance_binding", record)
+
+    def test_standard_launch_uses_isolated_same_provider_assurance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            record = review_admission.admit_launch(
+                Path(raw), workflow="standard", author_runner="claude",
+                access_grant=WRITE_GRANT, contract=UNGATED,
+                assurance=SAME_PROVIDER_ASSURANCE, which=_installed("claude"),
+            )
+        self.assertEqual(record["decision"], "admitted")
+        self.assertEqual(record["pair"]["reviewer_runner"], "claude")
+        self.assertIn("isolated_same_provider", record["message"])
 
 
 class ReviewLaunchPairingTests(unittest.TestCase):
@@ -1285,6 +1348,37 @@ class ReviewCommandTests(unittest.TestCase):
         ), self.assertRaises(SystemExit, msg="Cursor cannot review"):
             task_runner.cmd_review(args)
 
+    def test_review_command_uses_same_provider_only_for_isolated_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            _launch(
+                task_dir, workflow="standard", author_runner="claude",
+                access_grant=WRITE_GRANT, contract=UNGATED,
+                assurance=SAME_PROVIDER_ASSURANCE, which=_installed("claude"),
+            )
+            args = argparse.Namespace(
+                task_dir=str(task_dir), repo="/srv/target-repo", model=None,
+                application=None, destination=None, memory_limit=None, dry_run=True,
+            )
+            with mock.patch.object(task_runner, "cmd_start") as start:
+                task_runner.cmd_review(args)
+        start.assert_called_once_with(args)
+        self.assertEqual(args.runner, "claude")
+        self.assertEqual(args.sandbox_mode, "read-only")
+        self.assertTrue(args.require_review_verdict)
+
+    def test_review_command_refuses_live_only_binding(self) -> None:
+        admission = {
+            "pair": {
+                "reviewer_runner": None,
+                "assurance_strategy": "live_acceptance_only",
+            }
+        }
+        with mock.patch.object(
+            review_admission, "bound_author_admission", return_value=admission
+        ), self.assertRaises(SystemExit):
+            task_runner.cmd_review(argparse.Namespace(task_dir="/tmp/task"))
+
     def test_review_is_visible_in_top_level_help(self) -> None:
         with mock.patch.object(sys, "argv", ["task_runner.py", "--help"]):
             with self.assertRaises(SystemExit) as caught:
@@ -1313,6 +1407,17 @@ class IndependentReviewStatusTests(unittest.TestCase):
             event_id=f"event-{decision}-{provider}-{len(review_admission.review_rounds(task_dir))}",
             decision={"decision": decision},
             review_provider=provider,
+        )
+
+    def _admitted_same_provider(self, task_dir: Path) -> None:
+        _launch(
+            task_dir,
+            workflow="standard",
+            author_runner="claude",
+            access_grant=WRITE_GRANT,
+            contract=UNGATED,
+            assurance=SAME_PROVIDER_ASSURANCE,
+            which=_installed("claude"),
         )
 
     def test_an_unadmitted_task_is_not_gated_on_a_review_it_never_bound(self) -> None:
@@ -1362,6 +1467,30 @@ class IndependentReviewStatusTests(unittest.TestCase):
             status = review_admission.independent_review_status(task_dir)
         self.assertFalse(status["satisfied"])
         self.assertIn("authored this work", status["reason"])
+
+    def test_same_family_approval_satisfies_explicit_isolated_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self._admitted_same_provider(task_dir)
+            self._round(task_dir, "approved", provider="claude")
+            status = review_admission.independent_review_status(task_dir)
+        self.assertTrue(status["required"])
+        self.assertTrue(status["satisfied"])
+        self.assertIn("separate read-only session", status["reason"])
+
+    def test_live_only_claims_no_model_review(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            _launch(
+                task_dir, workflow="standard", author_runner="claude",
+                access_grant=WRITE_GRANT, contract=UNGATED,
+                assurance=LIVE_ONLY_ASSURANCE, which=_installed("claude"),
+            )
+            status = review_admission.independent_review_status(task_dir)
+        self.assertFalse(status["required"])
+        self.assertTrue(status["satisfied"])
+        self.assertEqual(status["assurance_strategy"], "live_acceptance_only")
+        self.assertNotIn("last_round", status)
 
     def test_an_approval_by_a_third_independent_family_does_not_satisfy_it(self) -> None:
         """Independence is not enough: it has to be the family that was bound.
@@ -1433,6 +1562,46 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIn("independent review", reason)
         self.assertIn("task_runner.py review", reason)
+
+    def test_standard_live_only_requires_each_configured_scenario(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            _launch(
+                task, workflow="standard", author_runner="claude",
+                access_grant=WRITE_GRANT, contract=UNGATED,
+                assurance=LIVE_ONLY_ASSURANCE, which=_installed("claude"),
+            )
+            ready_before, reason = task_completion.completion_ready(
+                task, workflow="standard"
+            )
+            (task / "verification.md").write_text(
+                "## real_user_path\n\n- Result: **PASS**\n- Evidence: live path passed.\n",
+                encoding="utf-8",
+            )
+            ready_after, _ = task_completion.completion_ready(task, workflow="standard")
+        self.assertFalse(ready_before)
+        self.assertIn("live_acceptance_only", reason)
+        self.assertTrue(ready_after)
+
+    def test_live_only_refuses_a_model_verdict_record(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            _launch(
+                task, workflow="standard", author_runner="claude",
+                access_grant=WRITE_GRANT, contract=UNGATED,
+                assurance=LIVE_ONLY_ASSURANCE, which=_installed("claude"),
+            )
+            (task / "verification.md").write_text(
+                "## real_user_path\n\n- Result: **PASS**\n- Evidence: live path passed.\n",
+                encoding="utf-8",
+            )
+            review_admission.record_review_round(
+                task, event_id="model-verdict", decision={"decision": "approved"},
+                review_provider="claude",
+            )
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+        self.assertFalse(ready)
+        self.assertIn("names no model reviewer", reason)
 
     def test_the_reviewers_published_verdict_becomes_the_round(self) -> None:
         """A standard review reaches the ledger through its own verdict line."""

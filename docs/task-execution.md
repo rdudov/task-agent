@@ -101,14 +101,15 @@ admitted with, in one JSON document — the surface a downstream
 consumer uses instead of importing internals. `skills/task-runner/SKILL.md` owns
 the vocabulary, the event mappings and the actuality threshold.
 
-The review phase is not optional for material work. The launcher binds an
-independent provider family before the author starts, and that binding then
-decides both how the run is reviewed and whether it can be accepted: a
-`dev-pipeline` launch must hand the same family to its assurance configuration,
-a launch asked for a verdict must *be* that family, and completion is refused
-until that family's latest recorded round approved the work as it now stands.
-A material `standard` author run therefore ends `blocked` until the review runs
-as a phase of the same number:
+An assurance gate is not optional for material work. The launcher binds the
+installation strategy before the author starts, and that binding decides both
+how the run is checked and whether it can be accepted. With no configuration,
+the historical Codex↔Claude cross-provider pairing remains mandatory. Explicit
+`isolated_same_provider` requires a fresh read-only review session of the same
+provider; explicit `live_acceptance_only` requires every named live scenario and
+records no model verdict. A missing configured provider stops without fallback.
+A material model-reviewed `standard` author run therefore ends `blocked` until
+the review runs as a phase of the same number:
 
 ```bash
 .venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example

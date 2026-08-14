@@ -358,14 +358,25 @@ The declaration only holds while nothing contradicts it. Declare
 `classified_by: declared_read_only_lookup_contradicted_by_observation`. Calling
 work trivial in `task.md` classifies nothing at all.
 
-**Can a reviewer be bound?** Independent review is between the two supported
-review families: Codex work is reviewed by Claude, and Claude work by Codex,
-when that CLI is installed. Cursor is an author compatibility runtime, never a
-reviewer. `--reviewer-runner`, or `review_policy.reviewer_runner`, can name
-Codex or Claude explicitly; otherwise the installed family independent from the
-author is bound. The author is never its own reviewer, whoever is unavailable —
-a launch with no supported independent family installed is refused, not
-downgraded.
+**Which assurance strategy is bound?** `--assurance-config` is the existing
+public `dev-pipeline` installation contract and is read before reviewer
+resolution under either workflow. `cross_provider` binds the configured other
+provider; `isolated_same_provider` binds the configured author provider but only
+through the review command's fresh read-only session; `live_acceptance_only`
+binds its named live scenarios and records that no model verdict exists. Cursor
+can participate only when that explicit provider-neutral contract selects it.
+An unavailable configured provider refuses without fallback.
+
+With no assurance configuration, behavior is unchanged: Codex work is reviewed
+by Claude and Claude work by Codex when that CLI is installed; Cursor remains an
+author compatibility runtime, never the default reviewer. `--reviewer-runner`,
+or `review_policy.reviewer_runner`, can name Codex or Claude explicitly. A host
+with no independent default family refuses before author start.
+
+The admission record always names `assurance_strategy` and its source. This is
+not cosmetic: consumers must be able to distinguish cross-provider review,
+same-provider session isolation, and live acceptance without interpreting a
+generic `approved` flag as a stronger guarantee.
 
 The refusal exits non-zero with its reason in its own words, and leaves the task
 `blocked` with the same message in `status.json` and `trace.md`. It is also
@@ -423,29 +434,31 @@ that nothing consults is a note in a file, so the same decision governs both
 places where the work could still get out unreviewed:
 
 - a `dev-pipeline` launch is reviewed by the core, using the assurance the
-  installation supplies. The launcher checks that this assurance reviews with the
-  family it just bound: an assurance naming another family, an assurance naming
-  no reviewer, or a material launch carrying no assurance at all is refused, with
-  `assurance_binding` on the decision saying which. There is no unassured path
-  for material dev-pipeline work.
+  installation supplies. The launcher checks that this is the same strategy and
+  provider binding it just admitted. A model-review strategy naming another
+  provider, or a material dev-pipeline launch carrying no assurance at all, is
+  refused with `assurance_binding` on the decision saying why. Explicit
+  `live_acceptance_only` legitimately names no reviewer and remains gated by its
+  scenario evidence. There is no unassured path for material dev-pipeline work.
 - a launch asked for a verdict (`--require-review-verdict`) *is* the review. It
-  is admitted as `work_class: review`, and it has to be the family this number
-  was promised: the author's own family is refused as self-review, and a third
-  family is refused as not the reviewer that was bound. A review whose subject is
-  another task number has no binding here to contradict, and is left to whoever
-  owns that pairing.
+  is admitted as `work_class: review`, and it has to be the provider this number
+  was promised. The author's family is refused under `cross_provider`, but is
+  exactly the required provider under explicit `isolated_same_provider`; in both
+  cases this command creates the separate read-only session. A third provider is
+  refused. `live_acceptance_only` refuses a model-review launch rather than
+  depicting a verdict. A review whose subject is another task number has no
+  binding here to contradict and is left to whoever owns that pairing.
 
 **Acceptance is bound to it too.** `independent_review_status` answers, from this
 number's own append-only ledgers, whether the work as it now stands carries the
-approval it was admitted with: the last recorded round approved, by the family
-that binding named — being merely independent of the author is not enough, since
-a third family's approval is not the review this number was promised — with no
-author phase entered since. A binding that names no family at all cannot be
-checked, so it refuses too. The shared completion
-decision refuses otherwise, naming the exact command that would obtain the
-review. So a material standard launch can no longer finish and be accepted
-without its reviewer ever seeing it — the author run ends `blocked`, waiting for
-a review phase of the same number:
+assurance it was admitted with. Model-review strategies require the latest round
+from the exact bound provider to approve, with no author phase entered since;
+same-family approval counts only for explicit session isolation. Live-only
+assurance requires no round, refuses if one is fabricated, and standard
+completion checks every configured scenario against the append-only
+`verification.md` results. The shared completion decision refuses otherwise and
+names the exact missing condition. A material standard model-reviewed launch
+therefore ends `blocked`, waiting for a review phase of the same number:
 
 ```bash
 .venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
@@ -501,10 +514,10 @@ not fill the index with copies of one problem. When there is no workspace
 never that it was filed.
 
 The work under review is not rewritten to accommodate the outage, and the outage
-never licenses accepting the work unreviewed: the task keeps its scope and waits
-for a reviewer it can bind. A caller naming the author's own family as the
-reviewer is not an infrastructure defect — that is an incoherent launch, and it
-is simply refused.
+never licenses a weaker assurance level: the task keeps its scope and waits for
+the configured provider or evidence. Naming the author's family without an
+explicit `isolated_same_provider` installation strategy remains an incoherent
+launch and is simply refused.
 
 ## Git Write Admission
 

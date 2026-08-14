@@ -89,18 +89,24 @@ Files the user explicitly requested are a separate, user-facing class of output.
   launch; dev-pipeline passes it to the core owner. New supervision records also
   bind liveness to the observer's PID namespace, so a nested observer cannot
   declare an invisible host process dead or replace it.
-- Review admission decides, before the author starts, whether a launch needs an
-  independent reviewer and whether one can be bound. Material work is recognized
+- Review admission decides, before the author starts, which installation
+  assurance strategy governs a material launch and whether it can be bound.
+  Material work is recognized
   from observable launch effects, not from prose calling it small, and the only
   exception is a structurally declared read-only lookup that observation does not
-  contradict. An author never reviews its own work, so a material launch with no
-  independent provider family available is refused up front instead of after a
-  spent attempt, and that refusal is delivered to the caller rather than only
-  filed in the task's own state. The pair that was bound then governs the run and
+  contradict. With no configuration, the existing Codex↔Claude cross-provider
+  default remains mandatory and absence of the other family refuses up front.
+  An explicit accepted `dev-pipeline` installation config may instead require a
+  fresh read-only `isolated_same_provider` session or named
+  `live_acceptance_only` evidence; the record names that weaker level plainly,
+  and an unavailable configured provider stops rather than downgrades it. The
+  selected binding then governs the run and
   its acceptance: a dev-pipeline launch must hand the same reviewer to the
   assurance its core will run, a launch asked for a verdict must be that bound
-  family and not the author's own, and no launch is accepted as complete until
-  that reviewer has approved the work as it now stands. There is no limit on
+  provider in a fresh read-only session, and no model-reviewed launch is accepted
+  as complete until that reviewer has approved the work as it now stands.
+  `live_acceptance_only` accepts no model round and requires every configured
+  scenario instead. There is no limit on
   rework rounds: review and rework stay
   phases of one task number until the work is accepted, an unapproved round
   refuses acceptance and authorizes the next round rather than ending the loop,

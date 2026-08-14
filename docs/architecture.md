@@ -179,17 +179,29 @@ the current phase and an append-only history, so
 as the history of one number. `skills/task-runner/SKILL.md` owns the vocabulary
 and the mappings.
 
-**No material work without an independent reviewer.** Whether a launch needs a
-review is read from what it is observably granted and gated on, not from prose
-about how small it is; `review_admission.py` binds a reviewer from a different
-provider family before the author starts and refuses the launch when it cannot,
-rather than discovering after a finished attempt that nobody was ever going to
-check it. A refusal is reported to the caller through the delivery seam as well
-as recorded in the task, because a gate nobody hears is indistinguishable from a
-launch that never happened. The exception is a structurally declared read-only lookup that
-observation does not contradict. A defect in the review machinery is filed as its
-own task through the task-number owner, so the task that hit it keeps its scope
-and waits rather than absorbing an outage.
+**No material work without its declared assurance.** Whether a launch needs an
+assurance gate is read from what it is observably granted and gated on, not from
+prose about how small it is. `review_admission.py` asks the existing
+`dev-pipeline` installation contract which level applies before it resolves a
+reviewer: `cross_provider`, `isolated_same_provider`, or
+`live_acceptance_only`. The record names the strategy and whether it came from
+installation configuration or the strict default. An unavailable configured
+provider refuses before author start and never causes a runtime downgrade.
+
+Absent configuration, behavior remains the original Codex↔Claude independent
+pairing and a one-provider host refuses. Explicit same-provider assurance uses a
+new read-only review session without author history; it is session isolation,
+not cross-provider independence. Explicit live-only assurance records no model
+verdict and, for a standard run, closes only when every configured scenario has
+the latest passing `verification.md` result; the dev-pipeline core enforces the
+same scenarios in its own lifecycle. Cursor can review only through an explicit
+provider-neutral assurance configuration, never as the no-config fallback.
+
+A refusal is reported through the delivery seam as well as recorded in the
+task. The exception to material classification remains a structurally declared
+read-only lookup that observation does not contradict. A defect in the review
+machinery is filed as its own task through the task-number owner, so the task
+that hit it keeps its scope and waits rather than absorbing an outage.
 
 Only a launch that started an author binds anything, because the admission names
 the family that authored this number's work. Deciding, binding and confirming are
@@ -213,14 +225,14 @@ launch whose processes all died is answered without anybody acting. The rule cut
 both ways: once the author exists, its work keeps the reviewer it was admitted
 with, and a refusal arriving after that withdraws nothing.
 
-The pair bound at launch is then the pair that runs and the pair that accepts.
-A `dev-pipeline` launch is refused unless the assurance it will hand the core
-reviews with that same family, and a launch asked for a verdict is refused
-unless it is that family — the author's own never stands in for it. The shared
-completion decision refuses acceptance until the bound reviewer's latest round
-approved the work as it now stands, which is what stops a material launch from
-finishing unreviewed and stops an approval from surviving the rework that
-replaced what was approved. There is no round budget: rework and
+The strategy bound at launch is the strategy that runs and accepts. A
+`dev-pipeline` launch is refused unless the assurance handed to the core matches
+that strategy and its provider. A model review launch must use the exact bound
+provider; same-family review is valid only for explicit session isolation, and
+live-only assurance admits no model verdict. The shared completion decision
+requires the bound model review or the configured live evidence, which stops a
+material launch from finishing with a stronger assurance claim than it earned
+and stops an approval from surviving later rework. There is no round budget: rework and
 review repeat under one number until the work is accepted, an unapproved round
 refuses acceptance and authorizes another round, and a demonstrated
 finding that comes back is reported as an execution-quality signal without

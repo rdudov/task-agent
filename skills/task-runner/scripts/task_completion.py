@@ -23,6 +23,7 @@ try:
         unsatisfied_live_evidence,
         unsatisfied_policy_families,
         unsatisfied_review_verdict,
+        verification_gate_result,
     )
 except ImportError:
     import review_admission
@@ -37,6 +38,7 @@ except ImportError:
         unsatisfied_live_evidence,
         unsatisfied_policy_families,
         unsatisfied_review_verdict,
+        verification_gate_result,
     )
 
 
@@ -265,13 +267,38 @@ def completion_ready(
     review_status = review_admission.independent_review_status(
         task_dir, author_phases=task_phases.author_work_entries(task_dir)
     )
-    if review_status["required"] and not review_status["satisfied"]:
+    if not review_status["satisfied"]:
         return False, (
             "the independent review this task was admitted with is not established: "
             + str(review_status["reason"])
             + ". "
             + str(review_status.get("action", ""))
         )
+
+    # The public dev-pipeline core enforces its own live-only scenario set before
+    # it emits completion. A standard launch has no such core lifecycle, so the
+    # same installation strategy is closed from the task's ordinary append-only
+    # verification evidence instead of being treated as "no review required".
+    binding = review_admission.bound_author_admission(task_dir)
+    pair = binding.get("pair") if isinstance(binding, dict) else {}
+    strategy = (
+        binding.get("assurance_strategy") if isinstance(binding, dict) else None
+    ) or (pair.get("assurance_strategy") if isinstance(pair, dict) else None)
+    if strategy == review_admission.LIVE_ACCEPTANCE_ONLY and completion_workflow(
+        task_dir, workflow
+    ) == "standard":
+        scenarios = pair.get("live_scenarios") if isinstance(pair, dict) else []
+        missing = [
+            str(scenario)
+            for scenario in scenarios
+            if verification_gate_result(verification, str(scenario))
+            not in {"OK", "PASS", "PASSED"}
+        ]
+        if missing:
+            return False, (
+                "assurance strategy `live_acceptance_only` requires passing "
+                "verification for configured live scenarios: " + "; ".join(missing)
+            )
 
     # The delivered-candidate policy-family review is a dev-pipeline surface.
     # Standard tasks use their authored live-evidence and verdict gates and do
