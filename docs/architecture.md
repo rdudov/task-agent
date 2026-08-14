@@ -194,8 +194,9 @@ new read-only review session without author history; it is session isolation,
 not cross-provider independence. Explicit live-only assurance records no model
 verdict and, for a standard run, closes only when every configured scenario has
 the latest passing `verification.md` result; the dev-pipeline core enforces the
-same scenarios in its own lifecycle. Cursor can review only through an explicit
-provider-neutral assurance configuration, never as the no-config fallback.
+same scenarios in its own lifecycle. The public assurance configuration remains
+provider-neutral, but Task Agent's admission policy refuses Cursor as a reviewer
+under every strategy; Cursor remains an author compatibility runtime.
 
 A refusal is reported through the delivery seam as well as recorded in the
 task. The exception to material classification remains a structurally declared

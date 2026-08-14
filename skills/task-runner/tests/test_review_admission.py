@@ -189,7 +189,7 @@ class PairingTests(unittest.TestCase):
         )
         self.assertFalse(pair["bound"])
         self.assertEqual(pair["outcome"], "configured_reviewer_unavailable")
-        self.assertIn("not downgraded", pair["detail"])
+        self.assertNotIn("downgraded", pair["detail"])
 
     def test_cursor_is_never_selected_as_an_independent_reviewer(self) -> None:
         pair = review_admission.resolve_pair(
@@ -1188,7 +1188,7 @@ class AssuranceBindingTests(unittest.TestCase):
         self.assertEqual(record["pair"]["outcome"], "invalid_assurance_configuration")
         self.assertEqual(record["assurance_strategy"], "cross_provider")
 
-    def test_cross_provider_config_selects_its_own_available_reviewer(self) -> None:
+    def test_cross_provider_config_cannot_select_cursor_as_reviewer(self) -> None:
         assurance = {
             **CODEX_ASSURANCE,
             "review_provider": "cursor",
@@ -1198,13 +1198,15 @@ class AssuranceBindingTests(unittest.TestCase):
             },
         }
         with tempfile.TemporaryDirectory() as raw:
-            record = review_admission.admit_launch(
-                Path(raw), workflow="dev-pipeline", author_runner="claude",
-                access_grant=WRITE_GRANT, contract=UNGATED, assurance=assurance,
-                which=_installed("claude", "agent"),
-            )
-        self.assertEqual(record["pair"]["reviewer_runner"], "agent")
-        self.assertEqual(record["assurance_binding"]["outcome"], "bound")
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                review_admission.admit_launch(
+                    Path(raw), workflow="dev-pipeline", author_runner="claude",
+                    access_grant=WRITE_GRANT, contract=UNGATED, assurance=assurance,
+                    which=_installed("claude", "agent"),
+                )
+        self.assertEqual(caught.exception.record["pair"]["outcome"], "reviewer_not_supported")
+        self.assertIn("never a reviewer", caught.exception.record["message"])
+        self.assertIn("Choose Codex or Claude", caught.exception.record["refusal_action"])
 
     def test_a_standard_launch_needs_no_assurance_configuration(self) -> None:
         """Standard has no assurance seam; its review is a launch of its own."""
@@ -1245,12 +1247,17 @@ class ReviewLaunchPairingTests(unittest.TestCase):
             which=_installed("claude", "codex"),
         )
 
-    def _review(self, task_dir: Path, reviewer: str) -> dict:
+    def _review(
+        self,
+        task_dir: Path,
+        reviewer: str,
+        access_grant: dict = READ_ONLY_GRANT,
+    ) -> dict:
         return _launch(
             task_dir,
             workflow="standard",
             author_runner=reviewer,
-            access_grant=READ_ONLY_GRANT,
+            access_grant=access_grant,
             contract=UNGATED,
             review_launch=True,
             which=_installed("claude", "codex"),
@@ -1275,15 +1282,35 @@ class ReviewLaunchPairingTests(unittest.TestCase):
         self.assertEqual(record["pair"]["outcome"], "review_by_author_family")
         self.assertIn("does not review itself", record["message"])
 
-    def test_a_family_that_was_not_bound_cannot_review_the_number(self) -> None:
+    def test_cursor_cannot_review_the_number_even_when_not_bound(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task_dir = Path(raw)
             self._author(task_dir)
             with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
                 self._review(task_dir, "agent")
-        self.assertEqual(
-            caught.exception.record["pair"]["outcome"], "review_by_unbound_family"
-        )
+        self.assertEqual(caught.exception.record["pair"]["outcome"], "reviewer_not_supported")
+        self.assertIn("never a reviewer", caught.exception.record["message"])
+
+    def test_cursor_cannot_review_a_number_without_a_local_author_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                self._review(Path(raw), "agent")
+        self.assertEqual(caught.exception.record["pair"]["outcome"], "reviewer_not_supported")
+
+    def test_same_provider_review_with_write_access_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            _launch(
+                task_dir, workflow="standard", author_runner="claude",
+                access_grant=WRITE_GRANT, contract=UNGATED,
+                assurance=SAME_PROVIDER_ASSURANCE, which=_installed("claude"),
+            )
+            with self.assertRaises(review_admission.ReviewAdmissionError) as caught:
+                self._review(task_dir, "claude", WRITE_GRANT)
+        record = caught.exception.record
+        self.assertEqual(record["pair"]["outcome"], "same_provider_review_not_read_only")
+        self.assertIn("grants write access", record["message"])
+        self.assertIn("task_runner.py review", record["refusal_action"])
 
     def test_the_launch_that_is_the_review_is_the_one_admitted_as_one(self) -> None:
         """The contract keeps `require_review_verdict` forever; admission does not.

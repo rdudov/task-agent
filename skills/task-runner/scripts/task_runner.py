@@ -3104,7 +3104,7 @@ def parse_args() -> argparse.Namespace:
     )
     start_parser.add_argument(
         "--assurance-config",
-        help="Installation assurance configuration forwarded to dev-pipeline.",
+        help="Installation assurance configuration used for admission and dev-pipeline.",
     )
     start_parser.add_argument(
         "--review-packet",

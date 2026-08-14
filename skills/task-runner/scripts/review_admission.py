@@ -75,7 +75,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from dev_pipeline.assurance import validate_assurance_config
+from dev_pipeline.assurance import resolve_executable, validate_assurance_config
 
 
 SCHEMA_VERSION = 1
@@ -119,10 +119,9 @@ PROVIDER_TO_RUNNER = {provider: runner for runner, provider in RUNNER_TO_PROVIDE
 # What has to be on PATH for a family to be a reviewer we can actually bind.
 RUNNER_EXECUTABLES = {"codex": "codex", "claude": "claude", "agent": "cursor-agent"}
 
-# Every provider driver can run the fresh read-only session required by the
-# public assurance contract. The no-configuration default remains deliberately
-# narrower: it is the historical Codex/Claude cross-family policy.
-REVIEW_RUNNERS = ("codex", "claude", "agent")
+# Task Agent's reviewer policy is intentionally narrower than the provider-neutral
+# public assurance contract: Cursor can author work, but never review it.
+REVIEW_RUNNERS = ("codex", "claude")
 CROSS_PROVIDER_DEFAULT_REVIEWERS = ("codex", "claude")
 
 # Preference order when nobody named a reviewer. Deterministic so the recorded
@@ -342,16 +341,17 @@ def reviewer_available(runner: str, which: Callable[[str], str | None] = shutil.
 def configured_provider_available(
     assurance: dict[str, Any], provider: str, which: Callable[[str], str | None]
 ) -> bool:
-    """Resolve the executable named by the accepted installation contract."""
+    """Use the accepted contract's executable resolver for configured providers."""
     providers = assurance.get("providers")
     installation = providers.get(provider) if isinstance(providers, dict) else None
     executable = installation.get("executable") if isinstance(installation, dict) else None
     if not isinstance(executable, str) or not executable.strip():
         return False
-    path = Path(executable)
-    if path.is_absolute():
-        return path.is_file() and os.access(path, os.X_OK)
-    return which(executable) is not None
+    # The injectable PATH lookup keeps unit cases deterministic. Production uses
+    # the contract owner's resolver, including its absolute-path rules.
+    if which is not shutil.which:
+        return which(executable) is not None
+    return resolve_executable(executable) is not None
 
 
 def resolve_pair(
@@ -416,13 +416,25 @@ def resolve_pair(
             if reviewer_provider is not None
             else None
         )
+        if reviewer not in REVIEW_RUNNERS and reviewer is not None:
+            pair.update(
+                {
+                    "reviewer_source": "installation_assurance",
+                    "outcome": "reviewer_not_supported",
+                    "detail": (
+                        f"assurance strategy `{strategy}` selects `{reviewer_provider}`, "
+                        "but Cursor is an author compatibility runtime and never a reviewer"
+                    ),
+                }
+            )
+            return pair
         if declared_reviewer and declared_reviewer != reviewer:
             pair.update(
                 {
                     "outcome": "declared_reviewer_conflicts_with_assurance",
                     "detail": (
-                        f"assurance strategy `{strategy}` selects reviewer "
-                        f"`{reviewer_provider}`, but the launch declared `{declared_reviewer}`"
+                        f"assurance strategy `{strategy}` selects reviewer runner "
+                        f"`{reviewer}`, but the launch declared `{declared_reviewer}`"
                     ),
                 }
             )
@@ -450,8 +462,7 @@ def resolve_pair(
                     "outcome": "configured_reviewer_unavailable",
                     "detail": (
                         f"assurance strategy `{strategy}` requires reviewer "
-                        f"`{reviewer_provider}`, whose configured executable is unavailable; "
-                        "the strategy is not downgraded"
+                        f"`{reviewer_provider}`, whose configured executable is unavailable"
                     ),
                 }
             )
@@ -480,9 +491,7 @@ def resolve_pair(
         if declared_reviewer not in CROSS_PROVIDER_DEFAULT_REVIEWERS:
             pair["outcome"] = "reviewer_not_supported"
             pair["detail"] = (
-                "Cursor is not a reviewer under the no-configuration cross-provider "
-                "default; it can review only when installation assurance explicitly "
-                "selects a supported strategy"
+                "Cursor is an author compatibility runtime and never a reviewer"
             )
             return pair
         if family_of(declared_reviewer) == author_family:
@@ -607,7 +616,10 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
 
 
 def resolve_review_launch_pair(
-    task_dir: Path, *, reviewer_runner: str
+    task_dir: Path,
+    *,
+    reviewer_runner: str,
+    access_grant: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Check that this review is the one the number was promised.
 
@@ -629,6 +641,14 @@ def resolve_review_launch_pair(
         "reviewer_source": "review_launch",
         "bound": False,
     }
+    if reviewer_runner not in REVIEW_RUNNERS:
+        pair.update(
+            {
+                "outcome": "reviewer_not_supported",
+                "detail": "Cursor is an author compatibility runtime and never a reviewer",
+            }
+        )
+        return pair
     binding = bound_author_admission(task_dir)
     if binding is None:
         pair.update(
@@ -672,6 +692,21 @@ def resolve_review_launch_pair(
             }
         )
         return pair
+    if (
+        reviewer_family == author_family
+        and strategy == ISOLATED_SAME_PROVIDER
+        and bool((access_grant or {}).get("grants_write"))
+    ):
+        pair.update(
+            {
+                "outcome": "same_provider_review_not_read_only",
+                "detail": (
+                    f"assurance strategy `{ISOLATED_SAME_PROVIDER}` requires a fresh "
+                    "read-only review session, but this launch grants write access"
+                ),
+            }
+        )
+        return pair
     if bound_family and reviewer_family != bound_family:
         pair.update(
             {
@@ -711,6 +746,15 @@ REVIEW_REFUSAL_ACTION = (
 )
 
 
+def _review_refusal_action(pair: dict[str, Any]) -> str:
+    if pair.get("outcome") == "same_provider_review_not_read_only":
+        return (
+            "Run the bound reviewer through `task_runner.py review`, which creates "
+            "the required read-only session."
+        )
+    return REVIEW_REFUSAL_ACTION
+
+
 def _refusal_reason(classification: dict[str, Any], pair: dict[str, Any]) -> str:
     effects = classification.get("material_effects") or []
     because = effects[0] if effects else "it is not declared as an observably read-only lookup"
@@ -734,6 +778,11 @@ def _refusal_message(classification: dict[str, Any], pair: dict[str, Any]) -> st
 
 def _refusal_action(pair: dict[str, Any]) -> str:
     if pair.get("assurance_source") == "installation_config":
+        if pair.get("outcome") == "reviewer_not_supported":
+            return (
+                "Choose Codex or Claude as the reviewer in the installation's "
+                "assurance configuration before retrying."
+            )
         return (
             "Restore the provider required by that installation configuration, or "
             "change the installation's assurance strategy explicitly before retrying."
@@ -778,7 +827,11 @@ def evaluate(
     )
     declared = declared_reviewer or classification["declared"].get("reviewer_runner")
     if classification["work_class"] == REVIEW:
-        pair = resolve_review_launch_pair(task_dir, reviewer_runner=author_runner)
+        pair = resolve_review_launch_pair(
+            task_dir,
+            reviewer_runner=author_runner,
+            access_grant=access_grant,
+        )
     else:
         pair = resolve_pair(
             author_runner=author_runner,
@@ -813,8 +866,8 @@ def evaluate(
             return record
         record["decision"] = "refused"
         record["refusal_reason"] = _review_refusal_reason(pair)
-        record["refusal_action"] = REVIEW_REFUSAL_ACTION
-        record["message"] = f"{record['refusal_reason']} {REVIEW_REFUSAL_ACTION}"
+        record["refusal_action"] = _review_refusal_action(pair)
+        record["message"] = f"{record['refusal_reason']} {record['refusal_action']}"
         record["infrastructure_defect"] = False
         return record
     if classification["work_class"] == READ_ONLY_LOOKUP:

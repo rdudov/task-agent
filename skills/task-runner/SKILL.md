@@ -363,13 +363,14 @@ public `dev-pipeline` installation contract and is read before reviewer
 resolution under either workflow. `cross_provider` binds the configured other
 provider; `isolated_same_provider` binds the configured author provider but only
 through the review command's fresh read-only session; `live_acceptance_only`
-binds its named live scenarios and records that no model verdict exists. Cursor
-can participate only when that explicit provider-neutral contract selects it.
+binds its named live scenarios and records that no model verdict exists. The
+public contract is provider-neutral, but Task Agent's admission policy still
+refuses Cursor as a reviewer under every strategy.
 An unavailable configured provider refuses without fallback.
 
 With no assurance configuration, behavior is unchanged: Codex work is reviewed
 by Claude and Claude work by Codex when that CLI is installed; Cursor remains an
-author compatibility runtime, never the default reviewer. `--reviewer-runner`,
+author compatibility runtime and never a reviewer. `--reviewer-runner`,
 or `review_policy.reviewer_runner`, can name Codex or Claude explicitly. A host
 with no independent default family refuses before author start.
 
@@ -443,7 +444,8 @@ places where the work could still get out unreviewed:
 - a launch asked for a verdict (`--require-review-verdict`) *is* the review. It
   is admitted as `work_class: review`, and it has to be the provider this number
   was promised. The author's family is refused under `cross_provider`, but is
-  exactly the required provider under explicit `isolated_same_provider`; in both
+  exactly the required provider under explicit `isolated_same_provider`, and a
+  same-provider launch that grants write access is refused. In both admitted
   cases this command creates the separate read-only session. A third provider is
   refused. `live_acceptance_only` refuses a model-review launch rather than
   depicting a verdict. A review whose subject is another task number has no

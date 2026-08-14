@@ -108,6 +108,9 @@ the historical Codex↔Claude cross-provider pairing remains mandatory. Explicit
 `isolated_same_provider` requires a fresh read-only review session of the same
 provider; explicit `live_acceptance_only` requires every named live scenario and
 records no model verdict. A missing configured provider stops without fallback.
+Task Agent refuses Cursor as a reviewer under every strategy, even if the
+provider-neutral installation contract names it. A same-provider review is
+admitted only when that review launch's observed access grant is read-only.
 A material model-reviewed `standard` author run therefore ends `blocked` until
 the review runs as a phase of the same number:
 
