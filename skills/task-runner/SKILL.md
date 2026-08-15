@@ -39,6 +39,14 @@ The child is asked to publish `progress.json` for long runs, and to place explic
 
 The dev-pipeline workflow also creates `dev-pipeline/`.
 
+An application that already supervises the entire worker service or container
+may use `start --foreground` and `review --foreground`. These forms keep the
+same admission, binding, phases, review rounds and completion decision, but wait
+for the child in the caller process instead of detaching a watcher that the
+outer container would terminate. The recorded supervision durability is
+`caller_owned`; foreground never supplies a missing assurance strategy or
+reviewer.
+
 ## Runner Selection
 
 The child runner follows the parent CLI agent. `task_runner.py` owns that decision, so callers that never read this file get the same resolution. The order is:

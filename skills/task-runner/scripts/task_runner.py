@@ -1936,6 +1936,45 @@ def cmd_start(args: argparse.Namespace) -> None:
         print(json.dumps(meta, indent=2))
         return
 
+    if getattr(args, "foreground", False):
+        # Application-managed workers already have a durable outer supervisor.
+        # Keep the ordinary admission, prompt, child supervision, review-round,
+        # and completion owners, but do not detach a watcher whose container
+        # would end as soon as this command returned.
+        launch_token = uuid.uuid4().hex
+        meta["supervision_boundary"] = {
+            "mode": "foreground_process",
+            "durability": "caller_owned",
+        }
+        meta["launch_pending"] = {"token": launch_token, "started_at": utc_now()}
+        write_json(runner_meta_path(task_dir), meta)
+        review_admission.commit_admission(
+            task_dir, review_record, launch_token=launch_token
+        )
+        foreground_args = argparse.Namespace(
+            **{
+                **vars(args),
+                "launch_token": launch_token,
+                "runner_resolution": runner_resolution,
+                "repo": str(access_directories[0])
+                if access_directories and args.workflow == "standard"
+                else getattr(args, "repo", None),
+            }
+        )
+        append_trace(
+            task_dir,
+            "Running the admitted child in the foreground under the caller-owned "
+            "application supervision boundary.",
+        )
+        try:
+            cmd_run_child(foreground_args)
+        finally:
+            current_meta = read_json(runner_meta_path(task_dir))
+            current_meta.pop("launch_pending", None)
+            write_json(runner_meta_path(task_dir), current_meta)
+            ownership_lock.close()
+        return
+
     launch_token = uuid.uuid4().hex
     scope_prefix, supervision_boundary = watcher_supervision_boundary(
         task_dir, launch_token
@@ -3105,6 +3144,14 @@ def parse_args() -> argparse.Namespace:
         help="Digest-bound review packet for automatic assurance handoff.",
     )
     start_parser.add_argument("--dry-run", action="store_true", help="Prepare artifacts without launching the child process.")
+    start_parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help=(
+            "Run and supervise the child in this process for an application-owned "
+            "outer lifecycle instead of detaching a watcher."
+        ),
+    )
     start_parser.set_defaults(func=cmd_start)
 
     review_parser = subparsers.add_parser(
@@ -3118,6 +3165,7 @@ def parse_args() -> argparse.Namespace:
     review_parser.add_argument("--destination", help="Opaque delivery destination.")
     review_parser.add_argument("--memory-limit")
     review_parser.add_argument("--dry-run", action="store_true")
+    review_parser.add_argument("--foreground", action="store_true")
     review_parser.set_defaults(func=cmd_review)
 
     run_child_parser = subparsers.add_parser("_run-child", help=argparse.SUPPRESS)

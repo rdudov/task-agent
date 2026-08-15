@@ -216,6 +216,13 @@ append-only ledger and restoring the record it replaced. A `--dry-run`
 preparation never reaches the commit at all, and is additionally evaluated and
 refused identically without writing its refusal or allocating an outage number.
 
+The ordinary launch detaches its watcher. A typed application-managed worker
+may instead select `--foreground` when its outer service or container supervisor
+must remain the process owner. The launch still performs the same decision,
+commit, child-side confirmation, phase recording, review-round recording, and
+completion check; only the watcher process boundary changes. The runner records
+that boundary as caller-owned, and the foreground form never relaxes assurance.
+
 The commitment is durable rather than held by the launching process, because the
 processes that end such a launch outlive it: the detached watcher refuses before
 its child while the parent is already gone, and a parent killed between

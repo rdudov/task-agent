@@ -26,6 +26,16 @@ task_runner = _load_task_runner_module()
 
 
 class TaskRunnerSandboxModeTests(unittest.TestCase):
+    def test_start_and_review_accept_caller_owned_foreground_supervision(self) -> None:
+        for arguments in (
+            ["task_runner.py", "start", "/tmp/001-task", "--foreground"],
+            ["task_runner.py", "review", "/tmp/001-task", "--foreground"],
+        ):
+            with self.subTest(command=arguments[1]), mock.patch.object(
+                sys, "argv", arguments
+            ):
+                self.assertTrue(task_runner.parse_args().foreground)
+
     def test_codex_approval_mode_is_bound_to_the_recorded_constant(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             prompt = Path(raw) / "prompt.txt"
