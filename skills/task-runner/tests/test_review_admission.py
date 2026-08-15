@@ -734,6 +734,63 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
         self.assertIn("transport is down", notification["detail"])
 
 
+class ForegroundApplicationLifecycleTests(unittest.TestCase):
+    def test_foreground_start_keeps_the_public_binding_and_child_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = _workspace_task(raw)
+            assurance = Path(raw) / "assurance.json"
+            assurance.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "strategy": "isolated_same_provider",
+                        "owner_provider": "codex",
+                        "review_provider": "codex",
+                        "providers": {"codex": {"executable": "/bin/true"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                task_dir=str(task_dir),
+                runner="codex",
+                reviewer_runner=None,
+                workflow="standard",
+                model=None,
+                sandbox_mode="danger-full-access",
+                repo=None,
+                dry_run=False,
+                foreground=True,
+                application=None,
+                destination=None,
+                memory_limit=None,
+                assurance_config=str(assurance),
+                review_packet=None,
+                operation="start",
+            )
+            observed: dict[str, object] = {}
+
+            def foreground_child(child_args):
+                observed["token"] = child_args.launch_token
+                observed["commitment"] = review_admission.admission_commitment(task_dir)
+                review_admission.confirm_admission(
+                    task_dir, launch_token=child_args.launch_token
+                )
+
+            with mock.patch.object(task_runner, "cmd_run_child", side_effect=foreground_child):
+                task_runner.cmd_start(args)
+
+            metadata = task_runner.read_json(task_runner.runner_meta_path(task_dir))
+            binding = review_admission.bound_author_admission(task_dir)
+
+        self.assertIsNotNone(observed["commitment"])
+        self.assertEqual(observed["token"], observed["commitment"]["launch_token"])
+        self.assertEqual(binding["admission_id"], observed["commitment"]["admission_id"])
+        self.assertEqual(binding["assurance_strategy"], "isolated_same_provider")
+        self.assertEqual(metadata["supervision_boundary"]["mode"], "foreground_process")
+        self.assertNotIn("launch_pending", metadata)
+
+
 class OnlyAStartedLaunchAuthorsTheNumberTests(unittest.TestCase):
     """A launch refused before its author started has authored nothing.
 
