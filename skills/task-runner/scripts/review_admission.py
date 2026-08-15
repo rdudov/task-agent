@@ -339,7 +339,9 @@ def reviewer_available(runner: str, which: Callable[[str], str | None] = shutil.
 
 
 def configured_provider_available(
-    assurance: dict[str, Any], provider: str, which: Callable[[str], str | None]
+    assurance: dict[str, Any],
+    provider: str,
+    resolver: Callable[[str], str | None] = resolve_executable,
 ) -> bool:
     """Use the accepted contract's executable resolver for configured providers."""
     providers = assurance.get("providers")
@@ -347,11 +349,7 @@ def configured_provider_available(
     executable = installation.get("executable") if isinstance(installation, dict) else None
     if not isinstance(executable, str) or not executable.strip():
         return False
-    # The injectable PATH lookup keeps unit cases deterministic. Production uses
-    # the contract owner's resolver, including its absolute-path rules.
-    if which is not shutil.which:
-        return which(executable) is not None
-    return resolve_executable(executable) is not None
+    return resolver(executable) is not None
 
 
 def resolve_pair(
@@ -360,6 +358,7 @@ def resolve_pair(
     declared_reviewer: str | None = None,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
+    configured_resolver: Callable[[str], str | None] = resolve_executable,
 ) -> dict[str, Any]:
     """Bind the reviewer required by installation assurance, or the strict default."""
     author_family = family_of(author_runner)
@@ -399,7 +398,7 @@ def resolve_pair(
                 }
             )
             return pair
-        if not configured_provider_available(assurance, owner, which):
+        if not configured_provider_available(assurance, owner, configured_resolver):
             pair.update(
                 {
                     "outcome": "configured_owner_unavailable",
@@ -456,7 +455,9 @@ def resolve_pair(
         assert isinstance(reviewer_provider, str)  # validated by dev-pipeline
         assert isinstance(reviewer, str)
         pair["reviewer_source"] = "installation_assurance"
-        if not configured_provider_available(assurance, reviewer_provider, which):
+        if not configured_provider_available(
+            assurance, reviewer_provider, configured_resolver
+        ):
             pair.update(
                 {
                     "outcome": "configured_reviewer_unavailable",
@@ -668,6 +669,7 @@ def resolve_review_launch_pair(
     bound_reviewer = bound_pair.get("reviewer_runner")
     bound_family = bound_pair.get("reviewer_family") or family_of(bound_reviewer)
     strategy = bound_pair.get("assurance_strategy", CROSS_PROVIDER)
+    grant = access_grant if isinstance(access_grant, dict) else {}
     pair["assurance_strategy"] = strategy
     pair.update({"author_runner": author_runner, "author_family": author_family})
     if strategy == LIVE_ACCEPTANCE_ONLY:
@@ -695,14 +697,16 @@ def resolve_review_launch_pair(
     if (
         reviewer_family == author_family
         and strategy == ISOLATED_SAME_PROVIDER
-        and bool((access_grant or {}).get("grants_write"))
+        and (grant.get("sandbox_mode") != "read-only" or bool(grant.get("grants_write")))
     ):
         pair.update(
             {
                 "outcome": "same_provider_review_not_read_only",
                 "detail": (
                     f"assurance strategy `{ISOLATED_SAME_PROVIDER}` requires a fresh "
-                    "read-only review session, but this launch grants write access"
+                    "read-only review session, but this launch observed sandbox "
+                    f"mode `{grant.get('sandbox_mode') or 'unknown'}` and grants_write "
+                    f"`{bool(grant.get('grants_write'))}`"
                 ),
             }
         )
@@ -816,6 +820,7 @@ def evaluate(
     review_launch: bool = False,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
+    configured_resolver: Callable[[str], str | None] = resolve_executable,
 ) -> dict[str, Any]:
     """Produce the full admission record without writing or refusing anything."""
     classification = classify_work(
@@ -838,6 +843,7 @@ def evaluate(
             declared_reviewer=declared,
             assurance=assurance,
             which=which,
+            configured_resolver=configured_resolver,
         )
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -1114,6 +1120,7 @@ def admit_launch(
     review_launch: bool = False,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
+    configured_resolver: Callable[[str], str | None] = resolve_executable,
     persist: bool = True,
 ) -> dict[str, Any]:
     """Decide this launch, and refuse a material launch with no reviewer.
@@ -1144,6 +1151,7 @@ def admit_launch(
         review_launch=review_launch,
         assurance=assurance,
         which=which,
+        configured_resolver=configured_resolver,
     )
     if record.pop("infrastructure_defect", False):
         # The outage is another number's work, and it is filed as one before the

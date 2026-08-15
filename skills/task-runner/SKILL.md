@@ -445,7 +445,8 @@ places where the work could still get out unreviewed:
   is admitted as `work_class: review`, and it has to be the provider this number
   was promised. The author's family is refused under `cross_provider`, but is
   exactly the required provider under explicit `isolated_same_provider`, and a
-  same-provider launch that grants write access is refused. In both admitted
+  same-provider launch is refused unless its observed sandbox mode is explicitly
+  read-only and its grant allows no write. In both admitted
   cases this command creates the separate read-only session. A third provider is
   refused. `live_acceptance_only` refuses a model-review launch rather than
   depicting a verdict. A review whose subject is another task number has no

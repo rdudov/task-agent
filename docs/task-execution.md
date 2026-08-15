@@ -110,7 +110,8 @@ provider; explicit `live_acceptance_only` requires every named live scenario and
 records no model verdict. A missing configured provider stops without fallback.
 Task Agent refuses Cursor as a reviewer under every strategy, even if the
 provider-neutral installation contract names it. A same-provider review is
-admitted only when that review launch's observed access grant is read-only.
+admitted only when that review launch's observed sandbox mode is explicitly
+`read-only` and its grant allows no write.
 A material model-reviewed `standard` author run therefore ends `blocked` until
 the review runs as a phase of the same number:
 

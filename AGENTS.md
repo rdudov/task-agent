@@ -108,7 +108,8 @@ Files the user explicitly requested are a separate, user-facing class of output.
   `live_acceptance_only` accepts no model round and requires every configured
   scenario instead. Cursor is never a reviewer, including when a
   provider-neutral installation configuration names it, and a same-provider
-  review launch that grants write access is refused. There is no limit on
+  review launch is refused unless its observed sandbox mode is explicitly
+  read-only and its grant allows no write. There is no limit on
   rework rounds: review and rework stay
   phases of one task number until the work is accepted, an unapproved round
   refuses acceptance and authorizes the next round rather than ending the loop,

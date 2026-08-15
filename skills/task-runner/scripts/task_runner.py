@@ -2110,13 +2110,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     admission = review_admission.bound_author_admission(task_dir)
     pair = admission.get("pair") if isinstance(admission, dict) else None
     reviewer = pair.get("reviewer_runner") if isinstance(pair, dict) else None
-    strategy = pair.get("assurance_strategy") if isinstance(pair, dict) else None
-    if reviewer not in review_admission.REVIEW_RUNNERS or (
-        reviewer == "agent" and strategy not in {
-            review_admission.CROSS_PROVIDER,
-            review_admission.ISOLATED_SAME_PROVIDER,
-        }
-    ):
+    if reviewer not in review_admission.REVIEW_RUNNERS:
         raise SystemExit(
             "This task has no bound reviewer from a started material author launch."
         )
