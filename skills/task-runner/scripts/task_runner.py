@@ -2385,7 +2385,15 @@ def finalize_child_lifecycle(
         # An approved review owns the task's terminal bookkeeping. Check every
         # other gate while allowing the expected pre-terminal metadata state,
         # then use the canonical metadata owner and verify the full predicate.
-        if review_round and review_round.get("decision") == "approved":
+        scope_cleanup = metadata.get("scope_cleanup")
+        scope_cleanup_refused = isinstance(scope_cleanup, dict) and scope_cleanup.get(
+            "outcome"
+        ) not in {"cleared", "not_applicable"}
+        if (
+            review_round
+            and review_round.get("decision") == "approved"
+            and not scope_cleanup_refused
+        ):
             ready, reason = completion_ready(
                 task_dir, workflow=workflow, defer_task_status=True
             )

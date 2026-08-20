@@ -1902,6 +1902,99 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             self.assertEqual(status["review_result"], "approved")
             self.assertEqual(review_admission.review_rounds(task)[-1]["decision"], "approved")
 
+    def test_run_child_keeps_scope_cleanup_refusal_after_approved_review(self) -> None:
+        class ApprovedReviewProcess:
+            pid = 4242
+
+            def __init__(self, task: Path):
+                self.task = task
+
+            def wait(self) -> int:
+                (self.task / "findings.md").write_text(
+                    "# Findings\n\nVerdict: approved\n", encoding="utf-8"
+                )
+                task_runner.write_json(
+                    task_runner.status_path(self.task),
+                    {"state": "completed", "current_step": "review child finished"},
+                )
+                return 0
+
+        not_empty = {
+            "outcome": "not_empty",
+            "reason": "processes_survived",
+            "initial_pids": [4243],
+            "remaining_pids": [4243],
+        }
+
+        def complete_metadata(task: Path) -> None:
+            task_md = (task / "task.md").read_text(encoding="utf-8")
+            (task / "task.md").write_text(
+                task_md.replace('status: "blocked"', 'status: "completed"'),
+                encoding="utf-8",
+            )
+
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            task_md = (task / "task.md").read_text(encoding="utf-8")
+            (task / "task.md").write_text(
+                task_md.replace('status: "completed"', 'status: "blocked"'),
+                encoding="utf-8",
+            )
+            self._admit_author(task)
+            _launch(
+                task,
+                workflow="standard",
+                author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=UNGATED,
+                review_launch=True,
+                which=_installed("claude", "codex"),
+            )
+            args = argparse.Namespace(
+                task_dir=str(task),
+                runner="codex",
+                runner_resolution="explicit_flag",
+                workflow="standard",
+                launch_token=None,
+                model=None,
+                sandbox_mode="read-only",
+                repo=None,
+                application=None,
+                destination=None,
+                memory_limit=None,
+                state_dir=None,
+                previous_state_dir=None,
+                operation="start",
+                require_review_verdict=True,
+                dev_pipeline_bin=None,
+                assurance_config=None,
+                review_packet=None,
+            )
+            with mock.patch.object(
+                task_runner, "prepare_access_grant", return_value=([], READ_ONLY_GRANT)
+            ), mock.patch.object(
+                task_runner, "build_command", return_value=["/usr/bin/codex"]
+            ), mock.patch.object(
+                task_runner.subprocess,
+                "Popen",
+                return_value=ApprovedReviewProcess(task),
+            ), mock.patch.object(
+                task_runner.task_workspace, "drain_task_scope", return_value=not_empty
+            ), mock.patch.object(
+                task_runner, "complete_task_metadata", side_effect=complete_metadata
+            ):
+                task_runner.cmd_run_child(args)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            metadata = task_runner.read_json(task_runner.runner_meta_path(task))
+            rounds = review_admission.review_rounds(task)
+            self.assertEqual(status["state"], "blocked")
+            self.assertIn("task cgroup could not be proven empty", status["current_step"])
+            self.assertEqual(task_completion.task_status(task), "blocked")
+            self.assertEqual(rounds[-1]["decision"], "approved")
+            self.assertEqual(metadata["scope_cleanup"], not_empty)
+            self.assertNotIn("workspace_cleanup", metadata)
+
     def test_refused_completion_demotes_premature_completed_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task = self._task(Path(raw) / "tasks")
