@@ -22,6 +22,24 @@ Because the run outlives its initiator, a pid alone is not enough to identify it
 
 A watcher that is recovered rather than original cannot read the child's exit code. It observes liveness and then reads the terminal state the child recorded; a child that disappears without one is recorded as failed, never as done.
 
+At the terminal boundary, a watcher for a systemd-scoped run drains
+every other process from its own cgroup before it accepts `completed`. It never
+signals another scope. Failure to prove that cgroup empty changes a would-be
+completion to `blocked`; the exact result is recorded as `scope_cleanup` in
+`runner.json` and is visible through `task_runner.py status`.
+
+After completion is accepted, the same watcher evaluates its single recorded
+target directory for workspace cleanup. Removal requires all of the following:
+the basename identifies the current task number, the path is a Git root, the
+tree is clean, no live process references it, and HEAD is reachable from the
+linked worktree's common repository, a local origin, or an `origin` tracking
+ref refreshed successfully from the remote. Linked worktrees are removed with
+`git worktree remove`; standalone clones are removed directly. A retained
+target is normal and records one reason in `runner.json` as `workspace_cleanup`
+(for example `dirty`, `head_unreachable`, `live_processes`, or
+`path_not_task_owned`). No daemon, timer, or cleanup
+registry is involved.
+
 Launch ownership is serialized. A second start for a task with an identity-bound
 live child or watcher is refused before any metadata is replaced, because two
 live writers make progress attribution and later stop/reattach unsafe.

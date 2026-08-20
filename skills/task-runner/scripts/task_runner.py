@@ -55,7 +55,7 @@ try:  # package install
         published_review_verdict,
         require_review_verdict_contract,
     )
-    from . import review_admission, task_phases, write_admission
+    from . import review_admission, task_phases, task_workspace, write_admission
 except ImportError:  # direct repository script
     from application_adapter import (
         APPLICATION_API_VERSION,
@@ -96,6 +96,7 @@ except ImportError:  # direct repository script
     )
     import review_admission
     import task_phases
+    import task_workspace
     import write_admission
 
 def utc_now() -> str:
@@ -2179,6 +2180,72 @@ def record_terminal_phase(task_dir: Path, state: str) -> None:
         write_json(status_path(task_dir), status)
 
 
+def apply_terminal_scope_cleanup(
+    task_dir: Path,
+    state: str | None,
+    *,
+    runner: str | None,
+    workflow: str | None,
+    recovered: bool = False,
+) -> str | None:
+    """Drain this run's scope before a child-written completion is accepted."""
+    label = "Recovered terminal" if recovered else "Terminal"
+    scope_cleanup = task_workspace.drain_task_scope(
+        read_json(runner_meta_path(task_dir))
+    )
+    update_runner_meta(task_dir, {"scope_cleanup": scope_cleanup})
+    append_trace(
+        task_dir,
+        f"{label} scope cleanup: "
+        f"{scope_cleanup.get('outcome')} ({scope_cleanup.get('reason')}).",
+    )
+    if scope_cleanup.get("outcome") not in {
+        "cleared",
+        "not_applicable",
+    }:
+        detail = (
+            "Refused completion because the task cgroup could not be proven empty: "
+            f"{scope_cleanup.get('reason')}."
+        )
+        try:
+            block_task_metadata(task_dir)
+        except RuntimeError as exc:
+            detail = f"{detail} Metadata reconciliation also failed: {exc}"
+        write_status(
+            task_dir,
+            "blocked",
+            detail,
+            {"runner": runner, "workflow": workflow, "scope_cleanup": scope_cleanup},
+        )
+        append_trace(task_dir, detail)
+        return "blocked"
+    return state
+
+
+def apply_terminal_workspace_cleanup(
+    task_dir: Path, state: str | None, *, recovered: bool = False
+) -> str | None:
+    """Clean the recorded target only after durable completion is accepted."""
+    if state != "completed":
+        return state
+    label = "Recovered terminal" if recovered else "Terminal"
+    workspace_cleanup = task_workspace.cleanup_workspace(
+        task_dir, read_json(runner_meta_path(task_dir))
+    )
+    update_runner_meta(task_dir, {"workspace_cleanup": workspace_cleanup})
+    append_trace(
+        task_dir,
+        f"{label} workspace cleanup: "
+        f"{workspace_cleanup.get('outcome')} ({workspace_cleanup.get('reason')})"
+        + (
+            f" for {workspace_cleanup['path']}."
+            if workspace_cleanup.get("path")
+            else "."
+        ),
+    )
+    return state
+
+
 def record_standard_review_round(task_dir: Path, runner: str) -> dict | None:
     """Append the round a finished standard review just decided.
 
@@ -2695,6 +2762,12 @@ def cmd_run_child(args: argparse.Namespace) -> None:
     )
 
     return_code = process.wait()
+    apply_terminal_scope_cleanup(
+        task_dir,
+        read_json(status_path(task_dir)).get("state"),
+        runner=args.runner,
+        workflow=args.workflow,
+    )
     if write_scope_run_id is not None:
         # Close the scope even though the child may have failed: what the run
         # did to the repository is a fact about the repository, not about the
@@ -2711,7 +2784,10 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         return_code,
         destination=getattr(args, "destination", None),
     )
-    terminal_state = read_json(status_path(task_dir)).get("state")
+    terminal_state = apply_terminal_workspace_cleanup(
+        task_dir,
+        read_json(status_path(task_dir)).get("state"),
+    )
     if terminal_state in {"waiting", "waiting_for_quota"}:
         outcome = "waiting_for_quota"
     elif terminal_state == "completed" and return_code == 0:
@@ -2785,7 +2861,14 @@ def cmd_monitor_existing(args: argparse.Namespace) -> None:
     while process_identity(pid) == expected:
         time.sleep(interval)
 
-    state = read_json(status_path(task_dir)).get("state")
+    state = apply_terminal_scope_cleanup(
+        task_dir,
+        read_json(status_path(task_dir)).get("state"),
+        runner=meta.get("runner"),
+        workflow=meta.get("workflow"),
+        recovered=True,
+    )
+    state = apply_terminal_workspace_cleanup(task_dir, state, recovered=True)
     if state in {"completed", "failed", "blocked"}:
         outcome = f"recovered_{state}"
     else:
