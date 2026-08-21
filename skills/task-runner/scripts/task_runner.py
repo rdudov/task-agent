@@ -304,6 +304,7 @@ def build_child_prompt(
     review_subject: str | None = None,
     review_subject_author: str | None = None,
     require_review_verdict: bool = False,
+    product_review_packet: Path | None = None,
 ) -> str:
     task_dir = task_dir.resolve()
     task_md = task_dir / 'task.md'
@@ -315,8 +316,74 @@ def build_child_prompt(
     preferences_md = user_preferences_path(task_dir)
     deliverables_dir = task_dir / 'deliverables'
     manifest_json = deliverables_dir / 'manifest.json'
+    product_review_html = deliverables_dir / 'product-review.html'
     role = ""
-    if require_review_verdict:
+    opening_steps = f"""1. Read `{task_md}`
+2. Read `{plan_md}`
+3. Read `{task_contract_json}` if it exists and treat it as a structured execution contract.
+4. Read `{preferences_md}` if it exists, before choosing any unspecified output
+   representation. The current request and later continuations override it.
+5. If `{task_md}` is missing execution-critical inputs from the original request, add them before continuing.
+6. Update `{status_json}` to reflect active work.
+7. Append a short note to `{trace_md}` describing what you are doing."""
+    if require_review_verdict and product_review_packet is not None:
+        product_review_packet = product_review_packet.resolve()
+        product_review_packet_sha256 = hashlib.sha256(
+            product_review_packet.read_bytes()
+        ).hexdigest()
+        role = f"""
+Role: fresh independent product and technical reviewer.
+- Review the exact candidate for subject `{review_subject or task_dir}` written by
+  `{review_subject_author or 'the recorded author'}`; do not repair it.
+- The configured target repository is `{repository}` and is read-only.
+- `{product_review_packet}` is the immutable product-review packet. It must contain
+  the complete user contract, exact candidate identity, inputs, black-box commands,
+  source manifest, and any explicit exclusions. Domain cases belong in that packet,
+  never in this canonical instruction. Before using it, verify its SHA-256 is
+  `{product_review_packet_sha256}`; a mismatch makes the product verdict
+  `not established`.
+- Evidence order is part of the result. Before reading `{task_md}`, `{plan_md}`,
+  existing findings, implementation files, source code, diffs, tests, or technical
+  explanations, read only the packet and begin `{product_review_html}` with one
+  visible opening section containing exactly these four labelled lines:
+  `User job:`, `Required actor:`, `Observable result:`, and `Strongest false proxy:`.
+  Do not revise that opening section after implementation evidence is visible.
+- Execute the packet's happy path and false-positive path as black-box scenarios.
+  A matching aggregate, green suite, or execution of the named component cannot
+  replace evidence that the required actor made each key decision. Record the exact
+  input, observation, candidate identity, limitations, and one standalone
+  `Product verdict: satisfied`, `Product verdict: not satisfied`, or
+  `Product verdict: not established` line in the HTML report. `not established`
+  is mandatory when the bounded fresh session cannot finish the scenarios.
+- Only after recording that product verdict may you pull implementation detail from
+  the packet's source manifest, and only to explain an observed result or gap. Do
+  not continue this product verdict from a resumed or compacted context; if the
+  fresh session cannot contain it, record `not established`, set the technical
+  verdict to rework, and stop.
+- After the product verdict is fixed, perform the ordinary technical review against
+  the original request and contract. Keep the decisions distinct: the product
+  verdict belongs in `{product_review_html}`; technical findings belong in
+  `{task_dir / 'findings.md'}` and end with exactly one `Verdict: approved` or
+  `Verdict: rework` line. Neither verdict substitutes for the other.
+- Make the HTML useful to the person who requested the work: include the exact
+  candidate, input, observations, verdict, limitations, and a concrete next-step
+  plan. Refuse with `not established` if the packet omits the complete contract or
+  enough source identity to tell what was actually reviewed.
+- Register `product-review.html` in `{manifest_json}` without removing other
+  registered deliverables. Treat all subject and repository files as read-only;
+  writes are limited to this task's review artifacts.
+"""
+        opening_steps = f"""1. Read only `{product_review_packet}`.
+2. Before opening any implementation or author evidence, write the four-line opening
+   section required above to `{product_review_html}`.
+3. Execute both black-box paths and record the product verdict in that same report.
+4. Only then read `{task_md}`, `{plan_md}`, and `{task_contract_json}` and pull the
+   minimum technical context needed for the separate technical review.
+5. Read `{preferences_md}` if it exists before choosing any remaining unspecified
+   representation; current intent overrides it.
+6. Update `{status_json}` to reflect active work and append a concise note to
+   `{trace_md}` without changing the already-recorded product framing or verdict."""
+    elif require_review_verdict:
         role = f"""
 Role: independent reviewer.
 - Review the existing work for subject `{review_subject or task_dir}` written by
@@ -355,14 +422,7 @@ Role: independent reviewer.
 {role}
 
 Before doing substantial work:
-1. Read `{task_md}`
-2. Read `{plan_md}`
-3. Read `{task_contract_json}` if it exists and treat it as a structured execution contract.
-4. Read `{preferences_md}` if it exists, before choosing any unspecified output
-   representation. The current request and later continuations override it.
-5. If `{task_md}` is missing execution-critical inputs from the original request, add them before continuing.
-6. Update `{status_json}` to reflect active work.
-7. Append a short note to `{trace_md}` describing what you are doing.
+{opening_steps}
 
 While working:
 - Before writing code, try in order: do nothing; remove or disable; configure or
@@ -1886,6 +1946,11 @@ def cmd_start(args: argparse.Namespace) -> None:
             review_subject=review_subject,
             review_subject_author=review_author,
             require_review_verdict=bool(getattr(args, "require_review_verdict", False)),
+            product_review_packet=(
+                Path(args.product_review_packet)
+                if getattr(args, "product_review_packet", None)
+                else None
+            ),
         )
         runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
     else:
@@ -2189,6 +2254,20 @@ def cmd_review(args: argparse.Namespace) -> None:
     args.sandbox_mode = "read-only"
     args.operation = "start"
     cmd_start(args)
+
+
+def cmd_product_review(args: argparse.Namespace) -> None:
+    """Run a staged product acceptance through the existing review owner."""
+    task_dir = resolve_task_dir(args.task_dir)
+    packet = Path(args.packet).expanduser().resolve()
+    try:
+        packet.relative_to(task_dir.resolve())
+    except ValueError:
+        raise SystemExit("The product-review packet must be inside the task directory.") from None
+    if not packet.is_file() or packet.stat().st_size == 0:
+        raise SystemExit(f"Product-review packet is missing or empty: {packet}")
+    args.product_review_packet = str(packet)
+    cmd_review(args)
 
 
 def record_terminal_phase(task_dir: Path, state: str) -> None:
@@ -3286,6 +3365,33 @@ def parse_args() -> argparse.Namespace:
     review_parser.add_argument("--dry-run", action="store_true")
     review_parser.add_argument("--foreground", action="store_true")
     review_parser.set_defaults(func=cmd_review)
+
+    product_review_parser = subparsers.add_parser(
+        "product-review",
+        help=(
+            "Run a fresh staged product acceptance and separate technical review "
+            "through the reviewer bound to this task."
+        ),
+    )
+    product_review_parser.add_argument("task_dir", help="Task directory path.")
+    product_review_parser.add_argument(
+        "--packet",
+        required=True,
+        help=(
+            "Task-local immutable packet with the user contract, candidate identity, "
+            "inputs, black-box commands, source manifest, and exclusions."
+        ),
+    )
+    product_review_parser.add_argument(
+        "--repo", help="Read-only target repository for the reviewer."
+    )
+    product_review_parser.add_argument("--model", help="Optional reviewer model override.")
+    product_review_parser.add_argument("--application", help="Versioned installation adapter.")
+    product_review_parser.add_argument("--destination", help="Opaque delivery destination.")
+    product_review_parser.add_argument("--memory-limit")
+    product_review_parser.add_argument("--dry-run", action="store_true")
+    product_review_parser.add_argument("--foreground", action="store_true")
+    product_review_parser.set_defaults(func=cmd_product_review)
 
     run_child_parser = subparsers.add_parser("_run-child", help=argparse.SUPPRESS)
     run_child_parser.add_argument("task_dir", help="Task directory path.")

@@ -484,6 +484,27 @@ therefore ends `blocked`, waiting for a review phase of the same number:
 .venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
+When product acceptance is required in addition to technical review, use the
+same bound reviewer and lifecycle rather than another controller:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py product-review \
+  tasks/001-example --packet tasks/001-example/product-review-packet.md \
+  --repo /path/to/read-only-candidate
+```
+
+The task-local packet is input, not a ledger. It carries the complete user
+contract, exact candidate identity, inputs, black-box happy and false-positive
+commands, a source manifest for later pull-based explanation, and explicit
+case exclusions. The fresh read-only reviewer first writes the four-line product
+framing and runs both black-box paths without implementation evidence. It fixes
+a separate `Product verdict:` in `deliverables/product-review.html` before
+pulling technical context, then writes the ordinary technical `Verdict:` to
+`findings.md`. The decisions are both visible and neither satisfies the other.
+If the scenarios do not fit the fresh session, the product verdict is `not
+established`; it is not continued from compacted or resumed context. Domain
+examples belong only in packets, never in this canonical instruction.
+
 A standard review's decision reaches the ledger from the one canonical `Verdict:`
 line its contract already requires. When a new admitted review starts, the
 runner removes prior canonical verdict lines from `findings.md` while retaining

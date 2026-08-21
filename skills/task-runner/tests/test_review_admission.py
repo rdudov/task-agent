@@ -1577,6 +1577,32 @@ class ReviewCommandTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 0)
         self.assertIn("review", "".join(call.args[0] for call in output.write.call_args_list))
 
+    def test_product_review_reuses_bound_review_command_with_task_local_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw) / "001-task"
+            task_dir.mkdir()
+            packet = task_dir / "product-review-packet.md"
+            packet.write_text("# Packet\n", encoding="utf-8")
+            args = argparse.Namespace(
+                task_dir=str(task_dir), packet=str(packet), repo=None, model=None,
+                application=None, destination=None, memory_limit=None, dry_run=True,
+                foreground=False,
+            )
+            with mock.patch.object(task_runner, "cmd_review") as review:
+                task_runner.cmd_product_review(args)
+        review.assert_called_once_with(args)
+        self.assertEqual(args.product_review_packet, str(packet.resolve()))
+
+    def test_product_review_refuses_a_packet_outside_the_task(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw) / "001-task"
+            task_dir.mkdir()
+            packet = Path(raw) / "packet.md"
+            packet.write_text("# Packet\n", encoding="utf-8")
+            args = argparse.Namespace(task_dir=str(task_dir), packet=str(packet))
+            with self.assertRaisesRegex(SystemExit, "inside the task directory"):
+                task_runner.cmd_product_review(args)
+
 
 class IndependentReviewStatusTests(unittest.TestCase):
     """Acceptance asks whether the work as it stands carries that approval."""

@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -299,6 +300,35 @@ class ChildPromptContractTests(unittest.TestCase):
         )
         self.assertEqual(subject, str(task_dir))
         self.assertEqual(author, "codex")
+
+    def test_product_review_prompt_stages_product_evidence_before_implementation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "001-review"
+            task_dir.mkdir()
+            packet = task_dir / "product-review-packet.md"
+            packet.write_text("# Product review packet\n", encoding="utf-8")
+            packet_sha256 = hashlib.sha256(packet.read_bytes()).hexdigest()
+            prompt = task_runner.build_child_prompt(
+                task_dir,
+                repository=Path(tmp) / "subject",
+                review_subject="001-review",
+                review_subject_author="codex",
+                require_review_verdict=True,
+                product_review_packet=packet,
+            )
+        self.assertIn("Role: fresh independent product and technical reviewer", prompt)
+        self.assertIn("1. Read only", prompt)
+        self.assertIn("User job:", prompt)
+        self.assertIn("Required actor:", prompt)
+        self.assertIn("Observable result:", prompt)
+        self.assertIn("Strongest false proxy:", prompt)
+        self.assertIn("Product verdict: not established", prompt)
+        self.assertIn("Neither verdict substitutes for the other", prompt)
+        self.assertIn("a concrete next-step", prompt)
+        self.assertIn(packet_sha256, prompt)
+        self.assertNotIn("1. Read `", prompt)
+        for domain_hint in ("MOEX", "trading", "replay", "121:121"):
+            self.assertNotIn(domain_hint, prompt)
 
     def test_prompt_has_no_hardcoded_absolute_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

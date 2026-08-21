@@ -137,6 +137,19 @@ the review runs as a phase of the same number:
 .venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
+`product-review` is the product-acceptance variant of that same command path. It
+does not add a controller, lifecycle, pairing record, or ledger. The caller
+provides one task-local packet containing the complete user contract, exact
+candidate, black-box inputs and commands, later technical-source manifest, and
+exclusions. The bound reviewer remains fresh and read-only. Its first report
+section records the user job, required actor, observable result, and strongest
+false proxy before any implementation evidence; it then runs happy and
+false-positive paths and fixes a separate product verdict. Only afterwards may
+it pull technical context and issue the ordinary technical verdict. A bounded
+session that cannot finish reports `not established` rather than carrying the
+product decision across compaction or resume. Domain-specific cases are packet
+data and do not enter the generic runner prompt.
+
 That blocked state is canonical metadata, not only a runtime annotation: if an
 author prematurely wrote `completed`, the finalizer restores `blocked` through
 `tasks_index.py` whenever the run is refused, failed, blocked, or paused. A new
