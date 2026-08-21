@@ -284,6 +284,9 @@ trips: []
 <Short task description>
 
 ## Inputs
+- <The user's own substantive words, quoted verbatim: what they asked for and
+  which path must do it. A later reviewer reads this instead of trusting the
+  derived summary, so paraphrase does not replace the quote.>
 - <Key user-provided dimensions, constraints, options, assumptions, or acceptance criteria>
 
 ## Status

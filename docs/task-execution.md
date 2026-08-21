@@ -273,7 +273,7 @@ Analysis should stop on unresolved task semantics before architecture begins. If
 
 Agents should not assume backward compatibility, legacy fallback branches, or "keep the old behavior too" unless the user request or project contract explicitly requires that target.
 
-Implementation should preserve the semantic target of the request. If the task names a reference behavior, artifact, model, provider, protocol feature, or runtime branch, the solution should use and verify that named path directly instead of replacing it with a nearby effect that happens to look similar. Any substitution requires explicit user acceptance or task-contract approval; otherwise it is a blocker or an unverified deviation.
+Implementation should preserve the semantic target of the request. If the task names a reference behavior, artifact, model, provider, protocol feature, or runtime branch, the solution should use and verify that named path directly instead of replacing it with a nearby effect that happens to look similar. Any substitution requires explicit user acceptance or task-contract approval; otherwise it is a blocker or an unverified deviation. Exercising the named path is not sufficient by itself: the named path must be the one that actually makes each key decision in the claimed result. Work that borrows its decisions from another component, owner, or actor and only carries them out through the named path is a substitution, even when that path genuinely ran and the numbers match.
 
 If an interruption or incorrect result was caused by an agent or runner mistake, such as an unsupported hard-coded model, wrong sandbox, or wrong git operation, the parent should perform a short corrective review before resuming. The review should identify the cause, repair the active task state, and update the relevant runner, skill, docs, or project rules unless that prevention work is too broad; in that case the parent should present options to the user.
 
@@ -314,7 +314,13 @@ notebook, task index, `/tmp`, and Claude-owned runtime storage are rebound
 writable. Network and host-process visibility are unchanged. Tests that write
 runtime state must redirect it to the notebook or `/tmp`; live host state stays
 read-only. The admitted-review prompt explicitly names the reviewer role,
-subject, author, target repository, and required single-line verdict.
+subject, author, target repository, and required single-line verdict. It also
+directs the review at what the user asked for rather than at the derived task
+statement: map each substantive requirement to the path that actually produced
+the claimed result and to the observation that shows it, name the strongest
+false proxy that would pass the author's own checks while a different path,
+component, or actor made the key decision, and treat an unaccepted substitution
+as a blocking finding.
 
 ## Progress Artifacts
 

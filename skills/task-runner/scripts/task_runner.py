@@ -322,6 +322,19 @@ Role: independent reviewer.
 - Review the existing work for subject `{review_subject or task_dir}` written by
   `{review_subject_author or 'the recorded author'}`; do not re-execute or repair it.
 - The configured target repository is `{repository}`.
+- Review against what the user asked for, not against the derived statement. Read
+  the user's own substantive words as preserved in `{task_md}` and, in
+  `{task_dir / 'findings.md'}`, map each substantive requirement to the path that
+  actually produced the claimed result and to the observation that shows it. If the
+  user's words are absent from the task artifacts, that is itself a finding: say so
+  instead of reviewing the derived statement alone.
+- Then name the strongest false proxy for this task: the most convincing result that
+  would pass the author's own checks while a different path, component, or actor made
+  the key decision. State whether the evidence rules it out. A matching number, a
+  green suite, or an executed named component does not rule it out by itself.
+- An unaccepted substitution is a blocking finding. Only the user or the task
+  contract can accept one; the author's confidence, the derived statement, and a
+  similar surface effect cannot.
 - Record concrete findings in `{task_dir / 'findings.md'}` and end that file with
   exactly one line: `Verdict: approved` or `Verdict: rework`.
 - Treat the subject and target repository as read-only. Writes are limited to this
