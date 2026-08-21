@@ -335,6 +335,15 @@ Role: independent reviewer.
 - An unaccepted substitution is a blocking finding. Only the user or the task
   contract can accept one; the author's confidence, the derived statement, and a
   similar surface effect cannot.
+- How the code is organized is part of this review. Judge whether the work applies
+  the practices a competent engineer would use for this language, domain, and
+  repository - cohesive responsibilities, boundaries a reader can follow, no
+  dumping ground or unjustified layer, entry documentation that still matches the
+  code - and name a material deviation as a finding. Judge the result with
+  professional judgement, not against a pattern catalogue, a required directory
+  tree, or a line count, and weigh it by user risk: where the product's
+  reliability depends on a person being able to follow the code, organization no
+  reader can follow blocks the review even when the tests are green.
 - Record concrete findings in `{task_dir / 'findings.md'}` and end that file with
   exactly one line: `Verdict: approved` or `Verdict: rework`.
 - Treat the subject and target repository as read-only. Writes are limited to this
@@ -359,6 +368,12 @@ While working:
 - Before writing code, try in order: do nothing; remove or disable; configure or
   reuse; simplify; only then add the smallest necessary code. Briefly record why
   the observed gap could not be closed by an earlier option.
+- Organize the code you do write the way a competent engineer would in this
+  language, domain, and exact repository: cohesive responsibilities, boundaries a
+  reader can follow, the least structure the job needs, no dumping ground or
+  unjustified layer, and entry documentation that still matches the code. Apply
+  current practice and judgement; no pattern catalogue, required directory tree,
+  or line budget is prescribed here.
 - Keep `{trace_md}` updated with concise chronological notes.
 - Keep `{status_json}` updated with `state`, `current_step`, and `updated_at`.
 - For a long run, publish substantive live progress in `{progress_json}`: a `schema_version: 1`

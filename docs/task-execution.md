@@ -320,7 +320,11 @@ statement: map each substantive requirement to the path that actually produced
 the claimed result and to the observation that shows it, name the strongest
 false proxy that would pass the author's own checks while a different path,
 component, or actor made the key decision, and treat an unaccepted substitution
-as a blocking finding.
+as a blocking finding. The same prompt makes code organization part of the
+review: whether the work applies the practices a competent engineer would use for
+this language, domain, and repository, judged by professional judgement rather
+than a pattern catalogue, a required directory tree, or a line count, and weighed
+by user risk. The child prompt states the author half of that rule.
 
 ## Progress Artifacts
 
