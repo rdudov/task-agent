@@ -55,7 +55,7 @@ import subprocess
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 try:
     from .task_completion import completion_ready, task_status
@@ -552,17 +552,39 @@ def owner_is_cancelled(task_dir: Path) -> bool:
     return task_status(task_dir) == CANCELLED_STATUS
 
 
-def released_write_run_ids(task_dir: Path) -> set[str]:
-    """Write-scope runs whose obligation a recorded cancellation already released."""
-    released: set[str] = set()
+def _obligation_key(obligation: dict[str, Any]) -> tuple[str, str, str] | None:
+    """What identifies one released obligation, or None when it cannot be named.
+
+    One run writes every repository of an exact set under a single run id, so the
+    run alone does not identify what was let go. The repository and the kind of
+    obligation complete it, which is also what a later reader needs to find the
+    change that was never reviewed.
+    """
+    parts = (
+        obligation.get("run_id"),
+        obligation.get("repository"),
+        obligation.get("kind"),
+    )
+    if not all(isinstance(part, str) and part for part in parts):
+        return None
+    return cast(tuple[str, str, str], parts)
+
+
+def released_obligation_keys(task_dir: Path) -> set[tuple[str, str, str]]:
+    """Obligations a recorded cancellation already released, by run and repository."""
+    released: set[tuple[str, str, str]] = set()
     for record in read_ledger(task_dir):
         if record.get("record") != SCOPE_RELEASED:
             continue
-        run_ids = record.get("released_run_ids")
-        if isinstance(run_ids, list):
-            released.update(
-                run_id for run_id in run_ids if isinstance(run_id, str) and run_id
-            )
+        obligations = record.get("released_obligations")
+        if not isinstance(obligations, list):
+            continue
+        for obligation in obligations:
+            if not isinstance(obligation, dict):
+                continue
+            key = _obligation_key(obligation)
+            if key is not None:
+                released.add(key)
     return released
 
 
@@ -576,16 +598,18 @@ def record_cancellation_release(
     earned. The record keeps each released run id and the digest of the state it
     left behind, so a later reader of this repository can still find the change
     and see that it was never reviewed. Nothing earlier is rewritten; only run
-    ids not already recorded produce a new record.
+    obligations not already recorded produce a new record. An obligation is
+    identified by its run and repository together, so releasing one repository of
+    an exact set never silently stands in for the rest of it.
     """
-    already = released_write_run_ids(task_dir)
-    pending = [
-        obligation
-        for obligation in obligations
-        if isinstance(obligation.get("run_id"), str)
-        and obligation["run_id"]
-        and obligation["run_id"] not in already
-    ]
+    already = released_obligation_keys(task_dir)
+    pending: list[dict[str, Any]] = []
+    for obligation in obligations:
+        key = _obligation_key(obligation)
+        if key is None or key in already:
+            continue
+        already.add(key)
+        pending.append(obligation)
     if not pending:
         return None
     return _append(
@@ -600,10 +624,10 @@ def record_cancellation_release(
                 "the owning task was cancelled, so its change can never reach that "
                 "task's own gates; the obligation is released unreviewed"
             ),
-            "released_run_ids": [obligation["run_id"] for obligation in pending],
-            "released_obligations": sorted(
-                pending, key=lambda obligation: obligation["run_id"]
+            "released_run_ids": sorted(
+                {obligation["run_id"] for obligation in pending}
             ),
+            "released_obligations": sorted(pending, key=_obligation_key),
         },
     )
 

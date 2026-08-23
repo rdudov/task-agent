@@ -255,8 +255,9 @@ obligation for other tasks, but its owner can enter rework under the same number
 without freezing ambiguous attribution. An obligation clears on either terminal
 answer to it: the owner's gates pass, or the owner is cancelled through the
 canonical status command, which appends a `scope_released` record naming the
-reason and the released run IDs rather than letting a withdrawn task hold the
-repository forever. Liveness is checked before cancellation is. Before dry-run or real current-run
+reason and each released obligation — its run, its repository and the state
+digest measured there — rather than letting a withdrawn task hold the repository
+forever. Liveness is checked before cancellation is. Before dry-run or real current-run
 metadata replaces the old record, the launcher transfers a matching prior
 terminal record into the append-only admission ledger. That exact run-scoped evidence can settle its
 scope across PID namespaces; another run's record cannot. Terminal pre-child

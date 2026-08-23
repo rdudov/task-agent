@@ -594,7 +594,11 @@ released run IDs, and the state digest each one left behind, so a later reader
 can still find that change and see that nobody reviewed it. Withdrawal is an
 answer about the task, not about one repository, so it releases every obligation
 that task still held wherever it held it — the same breadth a completion receipt
-already has. Nothing earlier is rewritten, and re-evaluating the same release
+already has. One run writes every repository of an exact set under a single run
+ID, so an obligation is identified by its run *and* its repository: a divergent
+abandoned run across two repositories is recorded as two released obligations,
+each with the state digest measured in that repository, as each one is reached.
+Nothing earlier is rewritten, and re-evaluating the same released obligation
 appends nothing new. Liveness is
 still checked first, so a cancelled task whose writer is live or cannot be proven
 absent keeps the repository until `stop` settles it. The status is read live

@@ -1311,6 +1311,96 @@ class CancelledOwnerTests(unittest.TestCase):
                 ["abandoned_scope"],
             )
 
+    def test_cancelling_records_every_repository_of_an_abandoned_exact_set(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            repositories = [make_repository(first_root), make_repository(second_root)]
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            abandoned = make_task(tasks_root, "0001-abandoned")
+            requesting = make_task(tasks_root, "0002-next")
+            # One run holds the whole exact set under a single run id, and dies
+            # having diverged both repositories.
+            for repository in repositories:
+                write_admission.open_write_scope(abandoned, repository, "run-set")
+                (repository / "source.txt").write_text(
+                    "abandoned edit\n", encoding="utf-8"
+                )
+
+            set_task_status(abandoned, "cancelled")
+            for repository in repositories:
+                self.assertEqual(
+                    write_admission.admission_blockers(
+                        tasks_root=tasks_root,
+                        repository=repository,
+                        requesting_task=requesting,
+                        is_live=lambda task: False,
+                    ),
+                    [],
+                )
+
+            released = [
+                obligation
+                for record in write_admission.read_ledger(abandoned)
+                if record["record"] == "scope_released"
+                for obligation in record["released_obligations"]
+            ]
+            self.assertEqual(
+                [
+                    (item["run_id"], item["repository"], item["kind"])
+                    for item in released
+                ],
+                [
+                    ("run-set", str(repository.resolve()), "abandoned_scope")
+                    for repository in repositories
+                ],
+            )
+            self.assertEqual(
+                len({item["write_result_digest"] for item in released}),
+                len(repositories),
+            )
+
+    def test_a_released_obligation_is_not_recorded_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            repositories = [make_repository(first_root), make_repository(second_root)]
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            abandoned = make_task(tasks_root, "0001-abandoned")
+            requesting = make_task(tasks_root, "0002-next")
+            for repository in repositories:
+                write_admission.open_write_scope(abandoned, repository, "run-set")
+                (repository / "source.txt").write_text(
+                    "abandoned edit\n", encoding="utf-8"
+                )
+
+            set_task_status(abandoned, "cancelled")
+            for _ in range(3):
+                for repository in repositories:
+                    write_admission.admission_blockers(
+                        tasks_root=tasks_root,
+                        repository=repository,
+                        requesting_task=requesting,
+                        is_live=lambda task: False,
+                    )
+            self.assertEqual(
+                [
+                    record["record"]
+                    for record in write_admission.read_ledger(abandoned)
+                ],
+                ["opened", "opened", "scope_released", "scope_released"],
+            )
+
     def test_a_task_taken_back_out_of_cancelled_owes_its_review_again(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
