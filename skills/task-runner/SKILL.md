@@ -113,7 +113,7 @@ Start a standard Codex child:
 .venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner codex
 ```
 
-To work in another repository, add `--repo /path/to/target-repo`. Standard
+To work in one or more repositories, repeat `--repo /path/to/target-repo`. Standard
 Codex and Claude receive a narrow additional root; Cursor Agent receives it as
 an additional root while retaining task-agent as its primary workspace. Write
 modes verify the target with an exclusive random-file create/delete probe
@@ -564,9 +564,10 @@ launch and is simply refused.
 
 Two write-mode runs in one repository do not produce two reviewable candidates;
 they produce one working tree nobody can attribute. Before a write-mode child is
-spawned, `write_admission.py` takes a lock in the Git common directory, durably
-settles provable abandoned no-ops, rechecks every blocker, and appends the
-opening claim before releasing that same lock. It records what the run actually
+spawned, `write_admission.py` takes every lock for the exact repeated `--repo`
+set in deterministic Git-common-directory order, durably settles provable
+abandoned no-ops, rechecks every blocker, and appends all opening claims or none
+before releasing those locks. Scope identity is `run_id + repository`. It records what the run actually
 did in an append-only ledger at `.runner/write-admission.jsonl`.
 
 A launch is refused when:

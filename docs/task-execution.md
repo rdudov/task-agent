@@ -56,7 +56,7 @@ run would be the hosts that admit one. Each answer names the evidence it rests
 on. `reattach` still insists on proof, because refusing a child that only looks
 alive is its entire purpose.
 
-`--repo <path>` is runner-neutral. In the standard workflow it becomes an
+Repeatable `--repo <path>` is runner-neutral. In the standard workflow every value becomes an
 explicit Codex/Claude access root or an additive Cursor Agent workspace root;
 write modes perform an exclusive random-file create/delete probe before launch
 and record the grant. Cursor retains task-agent as its primary workspace. In
@@ -93,7 +93,7 @@ a terminal scope whose watcher did not close it. Legacy backfill additionally
 requires the matching controller completion event and any review evidence the
 current contract requires. The shared completion owner revalidates historical
 policy review from immutable Git objects plus its complete context, diagnostics,
-and decision envelope; write admission does not parse review claims itself. An
+and decision envelope; write admission does not parse review claims itself. Multiple repositories are locked in deterministic Git-common-directory order and claimed all-or-nothing under the pair `run_id + repository`. An
 earlier ungated terminal state therefore cannot satisfy a later review gate. A
 legitimate later commit can stale a current review packet without retroactively
 turning the older completed task into an admission blocker; later rework has new

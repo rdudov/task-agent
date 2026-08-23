@@ -84,8 +84,8 @@ Files the user explicitly requested are a separate, user-facing class of output.
 - Skills live under `skills/`.
 - Use `skills/task-creator/` to create task artifacts.
 - Use `skills/task-runner/` to delegate substantial work to child agents or run a task through the dev-pipeline workflow. The child runner follows the parent CLI agent unless a caller selects one explicitly, so a Codex parent delegates to a Codex child and a Claude parent to a Claude child. That resolution belongs to the task runner, not to prompt text, so callers that never read a skill get the same behavior. Every run records the resolved runner and the rule that resolved it. A launched run is supervised by kernel process identity so a recycled pid is never mistaken for the child.
-- `--repo` is an access input for both workflows. Standard runs grant the
-  resolved target through the selected runner and verify it before a write-mode
+- `--repo` is a repeatable access input for both workflows. Standard runs grant
+  every resolved target through the selected runner and verify the exact set before a write-mode
   launch; dev-pipeline passes it to the core owner. New supervision records also
   bind liveness to the observer's PID namespace, so a nested observer cannot
   declare an invisible host process dead or replace it.
@@ -126,7 +126,7 @@ Files the user explicitly requested are a separate, user-facing class of output.
   commitment is durable and outstanding until an author is observed to start, so
   whichever process reaches the refusal withdraws it, and a launch whose
   processes are all gone binds nothing without anyone acting.
-- Git write admission is one common-directory-locked check-and-claim operation;
+- Git write admission is one deterministic common-directory-locked check-and-claim operation across the exact repository set;
   only provable abandoned no-ops are durably settled before a successor enters,
   unknown liveness refuses a foreign writer, abandoned divergent work remains a
   recomputed obligation for other tasks, and the owner can enter same-number

@@ -118,7 +118,7 @@ The child runner follows the parent CLI agent, so a Codex session delegates to C
 
 Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) and mapped per runner. `TASK_AGENT_WORKSPACE_ROOT` sets how far full access reaches; it defaults to the parent of this checkout.
 
-For the standard workflow, `--repo /path/to/target-repo` makes that repository
+For the standard workflow, repeatable `--repo /path/to/target-repo` makes each named repository
 an additional workspace/access root for Codex, Claude, or Cursor Agent while
 the task-agent checkout remains the primary workspace.
 Write modes verify writability before launch and record the result.

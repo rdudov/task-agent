@@ -100,6 +100,63 @@ def completion_only_at_recorded_candidate(*_args, **kwargs):
 
 
 class WriteScopeTests(unittest.TestCase):
+    def test_exact_repository_set_uses_one_run_identity_per_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            tasks = root / "tasks"
+            tasks.mkdir()
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            repositories = [make_repository(first_root), make_repository(second_root)]
+            task = make_task(tasks, "0001-writer")
+            claims, blockers = write_admission.claim_write_scopes(
+                tasks_root=tasks,
+                task_dir=task,
+                repositories=repositories,
+                run_id="run-set",
+                is_live=lambda _task: False,
+            )
+            self.assertEqual(blockers, [])
+            self.assertEqual(
+                [claim["before"]["repository"] for claim in claims],
+                [str(path.resolve()) for path in repositories],
+            )
+            for repository in repositories:
+                self.assertIsNotNone(
+                    write_admission.close_write_scope(
+                        task, "run-set", repository=repository
+                    )
+                )
+            self.assertEqual(write_admission.unclosed_scopes(task), [])
+
+    def test_blocked_repository_set_opens_no_partial_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            tasks = root / "tasks"
+            tasks.mkdir()
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            repositories = [make_repository(first_root), make_repository(second_root)]
+            requester = make_task(tasks, "0001-requester")
+            holder = make_task(tasks, "0002-holder")
+            write_admission.open_write_scope(
+                holder, repositories[1], "held", claimant_pid=os.getpid()
+            )
+            claims, blockers = write_admission.claim_write_scopes(
+                tasks_root=tasks,
+                task_dir=requester,
+                repositories=repositories,
+                run_id="run-set",
+                is_live=lambda task: task == holder,
+            )
+            self.assertEqual(claims, [])
+            self.assertTrue(blockers)
+            self.assertEqual(write_admission.unclosed_scopes(requester), [])
+
     def test_a_scope_that_changed_the_repository_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

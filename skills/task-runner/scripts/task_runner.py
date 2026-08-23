@@ -300,7 +300,7 @@ def ensure_task_contract(task_dir: Path) -> None:
 def build_child_prompt(
     task_dir: Path,
     *,
-    repository: Path | None = None,
+    repository: Path | list[Path] | None = None,
     review_subject: str | None = None,
     review_subject_author: str | None = None,
     require_review_verdict: bool = False,
@@ -879,25 +879,31 @@ WRITE_ACCESS_MODES = {"workspace-write", "danger-full-access"}
 
 def resolve_access_directories(
     runner: str,
-    repo: str | Path | None,
+    repo: str | Path | list[str] | tuple[str, ...] | None,
 ) -> list[Path]:
-    """Turn `--repo` into the directory the standard child must reach."""
+    """Turn repeatable `--repo` values into exact directories in input order."""
     if not repo:
         return []
-    path = Path(repo).expanduser()
-    if not path.is_absolute():
-        path = repo_root() / path
-    try:
-        path = path.resolve(strict=True)
-    except OSError as exc:
-        raise SystemExit(
-            f"--repo cannot be granted because it does not exist: {repo} ({exc})"
-        ) from exc
-    if not path.is_dir():
-        raise SystemExit(f"--repo must be a directory, not a file: {path}")
     if runner not in CLI_RUNNERS:
         raise SystemExit(f"Unsupported runner: {runner}")
-    return [path]
+    values = repo if isinstance(repo, (list, tuple)) else [repo]
+    directories: list[Path] = []
+    for value in values:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = repo_root() / path
+        try:
+            path = path.resolve(strict=True)
+        except OSError as exc:
+            raise SystemExit(
+                f"--repo cannot be granted because it does not exist: {value} ({exc})"
+            ) from exc
+        if not path.is_dir():
+            raise SystemExit(f"--repo must be a directory, not a file: {path}")
+        if path in directories:
+            raise SystemExit(f"--repo names the same repository twice: {path}")
+        directories.append(path)
+    return directories
 
 
 def verify_write_access(directories: list[Path]) -> list[dict]:
@@ -930,7 +936,7 @@ def verify_write_access(directories: list[Path]) -> list[dict]:
 def prepare_access_grant(
     runner: str,
     sandbox_mode: str | None,
-    repo: str | Path | None,
+    repo: str | Path | list[str] | tuple[str, ...] | None,
 ) -> tuple[list[Path], dict]:
     """Resolve a runner-neutral target grant and fail closed when it cannot hold."""
     directories = resolve_access_directories(runner, repo)
@@ -1791,6 +1797,28 @@ def claim_write_admission(task_dir: Path, repository: Path, run_id: str) -> dict
     )
 
 
+def claim_write_admissions(
+    task_dir: Path, repositories: list[Path], run_id: str
+) -> list[dict]:
+    claims, blockers = write_admission.claim_write_scopes(
+        tasks_root=task_dir.parent,
+        task_dir=task_dir,
+        repositories=repositories,
+        run_id=run_id,
+        is_live=admission_liveness,
+    )
+    if not blockers:
+        return claims
+    rendered = "; ".join(
+        f"{Path(item['task']).name}: {item['reason']} ({item['detail']})"
+        for item in blockers
+    )
+    raise SystemExit(
+        "Refusing the exact repository set from "
+        f"{task_dir.name}: {rendered}. No write scope was opened."
+    )
+
+
 def report_review_admission_refusal(
     task_dir: Path, record: dict, args: argparse.Namespace
 ) -> dict:
@@ -1936,7 +1964,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         **dev_pipeline_options(args),
     )
     if args.workflow == "standard":
-        repository = access_directories[0] if access_directories else None
+        repository = access_directories if access_directories else None
         review_subject, review_author = review_prompt_identity(
             task_dir, review_record, bool(getattr(args, "require_review_verdict", False))
         )
@@ -2050,7 +2078,7 @@ def cmd_start(args: argparse.Namespace) -> None:
                 **vars(args),
                 "launch_token": launch_token,
                 "runner_resolution": runner_resolution,
-                "repo": str(access_directories[0])
+                "repo": [str(path) for path in access_directories]
                 if access_directories and args.workflow == "standard"
                 else getattr(args, "repo", None),
             }
@@ -2100,7 +2128,8 @@ def cmd_start(args: argparse.Namespace) -> None:
     if resolved_sandbox_mode:
         watcher_command.extend(["--sandbox-mode", resolved_sandbox_mode])
     if access_directories and args.workflow == "standard":
-        watcher_command.extend(["--repo", str(access_directories[0])])
+        for repository in access_directories:
+            watcher_command.extend(["--repo", str(repository)])
     for name, value in watcher_options(args).items():
         watcher_command.extend([f"--{name.replace('_', '-')}", str(value)])
     if getattr(args, "memory_limit", None) is not None:
@@ -2723,10 +2752,10 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             require_safe_claude_project_settings(
                 root, resolved_sandbox_mode or "workspace-write"
             )
-        write_target = (
-            access_directories[0]
+        write_targets = (
+            access_directories
             if access_grant.get("grants_write") and access_directories
-            else None
+            else []
         )
     except (Exception, SystemExit) as exc:
         report_launch_failure(task_dir, args, exc if isinstance(exc, Exception) else RuntimeError(str(exc)))
@@ -2787,11 +2816,21 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         append_trace(task_dir, f"Task entered the `{entering}` phase.")
 
     write_scope_run_id = None
-    if write_target is not None:
+    if write_targets:
         write_scope_run_id = launch_token or uuid.uuid4().hex
         try:
-            claim_write_admission(task_dir, write_target, write_scope_run_id)
-            update_runner_meta(task_dir, {"write_scope_run_id": write_scope_run_id})
+            claims = claim_write_admissions(task_dir, write_targets, write_scope_run_id)
+            update_runner_meta(task_dir, {
+                "write_scope_run_id": write_scope_run_id,
+                "write_scope_repositories": [
+                    claim["before"]["repository"] for claim in claims
+                ],
+                "preexisting_tracked_dirty_baselines": {
+                    claim["before"]["repository"]:
+                    claim["before"]["preexisting_tracked_dirty_baseline"]
+                    for claim in claims
+                },
+            })
         except (Exception, SystemExit) as exc:
             report_launch_failure(
                 task_dir,
@@ -2889,7 +2928,10 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         # exit code. A scope left open here is still recoverable by measurement,
         # but only this process knows the run it belonged to.
         try:
-            write_admission.close_write_scope(task_dir, write_scope_run_id)
+            for repository in write_targets:
+                write_admission.close_write_scope(
+                    task_dir, write_scope_run_id, repository=repository
+                )
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             append_trace(task_dir, f"Could not close the Git write scope: {exc}")
     finalize_child_lifecycle(
@@ -3202,9 +3244,11 @@ def cmd_review_candidate(args: argparse.Namespace) -> None:
     from dev_pipeline.conventions import build_context_packet
 
     task_dir = resolve_task_dir(args.task_dir)
-    repository = Path(args.repo).expanduser().resolve()
-    if not repository.is_dir():
-        raise SystemExit(f"Review repository is not a directory: {repository}")
+    repo_values = args.repo if isinstance(args.repo, list) else [args.repo]
+    repositories = [Path(value).expanduser().resolve() for value in repo_values]
+    for repository in repositories:
+        if not repository.is_dir():
+            raise SystemExit(f"Review repository is not a directory: {repository}")
     ensure_task_contract(task_dir)
     executable = resolve_dev_pipeline_bin(args.dev_pipeline_bin)
     review_dir = task_dir / "dev-pipeline" / "contract-review"
@@ -3213,10 +3257,10 @@ def cmd_review_candidate(args: argparse.Namespace) -> None:
     context_path = task_dir / COMPLETION_REVIEW_CONTEXT
     run_path = task_dir / COMPLETION_REVIEW_RUN
     try:
-        subject = completion_review_subject(task_dir, repository, Path(executable))
+        subject = completion_review_subject(task_dir, repositories, Path(executable))
         write_json(subject_path, subject)
         materials = completion_review_bound_materials(
-            task_dir, repository, Path(executable), materialize=True
+            task_dir, repositories, Path(executable), materialize=True
         )
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise SystemExit(
@@ -3240,7 +3284,7 @@ def cmd_review_candidate(args: argparse.Namespace) -> None:
         "--packet",
         str(context_path),
         "--repo",
-        str(repository),
+        str(repositories[0]),
         "--output",
         str(run_path),
         "--diagnostics-prefix",
@@ -3296,6 +3340,7 @@ def parse_args() -> argparse.Namespace:
     )
     start_parser.add_argument(
         "--repo",
+        action="append",
         help="Target repository: standard child access root or dev-pipeline owner workspace.",
     )
     start_parser.add_argument(
@@ -3357,7 +3402,7 @@ def parse_args() -> argparse.Namespace:
         help="Run the independent reviewer bound to this task's author.",
     )
     review_parser.add_argument("task_dir", help="Task directory path.")
-    review_parser.add_argument("--repo", help="Read-only target repository for the reviewer.")
+    review_parser.add_argument("--repo", action="append", help="Read-only target repository for the reviewer.")
     review_parser.add_argument("--model", help="Optional reviewer model override.")
     review_parser.add_argument("--application", help="Versioned installation adapter.")
     review_parser.add_argument("--destination", help="Opaque delivery destination.")
@@ -3383,7 +3428,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     product_review_parser.add_argument(
-        "--repo", help="Read-only target repository for the reviewer."
+        "--repo", action="append", help="Read-only target repository for the reviewer."
     )
     product_review_parser.add_argument("--model", help="Optional reviewer model override.")
     product_review_parser.add_argument("--application", help="Versioned installation adapter.")
@@ -3409,7 +3454,7 @@ def parse_args() -> argparse.Namespace:
         choices=["read-only", "workspace-write", "danger-full-access"],
         help=argparse.SUPPRESS,
     )
-    run_child_parser.add_argument("--repo", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--repo", action="append", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--dev-pipeline-bin", help=argparse.SUPPRESS)
     run_child_parser.add_argument(
         "--operation", choices=["start", "resume", "retry"], default="start", help=argparse.SUPPRESS
@@ -3462,7 +3507,7 @@ def parse_args() -> argparse.Namespace:
         help="Run the bounded contract-policy review over a committed candidate.",
     )
     review_parser.add_argument("task_dir", help="Task directory path.")
-    review_parser.add_argument("--repo", required=True, help="Committed target repository.")
+    review_parser.add_argument("--repo", action="append", required=True, help="Committed target repository; repeat for one exact candidate spanning repositories.")
     review_parser.add_argument("--dev-pipeline-bin", help="Dev-pipeline CLI executable.")
     review_parser.add_argument("--model", help="Optional reviewer model override.")
     review_parser.set_defaults(func=cmd_review_candidate)

@@ -286,8 +286,10 @@ COMPLETION_REVIEW_QUESTION = (
     "Does the delivered candidate satisfy every non_negotiable_constraint and avoid "
     "every forbidden_substitution in the effective_contract embedded in the review "
     "subject? Review implementation behavior; approval is forbidden for a contract-only "
-    "or readability-only review. Judge the two prose policy families only. Required live "
-    "evidence is enforced separately by the completion predicate: do not require a future "
+    "or readability-only review. Judge the two prose policy families only. "
+    "For every repository candidate in the subject, include one evidence_checked entry "
+    "that names its repository path, candidate digest, and a concrete observation. "
+    "Required live evidence is enforced separately by the completion predicate: do not require a future "
     "terminal delivery receipt or completion transition from this pre-terminal reviewer, "
     "and do not treat their honest pending state as a policy-family violation."
 )
@@ -382,8 +384,14 @@ def capture_preexisting_tracked_dirty_baseline(repository: Path) -> dict[str, An
     return payload
 
 
-def recorded_preexisting_dirty_baseline(task_dir: Path) -> dict[str, Any] | None:
+def recorded_preexisting_dirty_baseline(
+    task_dir: Path, repository: Path | None = None
+) -> dict[str, Any] | None:
     runner = read_json(task_dir / ".runner" / "runner.json")
+    baselines = runner.get("preexisting_tracked_dirty_baselines") if isinstance(runner, dict) else None
+    if repository is not None and isinstance(baselines, dict):
+        baseline = baselines.get(str(repository.resolve()))
+        return baseline if isinstance(baseline, dict) else None
     baseline = runner.get(PREEXISTING_DIRTY_BASELINE_FIELD) if isinstance(runner, dict) else None
     return baseline if isinstance(baseline, dict) else None
 
@@ -395,7 +403,7 @@ def validate_preexisting_dirty_baseline(task_dir: Path, repository: Path) -> dic
         raise ValueError("tracked paths use assume-unchanged or skip-worktree visibility flags")
     if current["staged_paths"]:
         raise ValueError("tracked paths are staged outside the committed delivery")
-    baseline = recorded_preexisting_dirty_baseline(task_dir)
+    baseline = recorded_preexisting_dirty_baseline(task_dir, repository)
     if baseline is None:
         if current["entries"]:
             raise ValueError("tracked worktree is dirty without a recorded pre-existing baseline")
@@ -507,24 +515,36 @@ def dev_pipeline_source_repository(executable: Path) -> Path:
 
 def completion_review_subject(
     task_dir: Path,
-    repository: Path,
+    repository: Path | list[Path],
     dev_pipeline_bin: Path,
 ) -> dict[str, Any]:
     dev_pipeline_bin = dev_pipeline_bin.resolve()
-    dependency_paths = completion_review_repositories(repository, dev_pipeline_bin)[1:]
-    for path in dependency_paths:
+    requested = repository if isinstance(repository, list) else [repository]
+    requested = [Path(path).resolve() for path in requested]
+    all_paths = completion_review_repositories(requested, dev_pipeline_bin)
+    dependency_paths = all_paths[1:]
+    baselines = {
+        str(path): validate_preexisting_dirty_baseline(task_dir, path)
+        for path in requested
+    }
+    for path in dependency_paths[len(requested) - 1:]:
         require_clean_tracked_worktree(path)
     dependencies = [
-        {"name": "dev-pipeline", "candidate": delivered_candidate(path)}
+        {
+            "name": "repository" if path in requested else "dev-pipeline",
+            "candidate": delivered_candidate(path),
+            **(
+                {"preexisting_tracked_dirty_baseline": baselines[str(path)]}
+                if path in requested else {}
+            ),
+        }
         for path in dependency_paths
     ]
     return {
         "schema_version": 1,
         "effective_contract": load_task_contract(task_dir),
-        "delivered_candidate": delivered_candidate(repository),
-        "preexisting_tracked_dirty_baseline": validate_preexisting_dirty_baseline(
-            task_dir, repository
-        ),
+        "delivered_candidate": delivered_candidate(requested[0]),
+        "preexisting_tracked_dirty_baseline": baselines[str(requested[0])],
         "runtime_dependencies": dependencies,
         "review_runtime": {
             "dev_pipeline_bin": str(dev_pipeline_bin),
@@ -534,11 +554,12 @@ def completion_review_subject(
 
 
 def completion_review_repositories(
-    repository: Path,
+    repository: Path | list[Path],
     dev_pipeline_bin: Path,
 ) -> list[Path]:
     """Git worktrees whose source defines the delivered completion behavior."""
-    repositories = [repository.resolve()]
+    values = repository if isinstance(repository, list) else [repository]
+    repositories = [Path(path).resolve() for path in values]
     root = dev_pipeline_source_repository(dev_pipeline_bin)
     if root not in repositories:
         repositories.append(root)
@@ -590,23 +611,24 @@ def completion_review_materials(
 
 
 def completion_review_all_materials(
-    repository: Path,
+    repository: Path | list[Path],
     dev_pipeline_bin: Path,
 ) -> list[Path]:
+    requested_count = len(repository) if isinstance(repository, list) else 1
     repositories = completion_review_repositories(repository, dev_pipeline_bin)
     return [
         path
         for index, candidate_repository in enumerate(repositories)
         for path in completion_review_materials(
             candidate_repository,
-            include_head_commit=index == 0,
+            include_head_commit=index < requested_count,
         )
     ]
 
 
 def completion_review_bound_materials(
     task_dir: Path,
-    repository: Path,
+    repository: Path | list[Path],
     dev_pipeline_bin: Path,
     *,
     materialize: bool = False,
@@ -618,6 +640,7 @@ def completion_review_bound_materials(
     the committed bytes so the reviewer never receives the unrelated baseline as
     if it were delivery.
     """
+    requested_count = len(repository) if isinstance(repository, list) else 1
     repositories = completion_review_repositories(repository, dev_pipeline_bin)
     source_root = task_dir / COMPLETION_REVIEW_SOURCE_DIRECTORY
     if materialize and source_root.exists():
@@ -625,7 +648,7 @@ def completion_review_bound_materials(
     bound: list[Path] = []
     for index, candidate_repository in enumerate(repositories):
         materials = completion_review_materials(
-            candidate_repository, include_head_commit=index == 0
+            candidate_repository, include_head_commit=index < requested_count
         )
         for path in materials:
             relative = path.resolve().relative_to(candidate_repository.resolve())
@@ -820,24 +843,41 @@ def validate_reviewer_diagnostics(path: Path, run: dict[str, Any]) -> None:
         raise ValueError("reviewer diagnostics decision differs from reviewer output")
 
 
-def configured_repository(
+def configured_repositories(
     task_dir: Path, subject: dict[str, Any], *, require_recorded_grant: bool = False
-) -> Path:
+) -> list[Path]:
     candidate = subject.get("delivered_candidate")
     raw = candidate.get("repository") if isinstance(candidate, dict) else None
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("completion review subject does not name its repository")
-    repository = Path(raw).resolve()
+    repositories = [Path(raw).resolve()]
+    for dependency in subject.get("runtime_dependencies", []):
+        if not isinstance(dependency, dict) or dependency.get("name") != "repository":
+            continue
+        candidate = dependency.get("candidate")
+        dependency_repository = candidate.get("repository") if isinstance(candidate, dict) else None
+        if not isinstance(dependency_repository, str) or not dependency_repository.strip():
+            raise ValueError("completion review subject has a malformed repository candidate")
+        repositories.append(Path(dependency_repository).resolve())
     runner = read_json(task_dir / ".runner" / "runner.json")
     grant = runner.get("access_grant") if isinstance(runner, dict) else None
     directories = grant.get("granted_directories") if isinstance(grant, dict) else None
     if require_recorded_grant and not (isinstance(directories, list) and directories):
         raise ValueError("historical completion review has no recorded repository grant")
     if isinstance(directories, list) and directories:
-        configured = Path(str(directories[0])).resolve()
-        if repository != configured:
-            raise ValueError("completion review subject repository differs from the configured run")
-    return repository
+        configured = [Path(str(path)).resolve() for path in directories]
+        if repositories != configured:
+            raise ValueError("completion review subject repositories differ from the configured run")
+    return repositories
+
+
+def configured_repository(
+    task_dir: Path, subject: dict[str, Any], *, require_recorded_grant: bool = False
+) -> Path:
+    """Compatibility view of the first configured repository."""
+    return configured_repositories(
+        task_dir, subject, require_recorded_grant=require_recorded_grant
+    )[0]
 
 
 def enforced_policy_families(contract: dict[str, Any]) -> list[str]:
@@ -901,9 +941,10 @@ def unsatisfied_policy_families(
 
     try:
         subject = json.loads(subject_path.read_text(encoding="utf-8"))
-        repository = configured_repository(
+        repositories = configured_repositories(
             task_dir, subject, require_recorded_grant=allow_historical_candidate
         )
+        repository = repositories[0]
         runtime = subject.get("review_runtime")
         raw_bin = runtime.get("dev_pipeline_bin") if isinstance(runtime, dict) else None
         if not isinstance(raw_bin, str) or not raw_bin.strip():
@@ -913,7 +954,7 @@ def unsatisfied_policy_families(
             historical = True
         else:
             current_subject = completion_review_subject(
-                task_dir, repository, dev_pipeline_bin
+                task_dir, repositories, dev_pipeline_bin
             )
             historical = subject != current_subject
             if historical:
@@ -938,7 +979,7 @@ def unsatisfied_policy_families(
             materials = historical_completion_review_materials(subject, context)
         else:
             materials = completion_review_bound_materials(
-                task_dir, repository, dev_pipeline_bin
+                task_dir, repositories, dev_pipeline_bin
             )
             expected_materials = [
                 {
@@ -991,6 +1032,24 @@ def unsatisfied_policy_families(
         decision = validate_decision(run.get("decision"), packet)
         validate_reviewer_diagnostics(diagnostics_path, run)
         checked = decision.get("evidence_checked", [])
+        repository_candidates = [subject.get("delivered_candidate")]
+        repository_candidates.extend(
+            item.get("candidate")
+            for item in subject.get("runtime_dependencies", [])
+            if isinstance(item, dict) and item.get("name") == "repository"
+        )
+        for candidate in repository_candidates:
+            if not isinstance(candidate, dict):
+                raise ValueError("completion review repository map is malformed")
+            path = candidate.get("repository")
+            digest = candidate.get("digest")
+            if not any(
+                isinstance(item, str) and str(path) in item and str(digest) in item
+                for item in checked
+            ):
+                raise ValueError(
+                    f"approved review has no digest-bound observation for repository {path}"
+                )
         if historical:
             repositories = [repository]
             repositories.extend(
@@ -999,7 +1058,7 @@ def unsatisfied_policy_families(
                 if isinstance(item, dict) and isinstance(item.get("candidate"), dict)
             )
         else:
-            repositories = completion_review_repositories(repository, dev_pipeline_bin)
+            repositories = completion_review_repositories(repositories, dev_pipeline_bin)
         material_references = [
             reference
             for path in materials

@@ -26,6 +26,29 @@ task_runner = _load_task_runner_module()
 
 
 class TaskRunnerSandboxModeTests(unittest.TestCase):
+    def test_repeatable_repo_preserves_exact_input_order(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            first = Path(raw) / "first"
+            second = Path(raw) / "second"
+            first.mkdir()
+            second.mkdir()
+            self.assertEqual(
+                task_runner.resolve_access_directories(
+                    "codex", [str(second), str(first)]
+                ),
+                [second.resolve(), first.resolve()],
+            )
+
+    def test_repeatable_repo_refuses_missing_member(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            present = Path(raw) / "present"
+            present.mkdir()
+            missing = Path(raw) / "missing"
+            with self.assertRaisesRegex(SystemExit, str(missing)):
+                task_runner.resolve_access_directories(
+                    "codex", [str(present), str(missing)]
+                )
+
     def test_start_and_review_accept_caller_owned_foreground_supervision(self) -> None:
         for arguments in (
             ["task_runner.py", "start", "/tmp/001-task", "--foreground"],

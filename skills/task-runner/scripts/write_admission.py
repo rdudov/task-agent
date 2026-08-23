@@ -44,7 +44,7 @@ import hashlib
 import json
 import os
 import subprocess
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -132,6 +132,7 @@ def git_write_state(repository: Path) -> dict[str, Any]:
         "repository": str(root),
         "common_dir": identity["common_dir"],
         "head": head,
+        "preexisting_tracked_dirty_baseline": baseline,
         "tracked_content_digest": baseline["digest"],
         "index_digest": "sha256:" + hashlib.sha256(index).hexdigest(),
         "untracked_entries_digest": state_digest({"entries": untracked_entries}),
@@ -177,6 +178,19 @@ def repository_lock(repository: Path):
     finally:
         fcntl.flock(handle, fcntl.LOCK_UN)
         handle.close()
+
+
+@contextmanager
+def repository_locks(repositories: list[Path]):
+    """Lock distinct Git repositories in stable common-directory order."""
+    identities = sorted(
+        {(git_repository_identity(path)["common_dir"], path.resolve()) for path in repositories},
+        key=lambda item: item[0],
+    )
+    with ExitStack() as stack:
+        for _common_dir, repository in identities:
+            stack.enter_context(repository_lock(repository))
+        yield
 
 
 def _append(task_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
@@ -239,20 +253,22 @@ def open_write_scope(
     )
 
 
-def close_write_scope(task_dir: Path, run_id: str) -> dict[str, Any] | None:
+def close_write_scope(
+    task_dir: Path, run_id: str, *, repository: Path | None = None
+) -> dict[str, Any] | None:
     """Record what the scope opened under `run_id` actually did.
 
     Returns None when there is no matching open scope, because closing one that
     was never opened would invent a result. A repository whose identity changed
     under the run is a refusal for the same reason.
     """
-    scope = _open_scope_for_close(task_dir, run_id)
+    scope = _open_scope_for_close(task_dir, run_id, repository=repository)
     if scope is None:
         return None
     before = scope["before"]
     repository = Path(before["repository"])
     with repository_lock(repository):
-        scope = _open_scope_for_close(task_dir, run_id)
+        scope = _open_scope_for_close(task_dir, run_id, repository=repository)
         if scope is None:
             return None
         before = scope["before"]
@@ -336,15 +352,21 @@ def _open_scope_for_run(task_dir: Path, run_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _open_scope_for_close(task_dir: Path, run_id: str) -> dict[str, Any] | None:
+def _open_scope_for_close(
+    task_dir: Path, run_id: str, *, repository: Path | None = None
+) -> dict[str, Any] | None:
     """Find the real opening even after an observer's synthetic settlement.
 
     A real close is terminal. A `measured_after_abandonment` close is another
     observer's inference; if the original writer later closes honestly, that
     arrival proves the inference was premature and its result must be appended.
     """
+    expected = str(repository.resolve()) if repository is not None else None
     for record in reversed(read_ledger(task_dir)):
         if record.get("run_id") != run_id:
+            continue
+        before = record.get("before") if isinstance(record.get("before"), dict) else {}
+        if expected is not None and before.get("repository") != expected:
             continue
         if record.get("record") == CLOSED:
             if record.get("resolution") in SYNTHETIC_RESOLUTIONS:
@@ -818,6 +840,46 @@ def claim_write_scope(
             ),
             [],
         )
+
+
+def claim_write_scopes(
+    *,
+    tasks_root: Path,
+    task_dir: Path,
+    repositories: list[Path],
+    run_id: str,
+    is_live: Callable[[Path], bool | None],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Check and claim an exact repository set without a partial open scope."""
+    ordered = [Path(path).resolve() for path in repositories]
+    with repository_locks(ordered):
+        blockers: list[dict[str, Any]] = []
+        for repository in ordered:
+            common_dir = git_write_state(repository)["common_dir"]
+            settle_abandoned_scopes(
+                tasks_root=tasks_root, common_dir=common_dir, is_live=is_live
+            )
+            blockers.extend(
+                admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=task_dir,
+                    is_live=is_live,
+                )
+            )
+        if blockers:
+            return [], blockers
+        for repository in ordered:
+            reconcile_owner_scopes(
+                task_dir=task_dir,
+                common_dir=git_write_state(repository)["common_dir"],
+            )
+        return [
+            open_write_scope(
+                task_dir, repository, run_id, claimant_pid=os.getpid()
+            )
+            for repository in ordered
+        ], []
 
 
 def outstanding_write_results(task_dir: Path) -> list[dict[str, Any]]:

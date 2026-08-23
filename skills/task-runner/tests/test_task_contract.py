@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,12 +18,63 @@ from task_contract import (
     unsatisfied_review_verdict,
     verification_gate_result,
 )
+task_contract = sys.modules["task_contract"]
 
 
 def _git(repository: Path, *args: str) -> str:
     return subprocess.check_output(
         ["git", "-C", str(repository), *args], text=True
     ).strip()
+
+
+def _repository(path: Path, content: str) -> Path:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    _git(path, "config", "user.email", "test@example.com")
+    _git(path, "config", "user.name", "Test")
+    (path / "source.txt").write_text(content, encoding="utf-8")
+    _git(path, "add", "source.txt")
+    _git(path, "commit", "-m", "candidate")
+    return path
+
+
+def test_completion_subject_binds_every_requested_repository(tmp_path: Path, monkeypatch) -> None:
+    repositories = [
+        _repository(tmp_path / name, f"{name}\n")
+        for name in ("repository-a", "repository-b", "repository-c")
+    ]
+    task = tmp_path / "task"
+    (task / ".runner").mkdir(parents=True)
+    baselines = {
+        str(repository.resolve()): task_contract.capture_preexisting_tracked_dirty_baseline(repository)
+        for repository in repositories
+    }
+    (task / ".runner" / "runner.json").write_text(
+        json.dumps({
+            "access_grant": {"granted_directories": [str(path) for path in repositories]},
+            "preexisting_tracked_dirty_baselines": baselines,
+        }),
+        encoding="utf-8",
+    )
+    (task / "task_contract.json").write_text('{"version": 1}', encoding="utf-8")
+    executable = tmp_path / "dev-pipeline"
+    executable.write_text("binary", encoding="utf-8")
+    monkeypatch.setattr(task_contract, "dev_pipeline_source_repository", lambda _path: repositories[1])
+
+    subject = task_contract.completion_review_subject(task, repositories, executable)
+    candidates = [subject["delivered_candidate"], *[
+        item["candidate"] for item in subject["runtime_dependencies"]
+        if item["name"] == "repository"
+    ]]
+    assert [item["repository"] for item in candidates] == [str(path) for path in repositories]
+    assert len({item["digest"] for item in candidates}) == 3
+
+    for index, repository in enumerate(repositories):
+        (repository / "source.txt").write_text(f"changed-{index}\n", encoding="utf-8")
+        _git(repository, "add", "source.txt")
+        _git(repository, "commit", "-m", f"changed-{index}")
+        assert task_contract.completion_review_subject(task, repositories, executable) != subject
+        _git(repository, "reset", "--hard", candidates[index]["head"])
 
 
 def test_completion_review_does_not_predeclare_future_live_evidence() -> None:
