@@ -89,7 +89,11 @@ two tasks never write one working tree at the same time and a change nobody has
 reviewed does not get built on. `skills/task-runner/SKILL.md` owns the rules and
 the ledger format. Successful completion is preserved in that append-only ledger
 against the exact write-scope run IDs it covered, including bounded recovery of
-a terminal scope whose watcher did not close it. Legacy backfill additionally
+a terminal scope whose watcher did not close it. Cancelling a task through
+`tasks_index.py set-status <task> cancelled` releases the obligations it still
+held, recorded in the same ledger as a `scope_released` entry with its reason and
+run IDs; a live writer is still refused, and a task taken back out of `cancelled`
+owes its review again. Legacy backfill additionally
 requires the matching controller completion event and any review evidence the
 current contract requires. The shared completion owner revalidates historical
 policy review from immutable Git objects plus its complete context, diagnostics,

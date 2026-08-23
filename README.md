@@ -152,7 +152,10 @@ cannot. A launch that ends before a child exists releases `launch_pending`, so
 the terminal failure does not itself prevent a retry. Divergent work remains a
 recomputed obligation for other tasks until it is
 reverted or the owner's gates pass, while the owner may enter same-number rework
-without freezing the ambiguous attribution.
+without freezing the ambiguous attribution. Cancelling the owning task the
+ordinary way releases what it still held — a task that will never be asked for
+its gates again must not hold a repository forever — and the ledger records that
+release, its reason and the run IDs it covered instead of dropping them quietly.
 
 `start` returns once the run is confirmed; the watcher and the child keep running in their own sessions, so closing the terminal does not end the work. On a host systemd machine the watcher gets its own transient scope; elsewhere the recorded boundary says it inherits the caller cgroup. Both processes are recorded by kernel start-time identity and PID namespace rather than by pid alone. An observer in another namespace reports liveness as unknown and cannot replace, stop, or reattach the host run. `reattach` restores a lost watcher and refuses when the pid was recycled or a watcher is already live.
 

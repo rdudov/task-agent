@@ -46,19 +46,26 @@ def make_repository(root: Path) -> Path:
     return repository
 
 
-def make_task(tasks_root: Path, name: str, *, completed: bool = False) -> Path:
+def make_task(
+    tasks_root: Path, name: str, *, completed: bool = False, status: str | None = None
+) -> Path:
     task_dir = tasks_root / name
     (task_dir / ".runner").mkdir(parents=True)
     (task_dir / "plan.md").write_text("# Plan\n", encoding="utf-8")
     (task_dir / "task_contract.json").write_text(
         json.dumps({"version": 1, "source": "test"}), encoding="utf-8"
     )
-    status = "completed" if completed else "in_progress"
+    set_task_status(task_dir, status or ("completed" if completed else "in_progress"))
+    return task_dir
+
+
+def set_task_status(task_dir: Path, status: str) -> None:
+    """Write the canonical frontmatter status the metadata owner reads."""
     (task_dir / "task.md").write_text(
-        f'---\nid: 1\nslug: "{name}"\ntitle: "t"\ndate: 2026-08-10\nstatus: "{status}"\n---\n# t\n',
+        f'---\nid: 1\nslug: "{task_dir.name}"\ntitle: "t"\ndate: 2026-08-10\n'
+        f'status: "{status}"\n---\n# t\n',
         encoding="utf-8",
     )
-    return task_dir
 
 
 def record_terminal_projection(
@@ -1108,6 +1115,233 @@ class ConcurrentWriteTests(unittest.TestCase):
                     is_live=lambda task: False,
                 ),
                 [],
+            )
+
+
+class CancelledOwnerTests(unittest.TestCase):
+    """A withdrawn task must stop holding the repository, and say that it did.
+
+    Its gates will never be asked again, so the obligation to review its change
+    cannot be discharged; without a release it blocks every later task forever.
+    """
+
+    def _unreviewed_writer(self, tasks_root: Path, repository: Path) -> Path:
+        writer = make_task(tasks_root, "0001-writer")
+        write_admission.open_write_scope(writer, repository, "run-1")
+        (repository / "source.txt").write_text("writer change\n", encoding="utf-8")
+        write_admission.close_write_scope(writer, "run-1")
+        return writer
+
+    def test_cancelling_the_owner_releases_its_unreviewed_change(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = self._unreviewed_writer(tasks_root, repository)
+            requesting = make_task(tasks_root, "0002-next")
+            before = write_admission.admission_blockers(
+                tasks_root=tasks_root,
+                repository=repository,
+                requesting_task=requesting,
+                is_live=lambda task: False,
+            )
+            self.assertEqual(
+                [item["reason"] for item in before], ["unreviewed_overlapping_write"]
+            )
+
+            set_task_status(writer, "cancelled")
+            claim, blockers = write_admission.claim_write_scope(
+                tasks_root=tasks_root,
+                task_dir=requesting,
+                repository=repository,
+                run_id="run-2",
+                is_live=lambda task: False,
+            )
+            self.assertEqual(blockers, [])
+            self.assertIsNotNone(claim)
+
+    def test_the_release_is_a_ledger_record_naming_its_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = self._unreviewed_writer(tasks_root, repository)
+            outstanding = write_admission.outstanding_write_results(writer)
+            released_digest = write_admission.state_digest(outstanding[0]["after"])
+
+            set_task_status(writer, "cancelled")
+            self.assertEqual(write_admission.outstanding_write_results(writer), [])
+
+            record = write_admission.read_ledger(writer)[-1]
+            self.assertEqual(record["record"], "scope_released")
+            self.assertEqual(record["reason"], "owning_task_cancelled")
+            self.assertEqual(record["owner_status"], "cancelled")
+            self.assertEqual(record["released_run_ids"], ["run-1"])
+            self.assertEqual(
+                record["released_obligations"],
+                [
+                    {
+                        "run_id": "run-1",
+                        "repository": str(repository.resolve()),
+                        "kind": "write_result",
+                        "write_result_digest": released_digest,
+                    }
+                ],
+            )
+
+    def test_the_release_neither_rewrites_nor_repeats_the_earlier_records(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = self._unreviewed_writer(tasks_root, repository)
+            requesting = make_task(tasks_root, "0002-next")
+            evidence = write_admission.read_ledger(writer)
+
+            set_task_status(writer, "cancelled")
+            for _ in range(3):
+                write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=requesting,
+                    is_live=lambda task: False,
+                )
+            ledger = write_admission.read_ledger(writer)
+            self.assertEqual(ledger[: len(evidence)], evidence)
+            self.assertEqual(
+                [record["record"] for record in ledger[len(evidence) :]],
+                ["scope_released"],
+            )
+
+    def test_a_live_task_still_holds_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            cancelled = self._unreviewed_writer(tasks_root, repository)
+            set_task_status(cancelled, "cancelled")
+            live = make_task(tasks_root, "0002-live")
+            write_admission.open_write_scope(
+                live, repository, "run-live", claimant_pid=os.getpid()
+            )
+            requesting = make_task(tasks_root, "0003-next")
+
+            blockers = write_admission.admission_blockers(
+                tasks_root=tasks_root,
+                repository=repository,
+                requesting_task=requesting,
+                is_live=lambda task: task == live,
+            )
+            self.assertEqual(
+                [(Path(item["task"]).name, item["reason"]) for item in blockers],
+                [("0002-live", "live_overlapping_write")],
+            )
+
+    def test_a_cancelled_task_whose_writer_is_still_live_keeps_the_repository(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            cancelled = make_task(tasks_root, "0001-cancelled", status="cancelled")
+            write_admission.open_write_scope(
+                cancelled, repository, "run-1", claimant_pid=os.getpid()
+            )
+            (repository / "source.txt").write_text("still writing\n", encoding="utf-8")
+            requesting = make_task(tasks_root, "0002-next")
+
+            blockers = write_admission.admission_blockers(
+                tasks_root=tasks_root,
+                repository=repository,
+                requesting_task=requesting,
+                is_live=lambda task: True if task == cancelled else False,
+            )
+            self.assertEqual(
+                [item["reason"] for item in blockers], ["live_overlapping_write"]
+            )
+            self.assertEqual(
+                [record["record"] for record in write_admission.read_ledger(cancelled)],
+                ["opened"],
+            )
+
+    def test_cancelling_releases_a_dead_divergent_abandoned_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            abandoned = make_task(tasks_root, "0001-abandoned")
+            requesting = make_task(tasks_root, "0002-next")
+            write_admission.open_write_scope(abandoned, repository, "run-a")
+            (repository / "source.txt").write_text("abandoned edit\n", encoding="utf-8")
+            self.assertEqual(
+                [
+                    item["reason"]
+                    for item in write_admission.admission_blockers(
+                        tasks_root=tasks_root,
+                        repository=repository,
+                        requesting_task=requesting,
+                        is_live=lambda task: False,
+                    )
+                ],
+                ["unreviewed_overlapping_write"],
+            )
+
+            set_task_status(abandoned, "cancelled")
+            self.assertEqual(
+                write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=requesting,
+                    is_live=lambda task: False,
+                ),
+                [],
+            )
+            record = write_admission.read_ledger(abandoned)[-1]
+            self.assertEqual(record["record"], "scope_released")
+            self.assertEqual(record["reason"], "owning_task_cancelled")
+            self.assertEqual(
+                [item["kind"] for item in record["released_obligations"]],
+                ["abandoned_scope"],
+            )
+
+    def test_a_task_taken_back_out_of_cancelled_owes_its_review_again(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = self._unreviewed_writer(tasks_root, repository)
+            requesting = make_task(tasks_root, "0002-next")
+            set_task_status(writer, "cancelled")
+            self.assertEqual(
+                write_admission.admission_blockers(
+                    tasks_root=tasks_root,
+                    repository=repository,
+                    requesting_task=requesting,
+                    is_live=lambda task: False,
+                ),
+                [],
+            )
+
+            set_task_status(writer, "in_progress")
+            self.assertEqual(
+                [
+                    item["reason"]
+                    for item in write_admission.admission_blockers(
+                        tasks_root=tasks_root,
+                        repository=repository,
+                        requesting_task=requesting,
+                        is_live=lambda task: False,
+                    )
+                ],
+                ["unreviewed_overlapping_write"],
             )
 
 

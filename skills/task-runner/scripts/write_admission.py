@@ -31,6 +31,14 @@ the opening fingerprint or satisfying the owning task's gates clears it. The
 owning task may enter rework under the same number while that old scope remains
 recomputed rather than freezing ambiguous attribution.
 
+An obligation whose owning task was cancelled clears as well, because the gates
+that would have discharged it will never be asked and the repository would
+otherwise stay closed to every later task forever. That release is a decision,
+so it is written down: the ledger gets its own `scope_released` record naming
+the released run ids, the state digest each one left behind, and the reason.
+Liveness still comes first, and cancellation never reaches a task whose writer
+cannot be proven absent.
+
 Whether an outstanding change has been reviewed is not decided here. This module
 reports the outstanding change; the completion owner decides whether the task's
 own gates — contract review verdict, live evidence, policy families — are
@@ -74,6 +82,10 @@ OPENED = "opened"
 CLOSED = "closed"
 CLAIMANT_TERMINAL = "claimant_terminal"
 COMPLETION_ACCEPTED = "completion_accepted"
+SCOPE_RELEASED = "scope_released"
+
+CANCELLED_STATUS = "cancelled"
+CANCELLED_RELEASE_REASON = "owning_task_cancelled"
 
 LIVE_OVERLAPPING_WRITE = "live_overlapping_write"
 UNREVIEWED_OVERLAPPING_WRITE = "unreviewed_overlapping_write"
@@ -234,6 +246,7 @@ def read_ledger(task_dir: Path) -> list[dict[str, Any]]:
             CLOSED,
             CLAIMANT_TERMINAL,
             COMPLETION_ACCEPTED,
+            SCOPE_RELEASED,
         }:
             records.append(value)
     return records
@@ -524,6 +537,86 @@ def record_completion_acceptance(
             ],
         },
     )
+
+
+def owner_is_cancelled(task_dir: Path) -> bool:
+    """Whether the canonical metadata owner says this task was withdrawn.
+
+    A cancelled task will never reach its own gates, so the obligation to review
+    its change can never be discharged and would hold the repository against
+    every later task forever. Cancellation is read from the canonical status
+    owner rather than from a second marker, so the ordinary way a product
+    withdraws a task is the way its write scopes are released. The status is read
+    live: a task moved back out of ``cancelled`` owes its review again.
+    """
+    return task_status(task_dir) == CANCELLED_STATUS
+
+
+def released_write_run_ids(task_dir: Path) -> set[str]:
+    """Write-scope runs whose obligation a recorded cancellation already released."""
+    released: set[str] = set()
+    for record in read_ledger(task_dir):
+        if record.get("record") != SCOPE_RELEASED:
+            continue
+        run_ids = record.get("released_run_ids")
+        if isinstance(run_ids, list):
+            released.update(
+                run_id for run_id in run_ids if isinstance(run_id, str) and run_id
+            )
+    return released
+
+
+def record_cancellation_release(
+    task_dir: Path, obligations: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Say in the ledger which unreviewed changes a cancellation let go, and why.
+
+    Releasing an unreviewed change is not the same event as accepting a reviewed
+    one, so it gets its own record rather than a completion receipt that nobody
+    earned. The record keeps each released run id and the digest of the state it
+    left behind, so a later reader of this repository can still find the change
+    and see that it was never reviewed. Nothing earlier is rewritten; only run
+    ids not already recorded produce a new record.
+    """
+    already = released_write_run_ids(task_dir)
+    pending = [
+        obligation
+        for obligation in obligations
+        if isinstance(obligation.get("run_id"), str)
+        and obligation["run_id"]
+        and obligation["run_id"] not in already
+    ]
+    if not pending:
+        return None
+    return _append(
+        task_dir,
+        {
+            "schema_version": 1,
+            "record": SCOPE_RELEASED,
+            "released_at": utc_now(),
+            "reason": CANCELLED_RELEASE_REASON,
+            "owner_status": CANCELLED_STATUS,
+            "detail": (
+                "the owning task was cancelled, so its change can never reach that "
+                "task's own gates; the obligation is released unreviewed"
+            ),
+            "released_run_ids": [obligation["run_id"] for obligation in pending],
+            "released_obligations": sorted(
+                pending, key=lambda obligation: obligation["run_id"]
+            ),
+        },
+    )
+
+
+def _released_obligation(
+    run_id: Any, repository: Any, state: dict[str, Any], kind: str
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "repository": repository,
+        "kind": kind,
+        "write_result_digest": state_digest(state),
+    }
 
 
 def _durable_terminal_completion(task_dir: Path) -> bool:
@@ -894,7 +987,9 @@ def outstanding_write_results(task_dir: Path) -> list[dict[str, Any]]:
 
     The completion owner is asked, not re-implemented: a task whose durable
     state authorizes completion has satisfied whatever review its contract
-    requires, and its change is no longer outstanding.
+    requires, and its change is no longer outstanding. A cancelled task is the
+    other terminal answer: its gates will never be asked, so the obligation is
+    released with a recorded reason instead of outliving the task that owed it.
     """
     accepted = accepted_write_run_ids(task_dir)
     changes = [
@@ -903,6 +998,20 @@ def outstanding_write_results(task_dir: Path) -> list[dict[str, Any]]:
         if result.get("changed") is True and result.get("run_id") not in accepted
     ]
     if not changes:
+        return []
+    if owner_is_cancelled(task_dir):
+        record_cancellation_release(
+            task_dir,
+            [
+                _released_obligation(
+                    result.get("run_id"),
+                    result["before"].get("repository"),
+                    result["after"],
+                    "write_result",
+                )
+                for result in changes
+            ],
+        )
         return []
     ready, _reason = completion_ready(task_dir)
     if ready:
@@ -998,6 +1107,21 @@ def admission_blockers(
                 continue
             run_id = scope.get("run_id")
             if isinstance(run_id, str) and run_id in accepted_write_run_ids(task):
+                continue
+            if owner_is_cancelled(task):
+                # The claimant is provably gone and its owner was withdrawn, so
+                # this divergence has nobody left to attribute or review it.
+                record_cancellation_release(
+                    task,
+                    [
+                        _released_obligation(
+                            run_id,
+                            scope["before"].get("repository"),
+                            resolution["after"],
+                            "abandoned_scope",
+                        )
+                    ],
+                )
                 continue
             ready, _reason = completion_ready(task)
             historical_head = None if ready else _historical_completion_head(task)

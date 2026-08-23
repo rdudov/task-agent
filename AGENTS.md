@@ -138,6 +138,10 @@ Files the user explicitly requested are a separate, user-facing class of output.
   untracked content. Successful completion appends the exact write-scope run IDs
   whose gates closed, so later repository history cannot retroactively invalidate
   an accepted task while later same-task rework remains a new obligation.
+  Cancelling a task through the canonical status command is the other terminal
+  answer: its outstanding obligations are released with a `scope_released` record
+  naming the reason and run IDs, after liveness has been checked, so a withdrawn
+  task never holds a repository against every later task.
 - Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.

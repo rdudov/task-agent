@@ -575,12 +575,31 @@ A launch is refused when:
 - another task holds an open scope in the same repository and is live or cannot
   be proven absent (`live_overlapping_write`);
 - another task changed the repository and its own completion gates have not
-  closed (`unreviewed_overlapping_write`);
+  closed, and that task has not been cancelled (`unreviewed_overlapping_write`);
 - this task has an older scope whose claimant may still be live or whose
   repository can no longer be measured (`unresolved_own_write_scope`).
 
 A task's *own* unreviewed change never locks it out: repairing that change is
 what the rework phase is, and it happens under the same number.
+
+A cancelled task holds nothing. Completion is one terminal answer to an
+outstanding change and withdrawal is the other: a task whose canonical status is
+`cancelled` will never be asked for its gates again, so an obligation left in its
+name would close the repository to every later task forever. Cancelling a task
+the ordinary way — `tasks_index.py set-status <task> cancelled` — is therefore
+the supported way to release its write scopes, and no separate command or manual
+ledger edit exists. The release is not silent: the owning task's ledger gets its
+own `scope_released` record naming the reason `owning_task_cancelled`, the
+released run IDs, and the state digest each one left behind, so a later reader
+can still find that change and see that nobody reviewed it. Withdrawal is an
+answer about the task, not about one repository, so it releases every obligation
+that task still held wherever it held it — the same breadth a completion receipt
+already has. Nothing earlier is rewritten, and re-evaluating the same release
+appends nothing new. Liveness is
+still checked first, so a cancelled task whose writer is live or cannot be proven
+absent keeps the repository until `stop` settles it. The status is read live
+through the canonical metadata owner: a task moved back out of `cancelled` owes
+its review again.
 
 The ledger shape matters, because a single mutable result field had two failures
 that independent review reproduced. A read-only or dry run wrote its own
