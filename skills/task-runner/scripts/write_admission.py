@@ -183,10 +183,17 @@ def repository_lock(repository: Path):
 @contextmanager
 def repository_locks(repositories: list[Path]):
     """Lock distinct Git repositories in stable common-directory order."""
-    identities = sorted(
-        {(git_repository_identity(path)["common_dir"], path.resolve()) for path in repositories},
-        key=lambda item: item[0],
-    )
+    by_common_dir: dict[str, Path] = {}
+    for repository in repositories:
+        identity = git_repository_identity(repository)
+        common_dir = identity["common_dir"]
+        if common_dir in by_common_dir:
+            raise ValueError(
+                "repository set names the same Git common directory twice: "
+                f"{by_common_dir[common_dir]} and {repository.resolve()}"
+            )
+        by_common_dir[common_dir] = repository.resolve()
+    identities = sorted(by_common_dir.items())
     with ExitStack() as stack:
         for _common_dir, repository in identities:
             stack.enter_context(repository_lock(repository))
