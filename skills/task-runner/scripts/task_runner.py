@@ -51,6 +51,7 @@ try:  # package install
         clear_published_review_verdicts,
         enforced_review_verdict,
         ensure_task_contract_file,
+        git_repository_identity,
         load_task_contract,
         published_review_verdict,
         require_review_verdict_contract,
@@ -90,6 +91,7 @@ except ImportError:  # direct repository script
         clear_published_review_verdicts,
         enforced_review_verdict,
         ensure_task_contract_file,
+        git_repository_identity,
         load_task_contract,
         published_review_verdict,
         require_review_verdict_contract,
@@ -933,6 +935,43 @@ def verify_write_access(directories: list[Path]) -> list[dict]:
     return records
 
 
+def repository_write_directories(directories: list[Path]) -> list[Path]:
+    """Expand exact worktrees to the Git metadata an author must also write."""
+    writable: list[Path] = []
+    for directory in directories:
+        try:
+            identity = git_repository_identity(directory)
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+            raise SystemExit(
+                f"--repo must name an exact Git worktree: {directory} ({exc})"
+            ) from None
+        worktree = Path(identity["worktree"]).resolve()
+        if worktree != directory:
+            raise SystemExit(
+                "--repo must name the exact Git worktree root, not a containing "
+                f"directory or subdirectory: {directory} resolves to {worktree}."
+            )
+        for value in (
+            worktree,
+            Path(identity["git_dir"]),
+            Path(identity["common_dir"]),
+        ):
+            resolved = value.resolve()
+            if resolved not in writable:
+                writable.append(resolved)
+    return writable
+
+
+def command_access_directories(
+    directories: list[Path], grant: dict[str, object]
+) -> list[Path]:
+    """Use the verified Git-aware write set when constructing a child command."""
+    writable = grant.get("writable_directories")
+    if isinstance(writable, list) and writable:
+        return [Path(value) for value in writable if isinstance(value, str)]
+    return directories
+
+
 def prepare_access_grant(
     runner: str,
     sandbox_mode: str | None,
@@ -946,12 +985,15 @@ def prepare_access_grant(
     grant: dict[str, object] = {
         "sandbox_mode": effective_mode,
         "granted_directories": [str(directory) for directory in directories],
+        "writable_directories": [],
         "grants_write": bool(directories) and effective_mode in WRITE_ACCESS_MODES,
         "write_check": [],
     }
     if not directories or effective_mode not in WRITE_ACCESS_MODES:
         return directories, grant
-    checks = verify_write_access(directories)
+    writable_directories = repository_write_directories(directories)
+    grant["writable_directories"] = [str(directory) for directory in writable_directories]
+    checks = verify_write_access(writable_directories)
     grant["write_check"] = checks
     unwritable = [check for check in checks if not check["writable"]]
     if unwritable:
@@ -2017,7 +2059,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         args.model,
         resolved_sandbox_mode,
         task_dir,
-        access_directories,
+        command_access_directories(access_directories, access_grant),
         application_launch.get("standard_session", {}).get("command_arguments", []),
     )
     meta = {
@@ -2276,12 +2318,51 @@ def cmd_review(args: argparse.Namespace) -> None:
         raise SystemExit(
             "This task has no bound reviewer from a started material author launch."
         )
+    access_profile = admission.get("access_profile")
+    targets = (
+        access_profile.get("target_repositories")
+        if isinstance(access_profile, dict)
+        else None
+    )
+    if (
+        not isinstance(access_profile, dict)
+        or access_profile.get("role") != "author"
+        or not access_profile.get("grants_write")
+        or not isinstance(targets, list)
+        or not targets
+        or any(not isinstance(value, str) or not value.strip() for value in targets)
+    ):
+        raise SystemExit(
+            "The bound author admission has no exact writable target set. "
+            "Refusing to guess a repository for the reviewer; launch the author "
+            "through `task_runner.py author TASK --repo REPOSITORY`."
+        )
     args.runner = reviewer
     args.workflow = "standard"
     args.require_review_verdict = True
     args.reviewer_runner = None
     args.sandbox_mode = "read-only"
+    args.repo = list(targets)
     args.operation = "start"
+    cmd_start(args)
+
+
+def cmd_author(args: argparse.Namespace) -> None:
+    """Run the standard author with its fixed, verified write profile."""
+    if not getattr(args, "repo", None):
+        raise SystemExit(
+            "The author role requires at least one exact --repo target; refusing "
+            "to launch with an undefined work result."
+        )
+    args.workflow = "standard"
+    args.require_review_verdict = False
+    args.sandbox_mode = "workspace-write"
+    args.operation = "start"
+    args.state_dir = None
+    args.previous_state_dir = None
+    args.retry_reason = None
+    args.dev_pipeline_bin = None
+    args.review_packet = None
     cmd_start(args)
 
 
@@ -2744,7 +2825,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             args.model,
             resolved_sandbox_mode,
             task_dir,
-            access_directories,
+            command_access_directories(access_directories, access_grant),
             application_launch.get("standard_session", {}).get("command_arguments", []),
         )
         if args.runner == "claude" and args.workflow == "standard":
@@ -3397,12 +3478,43 @@ def parse_args() -> argparse.Namespace:
     )
     start_parser.set_defaults(func=cmd_start)
 
+    author_parser = subparsers.add_parser(
+        "author",
+        help="Run a standard author with the launcher-owned write profile.",
+    )
+    author_parser.add_argument("task_dir", help="Task directory path.")
+    author_parser.add_argument(
+        "--repo",
+        action="append",
+        required=True,
+        help="Exact writable target repository; repeat for one multi-repository candidate.",
+    )
+    author_parser.add_argument(
+        "--runner",
+        choices=list(CLI_RUNNERS),
+        default=None,
+        help="Author CLI agent. Omit to follow the parent CLI agent.",
+    )
+    author_parser.add_argument("--model", help="Optional model override for the resolved runner.")
+    author_parser.add_argument(
+        "--reviewer-runner",
+        choices=list(review_admission.REVIEW_RUNNERS),
+        default=None,
+        help="Provider family that must review this author.",
+    )
+    author_parser.add_argument("--application", help="Versioned installation adapter.")
+    author_parser.add_argument("--destination", help="Opaque delivery destination.")
+    author_parser.add_argument("--memory-limit")
+    author_parser.add_argument("--assurance-config")
+    author_parser.add_argument("--dry-run", action="store_true")
+    author_parser.add_argument("--foreground", action="store_true")
+    author_parser.set_defaults(func=cmd_author)
+
     review_parser = subparsers.add_parser(
         "review",
         help="Run the independent reviewer bound to this task's author.",
     )
     review_parser.add_argument("task_dir", help="Task directory path.")
-    review_parser.add_argument("--repo", action="append", help="Read-only target repository for the reviewer.")
     review_parser.add_argument("--model", help="Optional reviewer model override.")
     review_parser.add_argument("--application", help="Versioned installation adapter.")
     review_parser.add_argument("--destination", help="Opaque delivery destination.")
@@ -3426,9 +3538,6 @@ def parse_args() -> argparse.Namespace:
             "Task-local immutable packet with the user contract, candidate identity, "
             "inputs, black-box commands, source manifest, and exclusions."
         ),
-    )
-    product_review_parser.add_argument(
-        "--repo", action="append", help="Read-only target repository for the reviewer."
     )
     product_review_parser.add_argument("--model", help="Optional reviewer model override.")
     product_review_parser.add_argument("--application", help="Versioned installation adapter.")

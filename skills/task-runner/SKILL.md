@@ -65,6 +65,20 @@ The resolved runner and the rule that produced it are recorded as `runner` and `
 
 ## Access Modes
 
+The normal standard path is role-based. `author` owns `workspace-write` and
+requires the exact Git worktree set; it derives and probes each worktree's Git
+directory and common directory too, because an author that cannot commit its
+own tested work does not have a working write profile. `review` owns the
+composite review profile: the bound candidate set is read-only, the task
+notebook remains writable for findings/evidence/verdicts, and Bash plus network
+remain available for live checks. Callers do not select a sandbox or repeat the
+target for those roles. A missing, invalid, duplicate,
+or unwritable worktree or Git-metadata target refuses before a child starts,
+and a review refuses when the author binding has no exact writable target set.
+
+The generic `start` command retains explicit access modes for read-only lookup,
+installation-specific operation, and dev-pipeline integration:
+
 Access level is expressed once, through `--sandbox-mode`, and mapped per runner:
 
 | `--sandbox-mode` | Codex child | Claude child |
@@ -101,28 +115,36 @@ Restricted runs load only the project settings source, so `CLAUDE.md`, rules, an
 
 ## Commands
 
-Let the parent be detected in normal use:
+Run a standard author. The role owns its write profile; the caller names only
+the exact candidate repository set and may let the parent runner be detected:
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example
+.venv/bin/python skills/task-runner/scripts/task_runner.py author \
+  tasks/001-example --repo /path/to/target-repo
 ```
 
-Start a standard Codex child:
+Select a standard Codex author explicitly when needed:
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner codex
+.venv/bin/python skills/task-runner/scripts/task_runner.py author \
+  tasks/001-example --repo /path/to/target-repo --runner codex
 ```
 
-To work in one or more repositories, repeat `--repo /path/to/target-repo`. Standard
+For one candidate spanning repositories, repeat `--repo /path/to/target-repo`. Standard
 Codex and Claude receive a narrow additional root; Cursor Agent receives it as
 an additional root while retaining task-agent as its primary workspace. Write
 modes verify the target with an exclusive random-file create/delete probe
-before spawn, and the resolved grant is recorded in `.runner/runner.json`.
+against both worktree and Git metadata before spawn. The resolved author
+profile is recorded in the existing admission ledger, so the reviewer cannot
+be pointed at a different result.
 
-Start a standard Claude child:
+Run the already-bound reviewer after the author finishes. No repository or
+sandbox argument is accepted: the command reuses the author's exact candidate
+set read-only while keeping the task notebook writable and live checks
+available.
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example --runner claude
+.venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
 Run a task through the dev-pipeline workflow:
@@ -489,8 +511,7 @@ same bound reviewer and lifecycle rather than another controller:
 
 ```bash
 .venv/bin/python skills/task-runner/scripts/task_runner.py product-review \
-  tasks/001-example --packet tasks/001-example/product-review-packet.md \
-  --repo /path/to/read-only-candidate
+  tasks/001-example --packet tasks/001-example/product-review-packet.md
 ```
 
 The task-local packet is input, not a ledger. It carries the complete user

@@ -56,11 +56,23 @@ run would be the hosts that admit one. Each answer names the evidence it rests
 on. `reattach` still insists on proof, because refusing a child that only looks
 alive is its entire purpose.
 
-Repeatable `--repo <path>` is runner-neutral. In the standard workflow every value becomes an
-explicit Codex/Claude access root or an additive Cursor Agent workspace root;
-write modes perform an exclusive random-file create/delete probe before launch
-and record the grant. Cursor retains task-agent as its primary workspace. In
-the dev-pipeline workflow the same path is the core owner's target repository.
+Repeatable `--repo <path>` is runner-neutral and names one exact candidate set.
+The normal standard author is launched with `task_runner.py author`: the role
+fixes `workspace-write`, requires every resolved value to be an exact Git
+worktree root, derives its Git directory and common directory, turns that full
+write set into an explicit
+Codex/Claude access root or additive Cursor Agent workspace root, performs an
+exclusive random-file create/delete probe for every worktree and Git-metadata
+directory, and records the exact target set in the
+existing author admission. `task_runner.py review TASK` accepts no repository
+or sandbox choice; it loads that bound set and exposes candidate code
+read-only, while the task notebook remains writable and Bash/network remain
+available for evidence-producing live checks. Missing,
+invalid, duplicate, non-root, or unwritable worktree/Git-metadata targets, and
+legacy/malformed bindings without an exact writable set, refuse before child
+spawn. Cursor retains
+task-agent as its primary workspace. In the dev-pipeline workflow the same paths
+are the core owner's target repositories.
 
 An installation binds automatic review/rework by passing both
 `--assurance-config` and `--review-packet` to the ordinary task-runner `start`

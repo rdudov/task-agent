@@ -860,6 +860,15 @@ def evaluate(
         "assurance_source": pair.get("assurance_source", "bound_author_admission"),
         "rework_rounds": "unlimited",
     }
+    grant = access_grant if isinstance(access_grant, dict) else {}
+    record["access_profile"] = {
+        "role": "reviewer" if classification["work_class"] == REVIEW else "author",
+        "sandbox_mode": grant.get("sandbox_mode"),
+        "target_repositories": [
+            str(value) for value in grant.get("granted_directories", [])
+        ],
+        "grants_write": bool(grant.get("grants_write")),
+    }
     if classification["work_class"] == REVIEW:
         if pair["bound"]:
             record["decision"] = "admitted_review"

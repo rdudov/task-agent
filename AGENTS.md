@@ -84,9 +84,19 @@ Files the user explicitly requested are a separate, user-facing class of output.
 - Skills live under `skills/`.
 - Use `skills/task-creator/` to create task artifacts.
 - Use `skills/task-runner/` to delegate substantial work to child agents or run a task through the dev-pipeline workflow. The child runner follows the parent CLI agent unless a caller selects one explicitly, so a Codex parent delegates to a Codex child and a Claude parent to a Claude child. That resolution belongs to the task runner, not to prompt text, so callers that never read a skill get the same behavior. Every run records the resolved runner and the rule that resolved it. A launched run is supervised by kernel process identity so a recycled pid is never mistaken for the child.
-- `--repo` is a repeatable access input for both workflows. Standard runs grant
-  every resolved target through the selected runner and verify the exact set before a write-mode
-  launch; dev-pipeline passes it to the core owner. New supervision records also
+- The normal standard path is role-owned: `task_runner.py author TASK --repo R`
+  fixes a verified write profile, and `task_runner.py review TASK` fixes a
+  composite reviewer profile: read-only over the exact candidate set bound by
+  that author, writable in the task notebook for evidence and verdicts, with
+  Bash and network available for live checks. The author
+  profile derives and verifies each exact Git worktree's Git directory and
+  common directory, so committing the work is part of the grant without asking
+  the caller to assemble metadata paths. The caller
+  selects neither sandbox nor reviewer targets. Missing, invalid, duplicate, or
+  unwritable worktree/Git-metadata targets and review bindings without an exact
+  target fail before child spawn. Repeatable `--repo` still names one exact
+  multi-repository candidate; dev-pipeline passes the same set to the core
+  owner. New supervision records also
   bind liveness to the observer's PID namespace, so a nested observer cannot
   declare an invisible host process dead or replace it.
 - Review admission decides, before the author starts, which installation

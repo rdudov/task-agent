@@ -98,7 +98,17 @@ Both ways this wiring breaks are silent — Claude Code ignores a non-`.md` impo
 
 The child runner follows the parent CLI agent: a Codex session delegates to a Codex child, a Claude session to a Claude child. That decision lives in `task_runner.py` rather than in prompt text, so a caller that never reads a skill gets the same behavior. Explicit `--runner` always wins, and every run records which rule decided.
 
-Access level is expressed once through `--sandbox-mode` and mapped per runner, because Codex and Claude express confinement differently. Restricted Claude modes need a Linux host with `bubblewrap` and `socat` and fail closed without them rather than downgrading — a run that claims a boundary it never had is worse than a run that refuses to start.
+Access is owned by the execution role on the normal standard path: `author`
+maps a verified write profile—including the worktree's derived Git and common
+directories needed to commit—to the selected runner, while `review` maps a
+composite profile to the exact target set preserved by the bound author
+admission: candidate code read-only, task notebook writable, Bash/network live
+checks available. The caller does not assemble sandbox flags twice. The generic start
+surface still expresses an explicit `--sandbox-mode` for advanced and
+dev-pipeline operation, because Codex and Claude express confinement
+differently. Restricted Claude modes need a Linux host with `bubblewrap` and
+`socat` and fail closed without them rather than downgrading — a run that claims
+a boundary it never had is worse than a run that refuses to start.
 
 The one absolute path the runner needs is the workspace root that full access reaches. It defaults to the parent of this checkout and is overridden with `TASK_AGENT_WORKSPACE_ROOT`.
 

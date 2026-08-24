@@ -1513,7 +1513,6 @@ class ReviewCommandTests(unittest.TestCase):
             )
             args = argparse.Namespace(
                 task_dir=str(task_dir),
-                repo="/srv/target-repo",
                 model=None,
                 application=None,
                 destination=None,
@@ -1527,6 +1526,7 @@ class ReviewCommandTests(unittest.TestCase):
         self.assertEqual(args.runner, "codex")
         self.assertEqual(args.workflow, "standard")
         self.assertEqual(args.sandbox_mode, "read-only")
+        self.assertEqual(args.repo, ["/srv/target-repo"])
         self.assertTrue(args.require_review_verdict)
 
     def test_review_command_refuses_a_legacy_cursor_binding(self) -> None:
@@ -1547,7 +1547,7 @@ class ReviewCommandTests(unittest.TestCase):
                 configured_resolver=_installed("claude"),
             )
             args = argparse.Namespace(
-                task_dir=str(task_dir), repo="/srv/target-repo", model=None,
+                task_dir=str(task_dir), model=None,
                 application=None, destination=None, memory_limit=None, dry_run=True,
             )
             with mock.patch.object(task_runner, "cmd_start") as start:
@@ -1555,7 +1555,36 @@ class ReviewCommandTests(unittest.TestCase):
         start.assert_called_once_with(args)
         self.assertEqual(args.runner, "claude")
         self.assertEqual(args.sandbox_mode, "read-only")
+        self.assertEqual(args.repo, ["/srv/target-repo"])
         self.assertTrue(args.require_review_verdict)
+
+    def test_review_command_refuses_to_guess_a_missing_author_target(self) -> None:
+        admission = {
+            "pair": {"reviewer_runner": "claude"},
+            "access_profile": {
+                "role": "author",
+                "sandbox_mode": "workspace-write",
+                "target_repositories": [],
+                "grants_write": False,
+            },
+        }
+        with mock.patch.object(
+            task_runner.review_admission, "bound_author_admission", return_value=admission
+        ), self.assertRaisesRegex(SystemExit, "no exact writable target set"):
+            task_runner.cmd_review(argparse.Namespace(task_dir="/tmp/task"))
+
+    def test_author_command_owns_standard_write_profile(self) -> None:
+        args = argparse.Namespace(task_dir="/tmp/task", repo=["/srv/target-repo"])
+        with mock.patch.object(task_runner, "cmd_start") as start:
+            task_runner.cmd_author(args)
+        start.assert_called_once_with(args)
+        self.assertEqual(args.workflow, "standard")
+        self.assertEqual(args.sandbox_mode, "workspace-write")
+        self.assertFalse(args.require_review_verdict)
+
+    def test_author_command_refuses_an_undefined_target(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "requires at least one exact --repo"):
+            task_runner.cmd_author(argparse.Namespace(task_dir="/tmp/task", repo=[]))
 
     def test_review_command_refuses_live_only_binding(self) -> None:
         admission = {
@@ -1584,7 +1613,7 @@ class ReviewCommandTests(unittest.TestCase):
             packet = task_dir / "product-review-packet.md"
             packet.write_text("# Packet\n", encoding="utf-8")
             args = argparse.Namespace(
-                task_dir=str(task_dir), packet=str(packet), repo=None, model=None,
+                task_dir=str(task_dir), packet=str(packet), model=None,
                 application=None, destination=None, memory_limit=None, dry_run=True,
                 foreground=False,
             )
@@ -1602,6 +1631,21 @@ class ReviewCommandTests(unittest.TestCase):
             args = argparse.Namespace(task_dir=str(task_dir), packet=str(packet))
             with self.assertRaisesRegex(SystemExit, "inside the task directory"):
                 task_runner.cmd_product_review(args)
+
+    def test_role_parsers_do_not_let_the_caller_choose_reviewer_access(self) -> None:
+        with mock.patch.object(
+            sys, "argv", ["task_runner.py", "author", "/tmp/task"]
+        ), self.assertRaises(SystemExit) as missing_target:
+            task_runner.parse_args()
+        self.assertEqual(missing_target.exception.code, 2)
+
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["task_runner.py", "review", "/tmp/task", "--repo", "/tmp/other"],
+        ), self.assertRaises(SystemExit) as reviewer_override:
+            task_runner.parse_args()
+        self.assertEqual(reviewer_override.exception.code, 2)
 
 
 class IndependentReviewStatusTests(unittest.TestCase):

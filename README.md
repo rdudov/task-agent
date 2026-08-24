@@ -111,25 +111,36 @@ The same rules reach Codex, Cursor, and Claude Code without being copied. `AGENT
 ## Delegating To A Child Agent
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py start tasks/001-example
+.venv/bin/python skills/task-runner/scripts/task_runner.py author \
+  tasks/001-example --repo /path/to/target-repo
 ```
 
 The child runner follows the parent CLI agent, so a Codex session delegates to Codex and a Claude session to Claude. Pass `--runner codex|claude|agent` to decide explicitly, or set `TASK_AGENT_CHILD_RUNNER`. All three drive both workflows: under `dev-pipeline` the `agent` runner becomes the core's `cursor` owner runtime. Every run records which rule decided.
 
-Access level is expressed once through `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) and mapped per runner. `TASK_AGENT_WORKSPACE_ROOT` sets how far full access reaches; it defaults to the parent of this checkout.
+The normal standard commands own their access profiles: `author` grants verified
+`workspace-write` to the exact repeated Git-worktree `--repo` set and derives
+each worktree's Git directory/common directory so the author can commit, while
+`review TASK` keeps that candidate set read-only, the task notebook writable,
+and Bash/network available for live checks. The exact candidate set comes from
+the bound author admission. The caller does
+not choose a sandbox or repeat reviewer targets. Missing or invalid targets fail
+before child spawn. The generic `start` command retains explicit
+`--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) for
+advanced and dev-pipeline paths. `TASK_AGENT_WORKSPACE_ROOT` sets how far full
+access reaches; it defaults to the parent of this checkout.
 
-For the standard workflow, repeatable `--repo /path/to/target-repo` makes each named repository
+For the standard author role, repeatable `--repo /path/to/target-repo` makes each named repository
 an additional workspace/access root for Codex, Claude, or Cursor Agent while
 the task-agent checkout remains the primary workspace.
-Write modes verify writability before launch and record the result.
+Write modes verify both worktree and Git-metadata writability before launch and
+record the result.
 
 Material work binds an independent reviewer before its author starts. When the
 author finishes, run that reviewer as the next phase of the same task; the
 launcher selects the already-bound family and gives it read-only access:
 
 ```bash
-.venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example \
-  --repo /path/to/target-repo
+.venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
 Three records remain because they answer different acceptance questions:
