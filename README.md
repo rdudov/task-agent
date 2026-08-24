@@ -125,7 +125,10 @@ and Bash/network available for live checks. The exact candidate set comes from
 the bound author admission; a repository-less author produces an empty candidate
 set and remains reviewable through the writable task notebook. The caller does
 not choose a sandbox or repeat reviewer targets. Missing or invalid targets fail
-before child spawn. The generic `start` command retains explicit
+before child spawn. A read-only author may carry exact targets into review; an
+older admission without a role-owned access profile must be relaunched through
+the current runner because review will not guess targets from historical runner
+metadata. The generic `start` command retains explicit
 `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) for
 advanced and dev-pipeline paths. `TASK_AGENT_WORKSPACE_ROOT` sets how far full
 access reaches; it defaults to the parent of this checkout.

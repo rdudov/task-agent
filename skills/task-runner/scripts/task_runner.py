@@ -2343,12 +2343,17 @@ def cmd_review(args: argparse.Namespace) -> None:
         if isinstance(access_profile, dict)
         else None
     )
+    if not isinstance(access_profile, dict):
+        raise SystemExit(
+            "The bound author admission predates role-owned access profiles. "
+            "Relaunch the author or rework through the current task runner so "
+            "the reviewer can reuse an exact target set."
+        )
     if (
-        not isinstance(access_profile, dict)
-        or access_profile.get("role") != "author"
+        access_profile.get("role") != "author"
         or not valid_targets
         or not isinstance(grants_write, bool)
-        or grants_write != bool(targets)
+        or (grants_write and not targets)
     ):
         raise SystemExit(
             "The bound author admission has an invalid target profile. Refusing "

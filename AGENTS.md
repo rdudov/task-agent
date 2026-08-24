@@ -93,9 +93,13 @@ Files the user explicitly requested are a separate, user-facing class of output.
   common directory, so committing the work is part of the grant without asking
   the caller to assemble metadata paths. The caller
   selects neither sandbox nor reviewer targets. Missing, invalid, duplicate, or
-  unwritable worktree/Git-metadata targets and review bindings without an exact
-  target fail before child spawn. An explicit repository-less author binding
-  remains reviewable with an empty candidate set and the writable task notebook.
+  unwritable worktree/Git-metadata targets and review bindings that claim writes
+  without an exact target fail before child spawn. An explicit repository-less
+  author binding remains reviewable with an empty candidate set and the writable
+  task notebook; a read-only author may retain exact targets for the reviewer to
+  reuse read-only. Admissions created before role-owned access profiles must be
+  relaunched through the current runner rather than reconstructing targets from
+  historical metadata.
   Repeatable `--repo` still names one exact
   multi-repository candidate; dev-pipeline passes the same set to the core
   owner. New supervision records also

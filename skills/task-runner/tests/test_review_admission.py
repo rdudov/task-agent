@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -1578,6 +1579,33 @@ class ReviewCommandTests(unittest.TestCase):
         self.assertEqual(args.repo, [])
         self.assertEqual(args.sandbox_mode, "read-only")
 
+    def test_review_command_accepts_a_read_only_author_with_an_exact_target(self) -> None:
+        admission = {
+            "pair": {"reviewer_runner": "claude"},
+            "access_profile": {
+                "role": "author",
+                "sandbox_mode": "read-only",
+                "target_repositories": ["/srv/target-repo"],
+                "grants_write": False,
+            },
+        }
+        with mock.patch.object(
+            task_runner.review_admission, "bound_author_admission", return_value=admission
+        ), mock.patch.object(task_runner, "cmd_start") as start:
+            args = argparse.Namespace(task_dir="/tmp/task")
+            task_runner.cmd_review(args)
+
+        start.assert_called_once_with(args)
+        self.assertEqual(args.repo, ["/srv/target-repo"])
+        self.assertEqual(args.sandbox_mode, "read-only")
+
+    def test_review_command_explains_how_to_replace_a_legacy_binding(self) -> None:
+        admission = {"pair": {"reviewer_runner": "claude"}}
+        with mock.patch.object(
+            task_runner.review_admission, "bound_author_admission", return_value=admission
+        ), self.assertRaisesRegex(SystemExit, "Relaunch the author or rework"):
+            task_runner.cmd_review(argparse.Namespace(task_dir="/tmp/task"))
+
     def test_review_command_refuses_an_inconsistent_author_target_profile(self) -> None:
         admission = {
             "pair": {"reviewer_runner": "claude"},
@@ -1606,6 +1634,66 @@ class ReviewCommandTests(unittest.TestCase):
     def test_author_command_refuses_an_undefined_target(self) -> None:
         with self.assertRaisesRegex(SystemExit, "requires at least one exact --repo"):
             task_runner.cmd_author(argparse.Namespace(task_dir="/tmp/task", repo=[]))
+
+    def test_author_command_carries_git_worktree_requirement_to_the_watcher(self) -> None:
+        class SpawnedWatcher:
+            stdout = io.StringIO(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "watcher_pid": 4100,
+                        "pid": 4101,
+                        "child_started_at": "2026-08-24T00:00:00+00:00",
+                        "process_identity": "child",
+                        "watcher_process_identity": "watcher",
+                    }
+                )
+                + "\n"
+            )
+
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = _workspace_task(raw)
+            repository = Path(raw) / "target"
+            repository.mkdir()
+            args = argparse.Namespace(
+                task_dir=str(task_dir), repo=[str(repository)], runner="codex",
+                reviewer_runner="claude", workflow="standard", model=None,
+                sandbox_mode=None, dry_run=False, foreground=False, application=None,
+                destination=None, memory_limit=None, assurance_config=None,
+                review_packet=None, operation="start", require_review_verdict=False,
+            )
+            with mock.patch.object(
+                task_runner.review_admission,
+                "reviewer_available",
+                lambda runner, which=None: runner in {"claude", "codex"},
+            ), mock.patch.object(
+                task_runner, "watcher_supervision_boundary",
+                return_value=([], {"mode": "test", "durability": "test"}),
+            ), mock.patch.object(
+                task_runner,
+                "prepare_access_grant",
+                return_value=(
+                    [repository.resolve()],
+                    {
+                        "sandbox_mode": "workspace-write",
+                        "granted_directories": [str(repository.resolve())],
+                        "writable_directories": [
+                            str(repository.resolve()), str(repository.resolve() / ".git")
+                        ],
+                        "grants_write": True,
+                    },
+                ),
+            ), mock.patch.object(
+                task_runner.subprocess, "Popen", return_value=SpawnedWatcher()
+            ) as popen:
+                task_runner.cmd_author(args)
+
+        watcher_command = popen.call_args.args[0]
+        self.assertIn("_run-child", watcher_command)
+        self.assertIn("--require-git-worktree", watcher_command)
+        self.assertEqual(
+            watcher_command[watcher_command.index("--repo") + 1], str(repository.resolve())
+        )
 
     def test_review_command_refuses_live_only_binding(self) -> None:
         admission = {

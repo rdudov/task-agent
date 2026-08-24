@@ -104,7 +104,11 @@ directories needed to commit—to the selected runner, while `review` maps a
 composite profile to the exact target set preserved by the bound author
 admission: candidate code read-only, task notebook writable, Bash/network live
 checks available. A repository-less author binds an empty candidate set rather
-than losing access to review. The caller does not assemble sandbox flags twice. The generic start
+than losing access to review, and a read-only author may retain exact targets for
+the reviewer to reuse read-only. An older admission without a role-owned access
+profile must be relaunched through the current runner; target reconstruction from
+historical runner metadata is deliberately not a second source of truth. The
+caller does not assemble sandbox flags twice. The generic start
 surface still expresses an explicit `--sandbox-mode` for advanced and
 dev-pipeline operation, because Codex and Claude express confinement
 differently. Restricted Claude modes need a Linux host with `bubblewrap` and

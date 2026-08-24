@@ -75,8 +75,12 @@ remain available for live checks. Callers do not select a sandbox or repeat the
 target for those roles. A missing, invalid, duplicate,
 or unwritable worktree or Git-metadata target refuses before a child starts,
 and a review refuses when a binding that claims repository writes has no exact
-target set. A repository-less author binding remains reviewable with an empty
-candidate set; the reviewer still writes only its task notebook.
+target set. A read-only author may retain exact targets, which the reviewer
+reuses read-only. A binding created before role-owned access profiles refuses
+with an instruction to relaunch the author or rework through the current runner;
+the reviewer never reconstructs targets from historical runner metadata. A
+repository-less author binding remains reviewable with an empty candidate set;
+the reviewer still writes only its task notebook.
 
 The generic `start` command retains explicit access modes for read-only lookup,
 installation-specific operation, and dev-pipeline integration:
