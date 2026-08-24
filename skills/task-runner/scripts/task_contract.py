@@ -308,13 +308,19 @@ def git_repository_identity(repository: Path) -> dict[str, str]:
     """Bind a baseline to one exact Git worktree, not merely a path-shaped input."""
     repository = repository.resolve()
     root = Path(subprocess.check_output(
-        ["git", "-C", str(repository), "rev-parse", "--show-toplevel"], text=True
+        ["git", "-C", str(repository), "rev-parse", "--show-toplevel"],
+        text=True,
+        stderr=subprocess.PIPE,
     ).strip()).resolve()
     git_dir = _repository_path(root, subprocess.check_output(
-        ["git", "-C", str(root), "rev-parse", "--git-dir"], text=True
+        ["git", "-C", str(root), "rev-parse", "--git-dir"],
+        text=True,
+        stderr=subprocess.PIPE,
     ).strip())
     common_dir = _repository_path(root, subprocess.check_output(
-        ["git", "-C", str(root), "rev-parse", "--git-common-dir"], text=True
+        ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+        text=True,
+        stderr=subprocess.PIPE,
     ).strip())
     return {
         "worktree": str(root),

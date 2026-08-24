@@ -122,7 +122,8 @@ The normal standard commands own their access profiles: `author` grants verified
 each worktree's Git directory/common directory so the author can commit, while
 `review TASK` keeps that candidate set read-only, the task notebook writable,
 and Bash/network available for live checks. The exact candidate set comes from
-the bound author admission. The caller does
+the bound author admission; a repository-less author produces an empty candidate
+set and remains reviewable through the writable task notebook. The caller does
 not choose a sandbox or repeat reviewer targets. Missing or invalid targets fail
 before child spawn. The generic `start` command retains explicit
 `--sandbox-mode` (`read-only`, `workspace-write`, `danger-full-access`) for

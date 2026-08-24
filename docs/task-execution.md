@@ -69,8 +69,10 @@ or sandbox choice; it loads that bound set and exposes candidate code
 read-only, while the task notebook remains writable and Bash/network remain
 available for evidence-producing live checks. Missing,
 invalid, duplicate, non-root, or unwritable worktree/Git-metadata targets, and
-legacy/malformed bindings without an exact writable set, refuse before child
-spawn. Cursor retains
+legacy/malformed bindings that claim repository writes without an exact target
+set, refuse before child spawn. A repository-less author binding is valid: its
+reviewer receives an empty candidate set and retains the writable task notebook
+plus live-check tools. Cursor retains
 task-agent as its primary workspace. In the dev-pipeline workflow the same paths
 are the core owner's target repositories.
 

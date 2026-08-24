@@ -976,6 +976,8 @@ def prepare_access_grant(
     runner: str,
     sandbox_mode: str | None,
     repo: str | Path | list[str] | tuple[str, ...] | None,
+    *,
+    require_git_worktree: bool = False,
 ) -> tuple[list[Path], dict]:
     """Resolve a runner-neutral target grant and fail closed when it cannot hold."""
     directories = resolve_access_directories(runner, repo)
@@ -991,7 +993,11 @@ def prepare_access_grant(
     }
     if not directories or effective_mode not in WRITE_ACCESS_MODES:
         return directories, grant
-    writable_directories = repository_write_directories(directories)
+    writable_directories = (
+        repository_write_directories(directories)
+        if require_git_worktree
+        else directories
+    )
     grant["writable_directories"] = [str(directory) for directory in writable_directories]
     checks = verify_write_access(writable_directories)
     grant["write_check"] = checks
@@ -1934,7 +1940,10 @@ def cmd_start(args: argparse.Namespace) -> None:
         getattr(args, "sandbox_mode", None),
     )
     access_directories, access_grant = prepare_access_grant(
-        args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
+        args.runner,
+        resolved_sandbox_mode,
+        getattr(args, "repo", None),
+        require_git_worktree=bool(getattr(args, "require_git_worktree", False)),
     )
     # Decide the reviewer before the author exists. A material launch that nobody
     # independent can check is cheapest to stop here: after the author runs, the
@@ -2169,6 +2178,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         watcher_command.extend(["--model", args.model])
     if resolved_sandbox_mode:
         watcher_command.extend(["--sandbox-mode", resolved_sandbox_mode])
+    if getattr(args, "require_git_worktree", False):
+        watcher_command.append("--require-git-worktree")
     if access_directories and args.workflow == "standard":
         for repository in access_directories:
             watcher_command.extend(["--repo", str(repository)])
@@ -2324,18 +2335,24 @@ def cmd_review(args: argparse.Namespace) -> None:
         if isinstance(access_profile, dict)
         else None
     )
+    valid_targets = isinstance(targets, list) and not any(
+        not isinstance(value, str) or not value.strip() for value in targets
+    )
+    grants_write = (
+        access_profile.get("grants_write")
+        if isinstance(access_profile, dict)
+        else None
+    )
     if (
         not isinstance(access_profile, dict)
         or access_profile.get("role") != "author"
-        or not access_profile.get("grants_write")
-        or not isinstance(targets, list)
-        or not targets
-        or any(not isinstance(value, str) or not value.strip() for value in targets)
+        or not valid_targets
+        or not isinstance(grants_write, bool)
+        or grants_write != bool(targets)
     ):
         raise SystemExit(
-            "The bound author admission has no exact writable target set. "
-            "Refusing to guess a repository for the reviewer; launch the author "
-            "through `task_runner.py author TASK --repo REPOSITORY`."
+            "The bound author admission has an invalid target profile. Refusing "
+            "to guess a repository for the reviewer."
         )
     args.runner = reviewer
     args.workflow = "standard"
@@ -2357,12 +2374,8 @@ def cmd_author(args: argparse.Namespace) -> None:
     args.workflow = "standard"
     args.require_review_verdict = False
     args.sandbox_mode = "workspace-write"
+    args.require_git_worktree = True
     args.operation = "start"
-    args.state_dir = None
-    args.previous_state_dir = None
-    args.retry_reason = None
-    args.dev_pipeline_bin = None
-    args.review_packet = None
     cmd_start(args)
 
 
@@ -2807,7 +2820,10 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             getattr(args, "sandbox_mode", None),
         )
         access_directories, access_grant = prepare_access_grant(
-            args.runner, resolved_sandbox_mode, getattr(args, "repo", None)
+            args.runner,
+            resolved_sandbox_mode,
+            getattr(args, "repo", None),
+            require_git_worktree=bool(getattr(args, "require_git_worktree", False)),
         )
         application_launch = prepared_application_launch(args, task_dir)
         workflow_command = build_workflow_command(
@@ -3564,6 +3580,9 @@ def parse_args() -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     run_child_parser.add_argument("--repo", action="append", help=argparse.SUPPRESS)
+    run_child_parser.add_argument(
+        "--require-git-worktree", action="store_true", help=argparse.SUPPRESS
+    )
     run_child_parser.add_argument("--dev-pipeline-bin", help=argparse.SUPPRESS)
     run_child_parser.add_argument(
         "--operation", choices=["start", "resume", "retry"], default="start", help=argparse.SUPPRESS

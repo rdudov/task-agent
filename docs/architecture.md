@@ -103,7 +103,8 @@ maps a verified write profile—including the worktree's derived Git and common
 directories needed to commit—to the selected runner, while `review` maps a
 composite profile to the exact target set preserved by the bound author
 admission: candidate code read-only, task notebook writable, Bash/network live
-checks available. The caller does not assemble sandbox flags twice. The generic start
+checks available. A repository-less author binds an empty candidate set rather
+than losing access to review. The caller does not assemble sandbox flags twice. The generic start
 surface still expresses an explicit `--sandbox-mode` for advanced and
 dev-pipeline operation, because Codex and Claude express confinement
 differently. Restricted Claude modes need a Linux host with `bubblewrap` and

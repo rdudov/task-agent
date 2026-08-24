@@ -1558,7 +1558,7 @@ class ReviewCommandTests(unittest.TestCase):
         self.assertEqual(args.repo, ["/srv/target-repo"])
         self.assertTrue(args.require_review_verdict)
 
-    def test_review_command_refuses_to_guess_a_missing_author_target(self) -> None:
+    def test_review_command_accepts_an_explicit_repository_less_author(self) -> None:
         admission = {
             "pair": {"reviewer_runner": "claude"},
             "access_profile": {
@@ -1570,7 +1570,27 @@ class ReviewCommandTests(unittest.TestCase):
         }
         with mock.patch.object(
             task_runner.review_admission, "bound_author_admission", return_value=admission
-        ), self.assertRaisesRegex(SystemExit, "no exact writable target set"):
+        ), mock.patch.object(task_runner, "cmd_start") as start:
+            args = argparse.Namespace(task_dir="/tmp/task")
+            task_runner.cmd_review(args)
+
+        start.assert_called_once_with(args)
+        self.assertEqual(args.repo, [])
+        self.assertEqual(args.sandbox_mode, "read-only")
+
+    def test_review_command_refuses_an_inconsistent_author_target_profile(self) -> None:
+        admission = {
+            "pair": {"reviewer_runner": "claude"},
+            "access_profile": {
+                "role": "author",
+                "sandbox_mode": "workspace-write",
+                "target_repositories": [],
+                "grants_write": True,
+            },
+        }
+        with mock.patch.object(
+            task_runner.review_admission, "bound_author_admission", return_value=admission
+        ), self.assertRaisesRegex(SystemExit, "invalid target profile"):
             task_runner.cmd_review(argparse.Namespace(task_dir="/tmp/task"))
 
     def test_author_command_owns_standard_write_profile(self) -> None:
@@ -1580,6 +1600,7 @@ class ReviewCommandTests(unittest.TestCase):
         start.assert_called_once_with(args)
         self.assertEqual(args.workflow, "standard")
         self.assertEqual(args.sandbox_mode, "workspace-write")
+        self.assertTrue(args.require_git_worktree)
         self.assertFalse(args.require_review_verdict)
 
     def test_author_command_refuses_an_undefined_target(self) -> None:

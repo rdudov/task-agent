@@ -399,7 +399,7 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             prompt.write_text("test", encoding="utf-8")
             for runner in ("codex", "claude", "agent"):
                 directories, grant = task_runner.prepare_access_grant(
-                    runner, "workspace-write", target
+                    runner, "workspace-write", target, require_git_worktree=True
                 )
                 self.assertEqual(directories, [target])
                 self.assertTrue(grant["grants_write"])
@@ -439,20 +439,38 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             )
             self.assertNotIn("--add-dir", read_only_codex)
 
-    def test_write_profile_refuses_a_non_git_or_non_root_target(self) -> None:
+    def test_author_write_profile_refuses_a_non_git_or_non_root_target(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             plain = root / "plain"
             plain.mkdir()
-            with self.assertRaisesRegex(SystemExit, "exact Git worktree"):
-                task_runner.prepare_access_grant("codex", "workspace-write", plain)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaisesRegex(SystemExit, "exact Git worktree"):
+                    task_runner.prepare_access_grant(
+                        "codex", "workspace-write", plain, require_git_worktree=True
+                    )
+            self.assertNotIn("fatal: not a git repository", stderr.getvalue())
 
             repository = root / "repository"
             subprocess.run(["git", "init", "-q", str(repository)], check=True)
             child = repository / "child"
             child.mkdir()
             with self.assertRaisesRegex(SystemExit, "exact Git worktree root"):
-                task_runner.prepare_access_grant("codex", "workspace-write", child)
+                task_runner.prepare_access_grant(
+                    "codex", "workspace-write", child, require_git_worktree=True
+                )
+
+    def test_generic_write_profile_retains_plain_directory_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            plain = Path(raw).resolve()
+            directories, grant = task_runner.prepare_access_grant(
+                "codex", "workspace-write", plain
+            )
+
+        self.assertEqual(directories, [plain])
+        self.assertEqual(grant["writable_directories"], [str(plain)])
+        self.assertTrue(grant["grants_write"])
 
     def test_nested_pid_namespace_cannot_replace_or_signal_host_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

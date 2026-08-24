@@ -94,7 +94,9 @@ Files the user explicitly requested are a separate, user-facing class of output.
   the caller to assemble metadata paths. The caller
   selects neither sandbox nor reviewer targets. Missing, invalid, duplicate, or
   unwritable worktree/Git-metadata targets and review bindings without an exact
-  target fail before child spawn. Repeatable `--repo` still names one exact
+  target fail before child spawn. An explicit repository-less author binding
+  remains reviewable with an empty candidate set and the writable task notebook.
+  Repeatable `--repo` still names one exact
   multi-repository candidate; dev-pipeline passes the same set to the core
   owner. New supervision records also
   bind liveness to the observer's PID namespace, so a nested observer cannot

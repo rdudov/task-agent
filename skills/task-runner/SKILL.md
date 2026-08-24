@@ -74,7 +74,9 @@ notebook remains writable for findings/evidence/verdicts, and Bash plus network
 remain available for live checks. Callers do not select a sandbox or repeat the
 target for those roles. A missing, invalid, duplicate,
 or unwritable worktree or Git-metadata target refuses before a child starts,
-and a review refuses when the author binding has no exact writable target set.
+and a review refuses when a binding that claims repository writes has no exact
+target set. A repository-less author binding remains reviewable with an empty
+candidate set; the reviewer still writes only its task notebook.
 
 The generic `start` command retains explicit access modes for read-only lookup,
 installation-specific operation, and dev-pipeline integration:
