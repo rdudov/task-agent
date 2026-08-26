@@ -30,14 +30,17 @@ task_runner = _load_task_runner_module()
 from task_completion import USER_OR_EXTERNAL_COMPLETION_GATE  # noqa: E402
 
 
-class SandboxedChildReachabilityTests(unittest.TestCase):
-    """Every sandboxed child gets the network and the temporary space it needs.
+class SandboxedChildAccessGrantTests(unittest.TestCase):
+    """Every sandboxed child is launched asking for network and temporary space.
 
     These are the grants a run needs to finish its own work rather than extra
     privileges: without them a live gate, a `git push` or a `pytest` collection
     fails on the sandbox and reports itself as an outage or as unfinished work.
-    Each assertion names the setting rather than the effect, because the effect
-    can only be measured by launching a real child.
+
+    Each test asserts the launch setting, and each name says so. Whether the
+    setting is honoured is a different question, answerable only by a real
+    child: task 1291 measured it from one, reaching `github.com` and pushing
+    over the grants these tests keep in the command.
     """
 
     @staticmethod
@@ -54,27 +57,27 @@ class SandboxedChildReachabilityTests(unittest.TestCase):
                 notebook,
             )
 
-    def test_codex_workspace_write_child_can_reach_the_network(self) -> None:
+    def test_codex_workspace_write_child_is_launched_with_network_access(self) -> None:
         self.assertIn(
             "sandbox_workspace_write.network_access=true",
             self._codex_command("workspace-write"),
         )
 
-    def test_codex_read_only_reviewer_can_reach_the_network(self) -> None:
+    def test_codex_read_only_reviewer_is_launched_with_network_access(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             notebook = Path(raw) / "tasks" / "001-review"
             notebook.mkdir(parents=True)
             command = self._codex_command("read-only", notebook)
         self.assertIn("sandbox_workspace_write.network_access=true", command)
 
-    def test_codex_read_only_reviewer_keeps_a_writable_temporary_directory(self) -> None:
+    def test_codex_read_only_reviewer_is_launched_without_excluding_slash_tmp(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             notebook = Path(raw) / "tasks" / "001-review"
             notebook.mkdir(parents=True)
             command = self._codex_command("read-only", notebook)
         self.assertNotIn("sandbox_workspace_write.exclude_slash_tmp=true", command)
 
-    def test_claude_restricted_children_can_reach_the_network(self) -> None:
+    def test_claude_restricted_children_are_launched_with_the_network_allow_list(self) -> None:
         for sandbox_mode in ("workspace-write", "read-only"):
             with self.subTest(sandbox_mode=sandbox_mode):
                 command = task_runner.claude_access_arguments(
