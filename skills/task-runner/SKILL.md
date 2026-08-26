@@ -312,6 +312,36 @@ enforced policy families have an approved digest-bound review. A refused complet
 only that the run ended after that published lower bound and does not invent a
 stopping point.
 
+When admitted review remains outstanding, the completion owner also persists
+`phase_transition` with the next `review` or `rework` role and its bound runner.
+When a child claims `completed` and an engine-owned bookkeeping gate refuses
+closure, that structured gate result is the declaration; task status, plan,
+review-verdict records, policy-family review, and bound-review bookkeeping are
+engine-owned. Required live evidence carries its contract `owner`: evidence
+owned by author, reviewer, executor, engine, or pipeline may hand off, while an
+absent or other owner fails safe as user/external. Live-only scenarios and
+installation application policy also remain user/external stops. This ownership
+is carried with the gate result and is never inferred from its human wording. For an
+author child that records `blocked`, a transition happens only when the child
+also declares `phase_handoff: {"kind": "bound_independent_review"}` in its
+existing `status.json` and the review and phase ledgers confirm that the bound
+reviewer is next. The declaration is reserved for a safe handoff after the
+author's work; it must not be written when user action, a credential, live
+evidence only the user or an external environment can supply, or another
+user-owned blocker remains. Executor- or pipeline-owned evidence does not
+prevent a handoff. A recorded reviewer `rework`
+verdict is its own declaration and is likewise confirmed by the ledgers. An
+engine-owned refusal can carry either `review` or `rework`, so an earlier
+bookkeeping gate does not hide the next role. The decision never comes from a
+bound admission alone or equality with human wording. It records
+`automatic: false`: the ordinary standard phases remain bounded, so an
+installation may name the next engineering owner but must not claim the next
+process already started. An undeclared or unconfirmed child blocker, a runtime
+failure, or another user-owned refusal receives no such transition marker.
+Its requested action tells the reader to resolve the displayed reason through
+the existing task path; it never instructs them to force `completed` around an
+outstanding bound review.
+
 When that decision accepts a task that changed a Git repository, write admission
 appends a `completion_accepted` receipt naming the write-scope run IDs covered by
 that completion. A later task advancing the same repository does not

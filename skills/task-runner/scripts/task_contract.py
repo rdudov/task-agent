@@ -1315,6 +1315,11 @@ def merge_task_contract(base: dict[str, Any], override: dict[str, Any]) -> dict[
                 "description": description,
                 "required": bool(raw_item.get("required", True)),
             }
+            owner = str(raw_item.get("owner", "")).strip()
+            if owner:
+                merged_item["owner"] = owner
+            elif item_id in evidence_by_id and evidence_by_id[item_id].get("owner"):
+                merged_item["owner"] = evidence_by_id[item_id]["owner"]
             evidence_by_id[item_id] = merged_item
     result["required_live_evidence"] = list(evidence_by_id.values())
 

@@ -159,6 +159,31 @@ the review runs as a phase of the same number:
 .venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
 
+When review remains outstanding, the refusal carries a structured
+`phase_transition` naming `review` and the bound reviewer. A `rework` verdict
+similarly names the bound author until that author works again, after which the
+next transition is `review`. On a child claim of `completed`, the completion
+owner classifies its own refusing gate structurally: task status, plan,
+review-verdict records, policy-family review and bound-review bookkeeping are
+engine-owned and may carry that transition. Required live evidence owned in the
+contract by author, reviewer, executor, engine, or pipeline may also hand off;
+an absent or other evidence owner fails safe as user/external. Live-only
+scenarios and installation application policy likewise stay user/external
+stops. No wording is parsed. When an author child records `blocked`, it declares
+a safe handoff in the same status file with
+`phase_handoff: {"kind": "bound_independent_review"}`. The completion owner
+persists the marker only when the review and phase ledgers confirm that declared
+bound reviewer; an undeclared blocker or a declaration the ledgers cannot
+confirm remains a stop. The child must not declare a handoff while user action,
+a credential, live evidence only the user or an external environment can
+supply, or another user-owned blocker remains; executor-owned evidence does not
+prevent the handoff. An earlier engine-owned completion gate may supply the
+displayed reason without hiding a confirmed next role, including `rework`.
+Installation adapters can therefore describe a phase boundary without
+parsing prose or hiding a user-owned stop. `automatic: false` is deliberate:
+standard phases are bounded, and the marker names ownership rather than
+claiming the next process started.
+
 `product-review` is the product-acceptance variant of that same command path. It
 does not add a controller, lifecycle, pairing record, or ledger. The caller
 provides one task-local packet containing the complete user contract, exact

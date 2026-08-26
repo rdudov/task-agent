@@ -19,6 +19,7 @@ try:
         load_application,
     )
     from .task_contract import (
+        enforced_live_evidence,
         load_task_contract,
         unsatisfied_live_evidence,
         unsatisfied_policy_families,
@@ -34,6 +35,7 @@ except ImportError:
         load_application,
     )
     from task_contract import (
+        enforced_live_evidence,
         load_task_contract,
         unsatisfied_live_evidence,
         unsatisfied_policy_families,
@@ -69,6 +71,29 @@ def resolve_tasks_index_path(
 
 TASKS_INDEX_PATH = resolve_tasks_index_path()
 _tasks_index_module = None
+
+ENGINE_OWNED_COMPLETION_GATE = "engine"
+USER_OR_EXTERNAL_COMPLETION_GATE = "user_or_external"
+ENGINE_EVIDENCE_OWNERS = frozenset(
+    {"author", "engine", "executor", "pipeline", "reviewer"}
+)
+
+
+class CompletionFailure(str):
+    """Human-readable refusal text with a machine-owned gate identity."""
+
+    gate: str
+    owner: str
+
+    def __new__(cls, reason: str, *, gate: str, owner: str):
+        value = super().__new__(cls, reason)
+        value.gate = gate
+        value.owner = owner
+        return value
+
+
+def completion_failure(reason: str, *, gate: str, owner: str) -> CompletionFailure:
+    return CompletionFailure(reason, gate=gate, owner=owner)
 
 
 def load_tasks_index():
@@ -106,6 +131,61 @@ def task_status(task_dir: Path) -> str:
         return load_tasks_index().read_record(task_dir)["status"]
     except Exception:
         return "unknown"
+
+
+def independent_review_blocker(task_dir: Path) -> dict | None:
+    """Return the structured next role while admitted review is outstanding.
+
+    The review owner already knows whether this number needs its reviewer or
+    needs to return to its author. Persist that decision with a refused close,
+    independently of which completion gate supplied the displayed reason, so
+    installation adapters do not infer ownership from a launch admission or
+    parse human wording.
+    """
+    author_phases = task_phases.author_work_entries(task_dir)
+    status = review_admission.independent_review_status(
+        task_dir, author_phases=author_phases
+    )
+    if status["satisfied"]:
+        return None
+    reason = (
+        "the independent review this task was admitted with is not established: "
+        + str(status["reason"])
+    )
+    if not status.get("required"):
+        return {"reason": reason + ". " + str(status.get("action", ""))}
+
+    binding = review_admission.bound_author_admission(task_dir)
+    pair = binding.get("pair") if isinstance(binding, dict) else {}
+    last_round = status.get("last_round")
+    latest_author_at = max(
+        (str(entry.get("entered_at", "")) for entry in author_phases),
+        default="",
+    )
+    last_round_at = (
+        str(last_round.get("recorded_at", ""))
+        if isinstance(last_round, dict)
+        else ""
+    )
+    needs_rework = (
+        isinstance(last_round, dict)
+        and str(last_round.get("decision", "")).strip().lower() == "rework"
+        and latest_author_at <= last_round_at
+    )
+    owner_role = "author" if needs_rework else "reviewer"
+    owner_runner = pair.get(f"{owner_role}_runner") if isinstance(pair, dict) else None
+    if owner_runner not in review_admission.RUNNER_FAMILIES:
+        return {"reason": reason + ". " + str(status.get("action", ""))}
+    return {
+        "reason": reason,
+        "phase_transition": {
+            "schema_version": 1,
+            "next_phase": "rework" if needs_rework else "review",
+            "owner_role": owner_role,
+            "owner_runner": owner_runner,
+            "automatic": False,
+        },
+    }
 
 
 def set_task_metadata_status(task_dir: Path, status: str) -> None:
@@ -212,23 +292,43 @@ def completion_ready(
     """
     contract_path = task_dir / "task_contract.json"
     if not contract_path.exists():
-        return False, "task_contract.json is absent; no contract can authorize completion"
+        return False, completion_failure(
+            "task_contract.json is absent; no contract can authorize completion",
+            gate="task_contract",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
+        )
 
     status = task_status(task_dir)
     if status != "completed" and not (
         defer_task_status and status in {"in_progress", "blocked"}
     ):
-        return False, f"task.md frontmatter status is {status!r}, not 'completed'"
+        return False, completion_failure(
+            f"task.md frontmatter status is {status!r}, not 'completed'",
+            gate="task_status",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
+        )
 
     plan_path = task_dir / "plan.md"
     if not plan_path.is_file():
-        return False, "plan.md is absent; completion readiness cannot be established"
+        return False, completion_failure(
+            "plan.md is absent; completion readiness cannot be established",
+            gate="task_plan",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
+        )
     try:
         plan_text = plan_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        return False, f"plan.md is unreadable: {exc}"
+        return False, completion_failure(
+            f"plan.md is unreadable: {exc}",
+            gate="task_plan",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
+        )
     if "[pending]" in plan_text or "[in_progress]" in plan_text:
-        return False, "plan.md still has unfinished steps"
+        return False, completion_failure(
+            "plan.md still has unfinished steps",
+            gate="task_plan",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
+        )
 
     contract = load_task_contract(task_dir)
     verification_path = task_dir / "verification.md"
@@ -244,19 +344,48 @@ def completion_ready(
     }
     unknown_deferred = deferred_live_evidence_ids - enforced_ids
     if unknown_deferred:
-        return False, (
+        return False, completion_failure(
             "application completion preparation names evidence not enforced by the contract: "
-            + ", ".join(sorted(unknown_deferred))
+            + ", ".join(sorted(unknown_deferred)),
+            gate="application_evidence_contract",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
         )
     unsatisfied = unsatisfied_live_evidence(
         contract, verification, deferred_live_evidence_ids
     )
     if unsatisfied:
-        return False, f"required live evidence is not established: {'; '.join(unsatisfied)}"
+        unsatisfied_items = [
+            item
+            for item in enforced_live_evidence(contract)
+            if str(item.get("id", "")).strip() not in deferred_live_evidence_ids
+            and verification_gate_result(
+                verification, str(item.get("id", "")).strip()
+            )
+            not in {"OK", "PASS", "PASSED"}
+        ]
+        evidence_owner = (
+            ENGINE_OWNED_COMPLETION_GATE
+            if unsatisfied_items
+            and all(
+                str(item.get("owner", "")).strip().lower()
+                in ENGINE_EVIDENCE_OWNERS
+                for item in unsatisfied_items
+            )
+            else USER_OR_EXTERNAL_COMPLETION_GATE
+        )
+        return False, completion_failure(
+            f"required live evidence is not established: {'; '.join(unsatisfied)}",
+            gate="required_live_evidence",
+            owner=evidence_owner,
+        )
 
     verdict_problems = unsatisfied_review_verdict(contract, task_dir)
     if verdict_problems:
-        return False, f"required review verdict is not established: {'; '.join(verdict_problems)}"
+        return False, completion_failure(
+            f"required review verdict is not established: {'; '.join(verdict_problems)}",
+            gate="review_verdict_record",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
+        )
 
     # The reviewer bound before the author started has to have approved what is
     # here now. Without this, review admission would be a record of an intention:
@@ -264,15 +393,12 @@ def completion_ready(
     # and be accepted without that reviewer ever seeing the work. There is no
     # round budget in it -- an unapproved round refuses this acceptance and
     # authorizes the next round, which is the loop the task is supposed to have.
-    review_status = review_admission.independent_review_status(
-        task_dir, author_phases=task_phases.author_work_entries(task_dir)
-    )
-    if not review_status["satisfied"]:
-        return False, (
-            "the independent review this task was admitted with is not established: "
-            + str(review_status["reason"])
-            + ". "
-            + str(review_status.get("action", ""))
+    review_blocker = independent_review_blocker(task_dir)
+    if review_blocker is not None:
+        return False, completion_failure(
+            str(review_blocker["reason"]),
+            gate="bound_independent_review",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
         )
 
     # The public dev-pipeline core enforces its own live-only scenario set before
@@ -295,9 +421,11 @@ def completion_ready(
             not in {"OK", "PASS", "PASSED"}
         ]
         if missing:
-            return False, (
+            return False, completion_failure(
                 "assurance strategy `live_acceptance_only` requires passing "
-                "verification for configured live scenarios: " + "; ".join(missing)
+                "verification for configured live scenarios: " + "; ".join(missing),
+                gate="live_acceptance_scenarios",
+                owner=USER_OR_EXTERNAL_COMPLETION_GATE,
             )
 
     # The delivered-candidate policy-family review is a dev-pipeline surface.
@@ -310,8 +438,17 @@ def completion_ready(
             allow_historical_candidate=allow_historical_candidate,
         )
         if unestablished:
-            return False, (
+            return False, completion_failure(
                 "contract policy families are not established: "
-                + "; ".join(unestablished)
+                + "; ".join(unestablished),
+                gate="policy_family_review",
+                owner=ENGINE_OWNED_COMPLETION_GATE,
             )
-    return application_completion_ready(task_dir, workflow, application)
+    ready, reason = application_completion_ready(task_dir, workflow, application)
+    if ready:
+        return True, reason
+    return False, completion_failure(
+        reason,
+        gate="application_completion_policy",
+        owner=USER_OR_EXTERNAL_COMPLETION_GATE,
+    )

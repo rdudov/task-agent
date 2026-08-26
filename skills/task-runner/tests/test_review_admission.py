@@ -1929,10 +1929,77 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             task = self._task(Path(raw))
             self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed"},
+            )
             ready, reason = task_completion.completion_ready(task, workflow="standard")
+            refusal = task_runner.completion_refusal(task, reason)
         self.assertFalse(ready)
         self.assertIn("independent review", reason)
-        self.assertIn("task_runner.py review", reason)
+        self.assertNotIn("task_runner.py review", reason)
+        self.assertEqual(
+            refusal["phase_transition"],
+            {
+                "schema_version": 1,
+                "next_phase": "review",
+                "owner_role": "reviewer",
+                "owner_runner": "codex",
+                "automatic": False,
+            },
+        )
+
+    def test_an_earlier_completion_gate_does_not_hide_the_next_review_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed"},
+            )
+            (task / "plan.md").write_text(
+                "# Plan\n\n1. [pending] Pass independent review.\n",
+                encoding="utf-8",
+            )
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+            refusal = task_runner.completion_refusal(task, reason)
+        self.assertFalse(ready)
+        self.assertEqual(reason, "plan.md still has unfinished steps")
+        self.assertEqual(refusal["phase_transition"]["next_phase"], "review")
+        self.assertEqual(refusal["phase_transition"]["owner_runner"], "codex")
+
+    def test_rework_verdict_records_the_author_as_the_next_phase_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            review_admission.record_review_round(
+                task,
+                event_id="round-rework",
+                decision={"decision": "rework"},
+                review_provider="codex",
+            )
+            blocker = task_completion.independent_review_blocker(task)
+        self.assertEqual(blocker["phase_transition"]["next_phase"], "rework")
+        self.assertEqual(blocker["phase_transition"]["owner_runner"], "claude")
+
+    def test_author_work_after_rework_returns_the_task_to_review(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            review_admission.record_review_round(
+                task,
+                event_id="round-rework",
+                decision={"decision": "rework"},
+                review_provider="codex",
+            )
+            task_phases.record_phase(
+                task,
+                "rework",
+                entered_at="2999-01-01T00:00:00+00:00",
+            )
+            blocker = task_completion.independent_review_blocker(task)
+        self.assertEqual(blocker["phase_transition"]["next_phase"], "review")
+        self.assertEqual(blocker["phase_transition"]["owner_runner"], "codex")
 
     def test_standard_live_only_requires_each_configured_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -2033,7 +2100,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             ready, reason = task_completion.completion_ready(task, workflow="standard")
         self.assertFalse(ready)
         self.assertIn("Codex was bound", reason)
-        self.assertIn("task_runner.py review", reason)
+        self.assertNotIn("task_runner.py review", reason)
 
     def test_the_author_cannot_record_the_round_that_accepts_its_own_work(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -2203,6 +2270,181 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             self.assertEqual(task_completion.task_status(task), "blocked")
             self.assertEqual(
                 task_runner.read_json(task_runner.status_path(task))["state"], "blocked"
+            )
+
+    def test_child_written_blocked_author_handoff_records_the_bound_review(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {
+                    "state": "blocked",
+                    "current_step": "author work finished",
+                    "phase_handoff": {"kind": "bound_independent_review"},
+                },
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(status["state"], "blocked")
+            self.assertEqual(
+                status["phase_transition"],
+                {
+                    "schema_version": 1,
+                    "next_phase": "review",
+                    "owner_role": "reviewer",
+                    "owner_runner": "codex",
+                    "automatic": False,
+                },
+            )
+
+            task_runner.write_status(task, "running", "review child started")
+            self.assertNotIn(
+                "phase_transition",
+                task_runner.read_json(task_runner.status_path(task)),
+            )
+            self.assertNotIn(
+                "phase_handoff",
+                task_runner.read_json(task_runner.status_path(task)),
+            )
+
+    def test_child_written_user_owned_blocker_stays_a_stop_above_the_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {
+                    "state": "blocked",
+                    "current_step": "production credential must be supplied by the user",
+                },
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(status["state"], "blocked")
+            self.assertNotIn("phase_transition", status)
+
+    def test_unconfirmed_child_handoff_stays_a_stop_above_the_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {
+                    "state": "blocked",
+                    "current_step": "claims a review handoff without a binding",
+                    "phase_handoff": {"kind": "bound_independent_review"},
+                },
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(status["state"], "blocked")
+            self.assertNotIn("phase_transition", status)
+
+    def test_live_evidence_refusal_without_handoff_stays_a_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed", "current_step": "child claimed completion"},
+            )
+            (task / "task_contract.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "required_live_evidence": [{"id": "user-supplied-proof"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+            refusal = task_runner.completion_refusal(task, reason)
+
+            self.assertFalse(ready)
+            self.assertEqual(reason.gate, "required_live_evidence")
+            self.assertEqual(
+                reason.owner, task_completion.USER_OR_EXTERNAL_COMPLETION_GATE
+            )
+            self.assertNotIn("phase_transition", refusal)
+
+    def test_executor_owned_live_evidence_can_handoff_to_bound_review(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            (task / "task_contract.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "required_live_evidence": [
+                            {"id": "pipeline-live-proof", "owner": "executor"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+            refusal = task_runner.completion_refusal(task, reason)
+
+            self.assertFalse(ready)
+            self.assertEqual(reason.gate, "required_live_evidence")
+            self.assertEqual(reason.owner, task_completion.ENGINE_OWNED_COMPLETION_GATE)
+            self.assertEqual(refusal["phase_transition"]["next_phase"], "review")
+
+    def test_completed_claim_rejected_by_engine_gate_records_review_above_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed", "current_step": "author work finished"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(status["state"], "blocked")
+            self.assertEqual(
+                status["completion_refusal"]["phase_transition"]["next_phase"],
+                "review",
+            )
+            self.assertEqual(
+                status["completion_refusal"]["phase_transition"]["owner_runner"],
+                "codex",
+            )
+
+    def test_completed_claim_after_rework_records_author_above_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            review_admission.record_review_round(
+                task,
+                event_id="round-rework",
+                decision={"decision": "rework"},
+                review_provider="codex",
+            )
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed", "current_step": "completion claimed early"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(status["state"], "blocked")
+            self.assertEqual(
+                status["completion_refusal"]["phase_transition"]["next_phase"],
+                "rework",
+            )
+            self.assertEqual(
+                status["completion_refusal"]["phase_transition"]["owner_runner"],
+                "claude",
             )
 
     def test_child_written_failed_state_is_canonical_for_observers(self) -> None:

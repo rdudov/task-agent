@@ -33,10 +33,12 @@ try:  # package install
         try_send_pipeline_stop_message,
     )
     from .task_completion import (
+        ENGINE_OWNED_COMPLETION_GATE,
         application_completion_ready,
         block_task_metadata,
         complete_task_metadata,
         completion_ready,
+        independent_review_blocker,
     )
     from .task_contract import (
         COMPLETION_REVIEW_CONTEXT,
@@ -73,10 +75,12 @@ except ImportError:  # direct repository script
         try_send_pipeline_stop_message,
     )
     from task_completion import (
+        ENGINE_OWNED_COMPLETION_GATE,
         application_completion_ready,
         block_task_metadata,
         complete_task_metadata,
         completion_ready,
+        independent_review_blocker,
     )
     from task_contract import (
         COMPLETION_REVIEW_CONTEXT,
@@ -266,6 +270,8 @@ def write_status(task_dir: Path, state: str, current_step: str, extra: dict | No
             "finished_at",
             "outcome",
             "completion_refusal",
+            "phase_handoff",
+            "phase_transition",
         ):
             payload.pop(terminal_field, None)
     payload.update(
@@ -438,6 +444,16 @@ While working:
   or line budget is prescribed here.
 - Keep `{trace_md}` updated with concise chronological notes.
 - Keep `{status_json}` updated with `state`, `current_step`, and `updated_at`.
+- When an author or rework run has safely finished its own work and records
+  `blocked` only to hand the same task to its bound independent reviewer, also
+  write `"phase_handoff": {{"kind": "bound_independent_review"}}` in
+  `{status_json}`. Do not declare that handoff when user action, a credential,
+  live evidence that only the user or an external environment can supply, or
+  another user-owned blocker is still needed. Evidence owned by this task's
+  executor or existing pipeline does not prevent the handoff. The lifecycle
+  owner validates the declaration against the review ledger. A child that
+  records `completed` does not need to predict which completion gate will run;
+  the completion owner classifies its own gate explicitly.
 - For a long run, publish substantive live progress in `{progress_json}`: a `schema_version: 1`
   object with a concrete `activity`, `updated_at`, and optionally `recent_outcome`.
   Publish `completed`, `total`, and `unit` only together and only when you actually
@@ -1551,17 +1567,60 @@ def incomplete_published_progress(task_dir: Path) -> dict | None:
 
 COMPLETION_REFUSAL_PREMATURE = "premature_completion"
 COMPLETION_REFUSAL_INTERRUPTED = INTERRUPTED_COMPLETION_KIND
+BOUND_REVIEW_HANDOFF = {"kind": "bound_independent_review"}
+PHASE_TRANSITION_REVIEW_ROUND = "review_round"
+PHASE_TRANSITION_COMPLETION_GATE = "completion_gate"
+
+
+def confirmed_phase_transition(
+    task_dir: Path,
+    *,
+    status: dict | None = None,
+    producer: str | None = None,
+) -> dict | None:
+    """Return a next-role marker only when its producer is observed.
+
+    A recorded rework verdict and an engine-owned completion-gate refusal are
+    observed declarations. A child-authored blocker must be declared by the
+    child in ``status.json``. Every producer is independently confirmed by the
+    bound review owner; missing or mismatched evidence fails safe as a real stop.
+    """
+    blocker = independent_review_blocker(task_dir)
+    transition = blocker.get("phase_transition") if blocker else None
+    if not isinstance(transition, dict):
+        return None
+    if producer == PHASE_TRANSITION_COMPLETION_GATE:
+        return transition
+    if transition.get("next_phase") == "rework":
+        return transition if producer == PHASE_TRANSITION_REVIEW_ROUND else None
+    child_status = status if isinstance(status, dict) else read_json(status_path(task_dir))
+    if (
+        transition.get("next_phase") == "review"
+        and child_status.get("phase_handoff") == BOUND_REVIEW_HANDOFF
+    ):
+        return transition
+    return None
 
 
 def completion_refusal(task_dir: Path, reason: str) -> dict:
     """Describe only what durable state establishes about a refused close."""
     published = incomplete_published_progress(task_dir)
     if published is None:
-        return {
+        refusal = {
             "kind": COMPLETION_REFUSAL_PREMATURE,
             "reason": reason,
             "summary": f"Rejected premature completion: {reason}",
         }
+        transition = (
+            confirmed_phase_transition(
+                task_dir, producer=PHASE_TRANSITION_COMPLETION_GATE
+            )
+            if getattr(reason, "owner", None) == ENGINE_OWNED_COMPLETION_GATE
+            else None
+        )
+        if transition is not None:
+            refusal["phase_transition"] = transition
+        return refusal
     counts = f"{published['completed']:g} of {published['total']:g} {published['unit']}"
     return {
         "kind": COMPLETION_REFUSAL_INTERRUPTED,
@@ -2617,6 +2676,14 @@ def finalize_child_lifecycle(
         # reviewer decision belongs in the ledger before completion reads it.
         if return_code == 0:
             review_round = record_standard_review_round(task_dir, runner)
+            if review_round and review_round.get("decision") == "rework":
+                transition = confirmed_phase_transition(
+                    task_dir, producer=PHASE_TRANSITION_REVIEW_ROUND
+                )
+                if transition is not None:
+                    status = read_json(status_path(task_dir))
+                    status["phase_transition"] = transition
+                    write_json(status_path(task_dir), status)
         # An approved review owns the task's terminal bookkeeping. Check every
         # other gate while allowing the expected pre-terminal metadata state,
         # then use the canonical metadata owner and verify the full predicate.
@@ -2687,6 +2754,12 @@ def finalize_child_lifecycle(
                 return
             write_admission.record_completion_acceptance(task_dir)
         else:
+            if workflow == "standard" and return_code == 0 and task_state == "blocked":
+                status = read_json(status_path(task_dir))
+                transition = confirmed_phase_transition(task_dir, status=status)
+                if transition is not None:
+                    status["phase_transition"] = transition
+                    write_json(status_path(task_dir), status)
             try:
                 block_task_metadata(task_dir)
             except RuntimeError as exc:

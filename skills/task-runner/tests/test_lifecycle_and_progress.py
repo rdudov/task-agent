@@ -273,6 +273,16 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("Before writing code, try in order", prompt)
         self.assertIn("only then add the smallest necessary code", prompt)
 
+    def test_prompt_declares_only_a_safe_bound_review_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = self._prompt(tmp)
+        self.assertIn('"phase_handoff": {"kind": "bound_independent_review"}', prompt)
+        self.assertIn("Do not declare that handoff when user action", prompt)
+        self.assertIn("only the user or an external environment can supply", prompt)
+        self.assertIn("executor or existing pipeline does not prevent", prompt)
+        self.assertIn("records `completed` does not need to predict", prompt)
+        self.assertIn("validates the declaration against the review ledger", prompt)
+
     def test_review_prompt_names_role_subject_author_repository_and_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = Path(tmp) / "001-review"

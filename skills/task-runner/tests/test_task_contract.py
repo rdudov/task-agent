@@ -141,6 +141,30 @@ def test_render_task_contract_overlay_includes_completion_rule() -> None:
     assert "Do not mark the task approved or completed" in overlay
 
 
+def test_merge_preserves_live_evidence_owner_for_completion_routing() -> None:
+    merged = task_contract.merge_task_contract(
+        {
+            "required_live_evidence": [
+                {"id": "live-smoke", "description": "Live smoke", "owner": "executor"}
+            ]
+        },
+        {
+            "required_live_evidence": [
+                {"id": "live-smoke", "description": "Updated live smoke"}
+            ]
+        },
+    )
+
+    assert merged["required_live_evidence"] == [
+        {
+            "id": "live-smoke",
+            "description": "Updated live smoke",
+            "required": True,
+            "owner": "executor",
+        }
+    ]
+
+
 def test_verification_uses_exact_gate_heading_and_latest_result() -> None:
     verification = """# Verification
 
