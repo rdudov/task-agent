@@ -25,6 +25,149 @@ def _load_task_runner_module():
 
 task_runner = _load_task_runner_module()
 
+# Loading the module above put the scripts directory on `sys.path`; the gate
+# owner vocabulary belongs to the completion owner, not to this launcher.
+from task_completion import USER_OR_EXTERNAL_COMPLETION_GATE  # noqa: E402
+
+
+class SandboxedChildReachabilityTests(unittest.TestCase):
+    """Every sandboxed child gets the network and the temporary space it needs.
+
+    These are the grants a run needs to finish its own work rather than extra
+    privileges: without them a live gate, a `git push` or a `pytest` collection
+    fails on the sandbox and reports itself as an outage or as unfinished work.
+    Each assertion names the setting rather than the effect, because the effect
+    can only be measured by launching a real child.
+    """
+
+    @staticmethod
+    def _codex_command(sandbox_mode: str, notebook: Path | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as raw:
+            prompt = Path(raw) / "prompt.txt"
+            prompt.write_text("work", encoding="utf-8")
+            return task_runner.build_command(
+                "codex",
+                prompt,
+                task_runner.repo_root(),
+                None,
+                sandbox_mode,
+                notebook,
+            )
+
+    def test_codex_workspace_write_child_can_reach_the_network(self) -> None:
+        self.assertIn(
+            "sandbox_workspace_write.network_access=true",
+            self._codex_command("workspace-write"),
+        )
+
+    def test_codex_read_only_reviewer_can_reach_the_network(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            notebook = Path(raw) / "tasks" / "001-review"
+            notebook.mkdir(parents=True)
+            command = self._codex_command("read-only", notebook)
+        self.assertIn("sandbox_workspace_write.network_access=true", command)
+
+    def test_codex_read_only_reviewer_keeps_a_writable_temporary_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            notebook = Path(raw) / "tasks" / "001-review"
+            notebook.mkdir(parents=True)
+            command = self._codex_command("read-only", notebook)
+        self.assertNotIn("sandbox_workspace_write.exclude_slash_tmp=true", command)
+
+    def test_claude_restricted_children_can_reach_the_network(self) -> None:
+        for sandbox_mode in ("workspace-write", "read-only"):
+            with self.subTest(sandbox_mode=sandbox_mode):
+                command = task_runner.claude_access_arguments(
+                    sandbox_mode, {"needs_weaker_nested_sandbox": False}
+                )
+                settings = json.loads(command[command.index("--settings") + 1])
+                self.assertEqual(
+                    settings["sandbox"]["network"],
+                    task_runner.CLAUDE_SANDBOX_NETWORK,
+                )
+
+    def test_claude_full_access_child_carries_no_sandbox_settings(self) -> None:
+        command = task_runner.claude_access_arguments("danger-full-access")
+        self.assertNotIn("--settings", command)
+
+
+class ApprovedFinalizationOwnerTests(unittest.TestCase):
+    """After the bound review approves, what is left is still somebody's."""
+
+    @staticmethod
+    def _task_with_binding(root: Path, author_runner: str | None) -> Path:
+        task = root / "tasks" / "001-example"
+        (task / ".runner").mkdir(parents=True)
+        if author_runner is not None:
+            task_runner.write_json(
+                task / ".runner" / "review-admission.json",
+                {
+                    "schema_version": 1,
+                    "decision": "admitted",
+                    "classification": {"work_class": "material"},
+                    "pair": {
+                        "author_runner": author_runner,
+                        "reviewer_runner": "claude",
+                        "bound": True,
+                    },
+                },
+            )
+        return task
+
+    def test_completion_gate_names_the_bound_author(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task_with_binding(Path(raw), "codex")
+            with mock.patch.object(
+                task_runner, "independent_review_blocker", return_value=None
+            ):
+                transition = task_runner.confirmed_phase_transition(
+                    task, producer=task_runner.PHASE_TRANSITION_COMPLETION_GATE
+                )
+        self.assertEqual(transition["next_phase"], "finalization")
+        self.assertEqual(transition["owner_role"], "author")
+        self.assertEqual(transition["owner_runner"], "codex")
+        self.assertIs(transition["automatic"], False)
+
+    def test_other_producers_still_name_nobody(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task_with_binding(Path(raw), "codex")
+            with mock.patch.object(
+                task_runner, "independent_review_blocker", return_value=None
+            ):
+                for producer in (None, task_runner.PHASE_TRANSITION_REVIEW_ROUND):
+                    with self.subTest(producer=producer):
+                        self.assertIsNone(
+                            task_runner.confirmed_phase_transition(
+                                task, status={}, producer=producer
+                            )
+                        )
+
+    def test_a_number_with_no_bound_author_stays_a_real_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task_with_binding(Path(raw), None)
+            with mock.patch.object(
+                task_runner, "independent_review_blocker", return_value=None
+            ):
+                self.assertIsNone(
+                    task_runner.confirmed_phase_transition(
+                        task, producer=task_runner.PHASE_TRANSITION_COMPLETION_GATE
+                    )
+                )
+
+    def test_user_owned_refusal_after_approval_names_nobody(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task_with_binding(Path(raw), "codex")
+            reason = task_runner.completion_failure(
+                "required live evidence is not established: live-send",
+                gate="required_live_evidence",
+                owner=USER_OR_EXTERNAL_COMPLETION_GATE,
+            )
+            with mock.patch.object(
+                task_runner, "independent_review_blocker", return_value=None
+            ):
+                refusal = task_runner.completion_refusal(task, reason)
+        self.assertNotIn("phase_transition", refusal)
+
 
 class TaskRunnerSandboxModeTests(unittest.TestCase):
     def test_repeatable_repo_preserves_exact_input_order(self) -> None:
@@ -81,7 +224,14 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
             )
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")
         self.assertEqual(command[command.index("-C") + 1], str(notebook))
-        self.assertIn("sandbox_workspace_write.exclude_slash_tmp=true", command)
+        writable = json.loads(
+            next(
+                value.split("=", 1)[1]
+                for value in command
+                if value.startswith("sandbox_workspace_write.writable_roots=")
+            )
+        )
+        self.assertEqual(writable, [str(task_runner.repo_root() / ".state")])
 
     def test_claude_read_only_notebook_uses_outer_boundary_tools(self) -> None:
         notebook = task_runner.repo_root() / "tasks" / "001-review"

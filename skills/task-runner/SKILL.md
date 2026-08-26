@@ -89,9 +89,31 @@ Access level is expressed once, through `--sandbox-mode`, and mapped per runner:
 
 | `--sandbox-mode` | Codex child | Claude child |
 | --- | --- | --- |
-| `workspace-write` (standard default) | `--sandbox workspace-write`, cwd repo root | `acceptEdits`, native sandbox writable only in cwd/temp |
+| `workspace-write` (standard default) | `--sandbox workspace-write`, cwd repo root, `sandbox_workspace_write.network_access=true` | `acceptEdits`, native sandbox writable only in cwd/temp, `sandbox.network.allowedDomains=["*"]` |
 | `danger-full-access` | `--sandbox danger-full-access`, cwd workspace root | permission bypass plus `--add-dir <workspace root>` |
-| `read-only` | task directory writable through a scoped `workspace-write`; subject remains outside writable roots | `Read`, `Grep`, `Glob`, and sandboxed Bash inside an outer read-only mount namespace; only the task directory, `.state/`, and Claude runtime storage are writable |
+| `read-only` | task directory writable through a scoped `workspace-write` with `sandbox_workspace_write.network_access=true` and no `exclude_slash_tmp`; subject remains outside writable roots | `Read`, `Grep`, `Glob`, and sandboxed Bash inside an outer read-only mount namespace; only the task directory, `.state/`, and Claude runtime storage are writable |
+
+**Network and temporary space are grants, not privileges.** Every sandboxed
+child in either runner reaches the network, and every one of them keeps a
+writable `/tmp`. Without the network a live gate fails on the sandbox instead of
+on the work and is indistinguishable from a real outage — a child that cannot
+resolve `github.com` reports a reviewed, committed candidate as unpublishable,
+and a child that cannot resolve a provider host reports the provider as down.
+Without `/tmp`, `tempfile` has no usable directory and `pytest` fails before it
+collects, so a reviewer cannot run the suite it is reviewing. `/tmp` holds no
+product state and is never the subject under review. The price of the network
+grant is stated rather than hidden: reading is unrestricted for both CLIs, so a
+child with network can technically carry host secrets out. What follows is a
+standing constraint on this launcher — do not widen the set of secrets a child
+can reach, and do not put them in the prompt — not a narrower sandbox. An
+installation that wants a narrower boundary changes `CLAUDE_SANDBOX_NETWORK` and
+`CODEX_SANDBOX_NETWORK_ARGUMENTS`, which are the single place either grant is
+expressed.
+
+Plain `--sandbox read-only` without a task notebook is the one mapping that
+cannot carry the Codex grant: `network_access` is a workspace-write setting and
+has no read-only equivalent. Every role launch supplies a notebook, so this
+affects only a bare `start --sandbox-mode read-only` used for lookup.
 
 The workspace root is the directory a full-access child may reach. It defaults to the parent of this checkout and is overridden with `TASK_AGENT_WORKSPACE_ROOT`. Nothing else in the runner hardcodes an absolute path.
 
@@ -341,6 +363,24 @@ failure, or another user-owned refusal receives no such transition marker.
 Its requested action tells the reader to resolve the displayed reason through
 the existing task path; it never instructs them to force `completed` around an
 outstanding bound review.
+
+An approval does not close the number by itself. When the bound review has
+approved the work as it now stands and an engine-owned gate still refuses, the
+completion-gate refusal carries `phase_transition` with `next_phase:
+finalization`, `owner_role: author` and the runner the binding names, again with
+`automatic: false`. Without it the message got worse exactly when the work got
+better: the same unfinished plan step named the author on an unapproved round and
+became a bare stop on an approved one. A number with no bound author names
+nobody, and a user- or external-owned refusal after an approval stays a real
+stop with its own reason.
+
+The reason such a refusal displays is the one that actually ended the close, not
+the state the closing step was on its way to writing. An approved finalization
+evaluates the gate with the terminal frontmatter deferred, writes the canonical
+metadata and re-verifies; when any of those three steps refuses, that refusal is
+what the person is told. Re-deriving it afterwards reported `task.md frontmatter
+status is 'blocked'` — true about the file, and a description of the engine's own
+unfinished bookkeeping rather than of anything the person could act on.
 
 The completion-gate producer is workflow-independent because both standard and
 dev-pipeline finalizers consume the same durable completion predicate; the

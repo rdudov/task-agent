@@ -568,6 +568,22 @@ RUNNER_SESSION_ENV = {
 
 CLAUDE_SANDBOX_DEPENDENCIES = ("bwrap", "socat")
 
+# A sandboxed child reaches the network. Without it a live gate fails on the
+# sandbox rather than on the work, and the failure is indistinguishable from a
+# real outage: task 727 lost five gates to a child that could not resolve
+# `gmail.googleapis.com`, the read-only boundary probe of task 723 died on
+# `403 Connection blocked by network allowlist`, and task 1283 committed a
+# reviewed candidate it could not publish because `github.com` did not resolve.
+# The price is stated rather than hidden: reading is unrestricted for both CLIs,
+# so a child with network can technically carry host secrets out. What follows
+# from that is a standing constraint on this code -- do not widen the set of
+# secrets a child can reach, and do not put them in the prompt -- not a narrower
+# sandbox. Codex expresses it as a workspace-write setting; Claude as an
+# allow-list, because with none set its sandbox asks before every host and a
+# non-interactive child turns that ask into `403 Connection blocked`.
+CODEX_SANDBOX_NETWORK_ARGUMENTS = ("-c", "sandbox_workspace_write.network_access=true")
+CLAUDE_SANDBOX_NETWORK = {"allowedDomains": ["*"]}
+
 
 def claude_sandbox_capabilities() -> dict[str, object]:
     """Describe what a restricted Claude child can actually rely on here.
@@ -613,6 +629,7 @@ def claude_access_arguments(
         "autoAllowBashIfSandboxed": True,
         "allowUnsandboxedCommands": False,
         "failIfUnavailable": True,
+        "network": CLAUDE_SANDBOX_NETWORK,
     }
     if capabilities.get("needs_weaker_nested_sandbox"):
         sandbox_settings["enableWeakerNestedSandbox"] = True
@@ -1083,16 +1100,25 @@ def build_command(
             str(workdir),
         ]
         if resolved_sandbox_mode == "read-only" and notebook is not None:
+            # No `exclude_slash_tmp` here. It was once set on the reasoning that
+            # the child keeps its own `TMPDIR`; it does not. With `/tmp` excluded
+            # this mapping leaves `tempfile` no usable directory at all, so
+            # `pytest` fails before it collects -- which is what stopped
+            # cross-review 728 from running the suite it was reviewing. `/tmp`
+            # holds no product state and is never the subject under review.
             command.extend(
                 [
                     "-c",
                     "sandbox_workspace_write.writable_roots="
                     + json.dumps([str(repo_root() / ".state")]),
-                    "-c",
-                    "sandbox_workspace_write.exclude_slash_tmp=true",
+                    *CODEX_SANDBOX_NETWORK_ARGUMENTS,
                 ]
             )
-        elif resolved_sandbox_mode in WRITE_ACCESS_MODES and access_directories:
+        elif resolved_sandbox_mode in WRITE_ACCESS_MODES:
+            if resolved_sandbox_mode == "workspace-write":
+                # `danger-full-access` runs unsandboxed and already has the
+                # network; this setting only exists for the workspace sandbox.
+                command.extend(CODEX_SANDBOX_NETWORK_ARGUMENTS)
             for directory in access_directories:
                 command.extend(["--add-dir", str(directory)])
         if model:
@@ -1576,6 +1602,40 @@ PHASE_TRANSITION_REVIEW_ROUND = "review_round"
 PHASE_TRANSITION_COMPLETION_GATE = "completion_gate"
 
 
+def approved_finalization_transition(
+    task_dir: Path, *, producer: str | None = None
+) -> dict | None:
+    """Name the owner of what is left after the bound review approved.
+
+    An approval is not the end of the number: the engine's own gates -- an
+    unfinished plan step, a missing verification record -- can still refuse the
+    close. Until this existed, that refusal fell through to the generic stop and
+    told the person to resolve it themselves, six seconds after their reviewer
+    said yes; the identical refusal on an *unapproved* round already named the
+    author, so the message got worse exactly when the work got better.
+
+    Nothing here is inferred from wording. Reaching this point means the review
+    owner reports no outstanding reviewer or rework role, and only the refusal
+    the completion gate itself produced may name a next owner -- the author the
+    binding names, because what is left is that author's own record to finish.
+    A number with no bound author names nobody and stays a real stop.
+    """
+    if producer != PHASE_TRANSITION_COMPLETION_GATE:
+        return None
+    binding = review_admission.bound_author_admission(task_dir)
+    pair = binding.get("pair") if isinstance(binding, dict) else None
+    author_runner = pair.get("author_runner") if isinstance(pair, dict) else None
+    if author_runner not in review_admission.RUNNER_FAMILIES:
+        return None
+    return {
+        "schema_version": 1,
+        "next_phase": "finalization",
+        "owner_role": "author",
+        "owner_runner": author_runner,
+        "automatic": False,
+    }
+
+
 def confirmed_phase_transition(
     task_dir: Path,
     *,
@@ -1590,7 +1650,9 @@ def confirmed_phase_transition(
     bound review owner; missing or mismatched evidence fails safe as a real stop.
     """
     blocker = independent_review_blocker(task_dir)
-    transition = blocker.get("phase_transition") if blocker else None
+    if blocker is None:
+        return approved_finalization_transition(task_dir, producer=producer)
+    transition = blocker.get("phase_transition")
     if not isinstance(transition, dict):
         return None
     if producer == PHASE_TRANSITION_COMPLETION_GATE:
@@ -2605,6 +2667,7 @@ def finalize_child_lifecycle(
     leave `running` behind, which reads as work still in progress.
     """
     review_round = None
+    approved_refusal: str | None = None
     if workflow == "standard":
         metadata = read_json(runner_meta_path(task_dir))
         registration = metadata.get("application")
@@ -2709,24 +2772,32 @@ def finalize_child_lifecycle(
                     ready, reason = completion_ready(task_dir, workflow=workflow)
                 except RuntimeError as exc:
                     ready, reason = False, str(exc)
-                if ready:
-                    write_status(
-                        task_dir,
-                        "completed",
-                        "Independent review approved and all completion gates passed",
-                        {
-                            "runner": runner,
-                            "workflow": workflow,
-                            "exit_code": return_code,
-                            "review_round": review_round.get("round"),
-                            "review_result": "approved",
-                        },
-                    )
-                    append_trace(
-                        task_dir,
-                        "Approved independent review completed canonical task metadata; "
-                        "all completion gates passed.",
-                    )
+            if not ready:
+                # Whatever ended this attempt to close is the obstacle. Without
+                # keeping it, the fall-through below re-evaluates the gate with
+                # the frontmatter this step was on its way to writing and reports
+                # `task.md frontmatter status is 'blocked'` -- true about the
+                # file, and a description of our own unfinished bookkeeping
+                # rather than of anything the person could act on.
+                approved_refusal = reason
+            else:
+                write_status(
+                    task_dir,
+                    "completed",
+                    "Independent review approved and all completion gates passed",
+                    {
+                        "runner": runner,
+                        "workflow": workflow,
+                        "exit_code": return_code,
+                        "review_round": review_round.get("round"),
+                        "review_result": "approved",
+                    },
+                )
+                append_trace(
+                    task_dir,
+                    "Approved independent review completed canonical task metadata; "
+                    "all completion gates passed.",
+                )
 
     task_state = read_json(status_path(task_dir)).get("state")
     if task_state in {"completed", "failed", "blocked"}:
@@ -2738,6 +2809,8 @@ def finalize_child_lifecycle(
         if task_state == "completed":
             ready, reason = completion_ready(task_dir, workflow=workflow)
             if not ready:
+                if approved_refusal is not None:
+                    reason = approved_refusal
                 refusal = completion_refusal(task_dir, reason)
                 try:
                     block_task_metadata(task_dir)
@@ -2790,6 +2863,8 @@ def finalize_child_lifecycle(
         if ready:
             write_admission.record_completion_acceptance(task_dir)
             return
+        if approved_refusal is not None:
+            reason = approved_refusal
         refusal = completion_refusal(task_dir, reason)
         try:
             block_task_metadata(task_dir)

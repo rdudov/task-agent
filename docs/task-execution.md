@@ -187,6 +187,16 @@ bookkeeping gate clears. `automatic: false` is deliberate:
 standard phases are bounded, and the marker names ownership rather than
 claiming the next process started.
 
+An approved review is covered by the same rule rather than by an exception. When
+the bound review has approved what is there now and an engine-owned gate still
+refuses, the transition names `finalization` and the bound author: the work left
+over is that author's own record, not the person's. The reason shown is the one
+that ended the closing attempt — the deferred-status gate, the canonical
+metadata write, or the re-verification — because re-deriving it afterwards
+described the frontmatter the closing step had not yet written instead of the
+obstacle. A number with no bound author, or a user- or external-owned refusal
+after an approval, remains a stop with its own reason.
+
 `product-review` is the product-acceptance variant of that same command path. It
 does not add a controller, lifecycle, pairing record, or ledger. The caller
 provides one task-local packet containing the complete user contract, exact
