@@ -19,9 +19,9 @@ try:
         load_application,
     )
     from .task_contract import (
-        enforced_live_evidence,
         load_task_contract,
         unsatisfied_live_evidence,
+        unsatisfied_live_evidence_items,
         unsatisfied_policy_families,
         unsatisfied_review_verdict,
         verification_gate_result,
@@ -35,9 +35,9 @@ except ImportError:
         load_application,
     )
     from task_contract import (
-        enforced_live_evidence,
         load_task_contract,
         unsatisfied_live_evidence,
+        unsatisfied_live_evidence_items,
         unsatisfied_policy_families,
         unsatisfied_review_verdict,
         verification_gate_result,
@@ -80,7 +80,11 @@ ENGINE_EVIDENCE_OWNERS = frozenset(
 
 
 class CompletionFailure(str):
-    """Human-readable refusal text with a machine-owned gate identity."""
+    """Human-readable refusal text with a machine-owned gate identity.
+
+    Formatting this value as a plain string discards ``gate`` and ``owner``;
+    callers that add context must construct another ``CompletionFailure``.
+    """
 
     gate: str
     owner: str
@@ -356,12 +360,9 @@ def completion_ready(
     if unsatisfied:
         unsatisfied_items = [
             item
-            for item in enforced_live_evidence(contract)
-            if str(item.get("id", "")).strip() not in deferred_live_evidence_ids
-            and verification_gate_result(
-                verification, str(item.get("id", "")).strip()
+            for item, _result in unsatisfied_live_evidence_items(
+                contract, verification, deferred_live_evidence_ids
             )
-            not in {"OK", "PASS", "PASSED"}
         ]
         evidence_owner = (
             ENGINE_OWNED_COMPLETION_GATE

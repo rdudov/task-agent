@@ -179,8 +179,11 @@ a credential, live evidence only the user or an external environment can
 supply, or another user-owned blocker remains; executor-owned evidence does not
 prevent the handoff. An earlier engine-owned completion gate may supply the
 displayed reason without hiding a confirmed next role, including `rework`.
-Installation adapters can therefore describe a phase boundary without
-parsing prose or hiding a user-owned stop. `automatic: false` is deliberate:
+Installation adapters can therefore describe a phase boundary without parsing
+prose. A user- or external-owned gate remains a stop when it is the refusing
+gate; when an earlier engine-owned bookkeeping gate refuses first, the receipt
+names the confirmed next role and the user-owned gate surfaces after that
+bookkeeping gate clears. `automatic: false` is deliberate:
 standard phases are bounded, and the marker names ownership rather than
 claiming the next process started.
 

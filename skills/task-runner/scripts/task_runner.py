@@ -33,9 +33,11 @@ try:  # package install
         try_send_pipeline_stop_message,
     )
     from .task_completion import (
+        CompletionFailure,
         ENGINE_OWNED_COMPLETION_GATE,
         application_completion_ready,
         block_task_metadata,
+        completion_failure,
         complete_task_metadata,
         completion_ready,
         independent_review_blocker,
@@ -75,9 +77,11 @@ except ImportError:  # direct repository script
         try_send_pipeline_stop_message,
     )
     from task_completion import (
+        CompletionFailure,
         ENGINE_OWNED_COMPLETION_GATE,
         application_completion_ready,
         block_task_metadata,
+        completion_failure,
         complete_task_metadata,
         completion_ready,
         independent_review_blocker,
@@ -2738,7 +2742,13 @@ def finalize_child_lifecycle(
                 try:
                     block_task_metadata(task_dir)
                 except RuntimeError as exc:
-                    refusal = completion_refusal(task_dir, f"{reason}; {exc}")
+                    if isinstance(reason, CompletionFailure):
+                        reason = completion_failure(
+                            f"{reason}; {exc}", gate=reason.gate, owner=reason.owner
+                        )
+                    else:
+                        reason = f"{reason}; {exc}"
+                    refusal = completion_refusal(task_dir, reason)
                 write_status(
                     task_dir,
                     "blocked",
@@ -2784,7 +2794,13 @@ def finalize_child_lifecycle(
         try:
             block_task_metadata(task_dir)
         except RuntimeError as exc:
-            refusal = completion_refusal(task_dir, f"{reason}; {exc}")
+            if isinstance(reason, CompletionFailure):
+                reason = completion_failure(
+                    f"{reason}; {exc}", gate=reason.gate, owner=reason.owner
+                )
+            else:
+                reason = f"{reason}; {exc}"
+            refusal = completion_refusal(task_dir, reason)
         write_status(
             task_dir,
             "blocked",

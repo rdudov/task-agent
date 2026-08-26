@@ -342,6 +342,11 @@ Its requested action tells the reader to resolve the displayed reason through
 the existing task path; it never instructs them to force `completed` around an
 outstanding bound review.
 
+The completion-gate producer is workflow-independent because both standard and
+dev-pipeline finalizers consume the same durable completion predicate; the
+child-authored `blocked` declaration above remains standard-only because
+dev-pipeline projects its own lifecycle events.
+
 When that decision accepts a task that changed a Git repository, write admission
 appends a `completion_accepted` receipt naming the write-scope run IDs covered by
 that completion. A later task advancing the same repository does not

@@ -2419,6 +2419,50 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
                 "codex",
             )
 
+    def test_dev_pipeline_completed_claim_uses_the_same_completion_gate_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed", "current_step": "owner work finished"},
+            )
+
+            task_runner.finalize_child_lifecycle(task, "dev-pipeline", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            self.assertEqual(status["state"], "blocked")
+            self.assertEqual(
+                status["completion_refusal"]["phase_transition"]["next_phase"],
+                "review",
+            )
+            self.assertEqual(
+                status["completion_refusal"]["phase_transition"]["owner_runner"],
+                "codex",
+            )
+
+    def test_metadata_reconciliation_error_preserves_completion_gate_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw) / "tasks")
+            self._admit_author(task)
+            task_runner.write_json(
+                task_runner.status_path(task),
+                {"state": "completed", "current_step": "author work finished"},
+            )
+
+            with mock.patch.object(
+                task_runner,
+                "block_task_metadata",
+                side_effect=RuntimeError("metadata write refused"),
+            ):
+                task_runner.finalize_child_lifecycle(task, "standard", "claude", 0)
+
+            status = task_runner.read_json(task_runner.status_path(task))
+            refusal = status["completion_refusal"]
+            self.assertIn("metadata write refused", refusal["reason"])
+            self.assertEqual(refusal["phase_transition"]["next_phase"], "review")
+            self.assertEqual(refusal["phase_transition"]["owner_runner"], "codex")
+
     def test_completed_claim_after_rework_records_author_above_writer(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task = self._task(Path(raw) / "tasks")
