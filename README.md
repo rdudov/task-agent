@@ -32,6 +32,8 @@ remote-tracking refs with `git fetch --prune`.
 - `AGENTS.md`, `.cursor/rules/`, and `CLAUDE.md` as one shared rule set for Codex, Cursor, and Claude Code
 - `skills/task-creator/` for creating task directories and updating the index
 - `skills/task-runner/` for parent-child CLI agent execution, detached-run supervision, and the dev-pipeline workflow
+- `skills/task-executor/` for the ordered procedure a standard child follows from launch to completion
+- `skills/context-discovery/` for the durable-context lookup a task does before broad search or live checks
 - `skills/task-artifacts/` for keeping task artifacts current during work
 - `skills/project-organizer/` for durable project records
 - `skills/repo-health/` for restore, publication, deliverables, and pre-push checks

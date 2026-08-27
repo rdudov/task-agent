@@ -48,7 +48,7 @@ A request is substantial when any of these apply:
 - it performs work in another repository or absolute path outside this workspace
 - it is a follow-up that continues the same non-trivial goal
 
-Before broad codebase search or live checks, use existing durable context first: `tasks/INDEX.md`, related task artifacts, and the local project/path index described by `data/local-projects.example.md`. Promote repeated lookup knowledge to an index, skill, or rule before closing the task.
+Before broad codebase search, live checks, or describing an existing decision, invoke `context-discovery` and follow `skills/context-discovery/SKILL.md`. That skill owns the lookup order, the whole-tree fallback when the recent window has no useful match, unavailable-catalog behavior, and promotion of reusable lookup knowledge; this file states the trigger, not the procedure.
 
 `tasks/INDEX.md` is the canonical ordered task index for a local workspace. It is local generated state and is not tracked by the template; use `tasks/INDEX.example.md` as the format template. Task YAML frontmatter is the source of truth for task metadata, and `skills/task-creator/scripts/tasks_index.py` is the only interface that writes it.
 - Each task directory must contain `task.md` and `plan.md`.
@@ -159,6 +159,8 @@ Files the user explicitly requested are a separate, user-facing class of output.
   naming the reason and run IDs, after liveness has been checked, so a withdrawn
   task never holds a repository against every later task.
 - Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
+- Use `skills/task-executor/` as the ordered procedure a child agent follows to execute one prepared task: what to read at the start, how to work, and what must hold before it reports completion. It sequences and routes; the rules themselves stay owned by this file and by the skill each step names.
+- Use `skills/context-discovery/` before broad search, live checks, or describing an existing decision. It is the only owner of the lookup order and its fallbacks.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.
 - Use `skills/skill-maintainer/` when adding, restoring, or changing skills.

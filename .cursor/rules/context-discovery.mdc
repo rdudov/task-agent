@@ -1,21 +1,10 @@
 ---
-description: Check durable task and local lookup context before broad search.
+description: Check durable task, project, and sibling-repo context before broad search.
 alwaysApply: true
 ---
 
 # Context Discovery
 
-Before broad codebase search or live checks:
-
-1. Check `tasks/INDEX.md` for related prior tasks.
-2. Read relevant task artifacts: `task.md`, `findings.md`, `verification.md`, and `sources.md`.
-3. Check local lookup indexes under `data/`, using `data/local-projects.example.md` as the generic format.
-4. Before reviewing or changing a target repository, read its own operating context: root `AGENTS.md`, hidden agent instructions such as `.codex/` or `.claude/`, tool configuration, CI files, and declared runtime versions. Judge syntax, build, and convention questions against that declared runtime rather than remembered defaults. If a construct looks wrong but the repository declares a runtime where it is valid, record the runtime-context gap instead of reporting breakage.
-5. Search repository docs and source only after existing durable context has been checked.
-
-When a task discovers a reusable path, command, limit, workflow, or lookup recipe, promote it to the appropriate durable home before completion:
-
-- `data/` index for repository/path facts
-- `skills/<name>/SKILL.md` or skill references for repeatable workflows
-- `.cursor/rules/*.mdc` for always-on agent behavior
-- task-local `findings.md` for one-off conclusions
+Before broad search, a live check, or describing an existing decision, invoke
+`context-discovery` and follow `skills/context-discovery/SKILL.md`. This Cursor
+rule owns only the trigger; the skill owns the lookup and promotion procedure.

@@ -74,6 +74,9 @@ Core skills in this template:
 
 - [task-creator](../skills/task-creator/SKILL.md)
 - [task-runner](../skills/task-runner/SKILL.md)
+- [task-executor](../skills/task-executor/SKILL.md)
+- [task-artifacts](../skills/task-artifacts/SKILL.md)
+- [context-discovery](../skills/context-discovery/SKILL.md)
 - [project-organizer](../skills/project-organizer/SKILL.md)
 - [repo-health](../skills/repo-health/SKILL.md)
 - [skill-maintainer](../skills/skill-maintainer/SKILL.md)

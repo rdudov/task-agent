@@ -91,15 +91,9 @@ When a deliverable's correctness materially depends on its rendered appearance, 
 
 ## Context Discovery
 
-Before broad search or live checks, prefer existing durable context:
+Invoke `context-discovery` before broad search, live checks, or describing an existing decision. That skill owns the lookup order, the unavailable-catalog fallback, and promotion; do not restate them here.
 
-1. `tasks/INDEX.md` and related `task.md`, `findings.md`, `verification.md`, and `sources.md`
-2. `tasks/USER_PREFERENCES.md` when choosing an output representation the request left unspecified
-3. local lookup indexes under `data/`, such as files based on `data/local-projects.example.md`
-4. the target repository's own operating context before reviewing or changing it: root `AGENTS.md`, hidden agent instructions, tool configuration, CI files, declared runtime versions
-5. repository documentation and source search
-
-Record new stable paths or recurring lookup details in the task artifacts while working.
+Read `tasks/USER_PREFERENCES.md` as part of that lookup when the request leaves an output representation unspecified. Record new stable paths or recurring lookup details in the task artifacts while working.
 
 ## Checkpoint triggers (do not skip)
 
