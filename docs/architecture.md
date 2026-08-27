@@ -31,13 +31,12 @@ Optional task artifacts:
 - `dev-pipeline/` for dev-pipeline lifecycle state and projected events
 
 Task metadata lives in YAML frontmatter in `task.md`; the rebuildable SQLite
-index and rendered `tasks/INDEX.md` are projections. Only
+index under `.state/` is a projection of it. Only
 `skills/task-creator/scripts/tasks_index.py` writes that metadata, allocates
-numbers, changes status, and rebuilds the index. `tasks/INDEX.md` remains local
-generated state and is not tracked by the template. Use
-[tasks/INDEX.example.md](../tasks/INDEX.example.md) as the display format.
+numbers, changes status, and rebuilds that index, which is queried through the
+same script rather than read as a file.
 
-`tasks/USER_PREFERENCES.md` sits beside the index and holds durable defaults for choices the user did not spell out. It is written only from explicit reusable instructions and is always overridden by the current request. See [tasks/USER_PREFERENCES.example.md](../tasks/USER_PREFERENCES.example.md).
+`tasks/USER_PREFERENCES.md` sits in the task root and holds durable defaults for choices the user did not spell out. It is written only from explicit reusable instructions and is always overridden by the current request. See [tasks/USER_PREFERENCES.example.md](../tasks/USER_PREFERENCES.example.md).
 
 ### Internal Records Versus Requested Deliverables
 
@@ -60,7 +59,8 @@ Recommended project files:
 - `sources.md`
 - `artifacts/`
 
-Tasks should link related projects from both `task.md` and `tasks/INDEX.md`.
+Tasks should link related projects from `task.md`, which is what
+`tasks_index.py query --project <record-name>` reads back.
 
 ## Local Lookup Indexes
 
@@ -74,7 +74,6 @@ Core skills in this template:
 
 - [task-creator](../skills/task-creator/SKILL.md)
 - [task-runner](../skills/task-runner/SKILL.md)
-- [task-executor](../skills/task-executor/SKILL.md)
 - [task-artifacts](../skills/task-artifacts/SKILL.md)
 - [context-discovery](../skills/context-discovery/SKILL.md)
 - [project-organizer](../skills/project-organizer/SKILL.md)
@@ -292,7 +291,7 @@ itself.
 ## Workflow
 
 1. A non-trivial user request becomes a task artifact under `tasks/`.
-2. `tasks_index.py` writes task frontmatter and regenerates `tasks/INDEX.md`.
+2. `tasks_index.py` writes task frontmatter and rebuilds the queryable index from it.
 3. The parent agent prepares the task directory as the execution handoff.
 4. A child CLI agent may perform substantial work and write progress artifacts into the task directory.
 5. A task may instead run through the task-runner dev-pipeline workflow, which drives an evidence-gated owner session and projects its lifecycle events back into the task artifacts.

@@ -32,7 +32,6 @@ remote-tracking refs with `git fetch --prune`.
 - `AGENTS.md`, `.cursor/rules/`, and `CLAUDE.md` as one shared rule set for Codex, Cursor, and Claude Code
 - `skills/task-creator/` for creating task directories and updating the index
 - `skills/task-runner/` for parent-child CLI agent execution, detached-run supervision, and the dev-pipeline workflow
-- `skills/task-executor/` for the ordered procedure a standard child follows from launch to completion
 - `skills/context-discovery/` for the durable-context lookup a task does before broad search or live checks
 - `skills/task-artifacts/` for keeping task artifacts current during work
 - `skills/project-organizer/` for durable project records
@@ -320,4 +319,4 @@ Task Agent is released under the [MIT License](./LICENSE).
 
 ## Local State
 
-`tasks/` and `data/` are durable local artifacts. This template tracks only skeleton and example files; real task history, `tasks/INDEX.md`, and reusable data should be backed up by your own local backup flow.
+`tasks/` and `data/` are durable local artifacts. This template tracks only skeleton and example files; real task history and reusable data should be backed up by your own local backup flow. The task index under `.state/` is rebuilt from that history and needs no backup of its own.

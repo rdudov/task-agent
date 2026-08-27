@@ -22,8 +22,9 @@ The bundled script validates:
 
 - required root files: `AGENTS.md`, `README.md`, `.gitignore`, `requirements.txt`, and `requirements.lock`
 - required docs: `docs/architecture.md` and `docs/task-execution.md`
-- task index presence and task links when `tasks/INDEX.md` exists
-- every task directory has `task.md` and `plan.md`
+- every task directory has `task.md` and `plan.md`. The rebuildable task index is
+  deliberately not checked: it is regenerated from `tasks/` on demand, and
+  `tasks_index.py check` owns the task-metadata properties
 - every `skills/*/SKILL.md` has `name` and `description` frontmatter
 - executable Python scripts parse in memory, so the check works on read-only
   checkouts and does not create `__pycache__` entries

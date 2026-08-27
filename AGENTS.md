@@ -48,9 +48,9 @@ A request is substantial when any of these apply:
 - it performs work in another repository or absolute path outside this workspace
 - it is a follow-up that continues the same non-trivial goal
 
-Before broad codebase search, live checks, or describing an existing decision, invoke `context-discovery` and follow `skills/context-discovery/SKILL.md`. That skill owns the lookup order, the whole-tree fallback when the recent window has no useful match, unavailable-catalog behavior, and promotion of reusable lookup knowledge; this file states the trigger, not the procedure.
+Before broad codebase search, live checks, or describing an existing decision, invoke `context-discovery` and follow `skills/context-discovery/SKILL.md`. That skill owns the lookup order, its fallbacks, and the promotion of reusable lookup knowledge; this file states the trigger, not the procedure.
 
-`tasks/INDEX.md` is the canonical ordered task index for a local workspace. It is local generated state and is not tracked by the template; use `tasks/INDEX.example.md` as the format template. Task YAML frontmatter is the source of truth for task metadata, and `skills/task-creator/scripts/tasks_index.py` is the only interface that writes it.
+Task YAML frontmatter is the source of truth for task metadata, and `skills/task-creator/scripts/tasks_index.py` is the only interface that writes it. That script also owns the queryable catalog it rebuilds from the frontmatter; ask it, rather than any file, what tasks exist.
 - Each task directory must contain `task.md` and `plan.md`.
 - Delegated or review-sensitive tasks may also include `task_contract.json` for structured non-negotiable constraints, forbidden substitutions, required live evidence, and completion policy.
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.
@@ -59,7 +59,7 @@ Before broad codebase search, live checks, or describing an existing decision, i
 - Only one task may hold a Git repository in write mode at a time. A write-mode launch is admitted against the target repository before the child is spawned, and what a run did to that repository is recorded in an append-only ledger under `.runner/`.
 - Task-specific findings and sources belong in the task directory.
 - A long-running child should publish substantive live progress in `progress.json`: a `schema_version: 1` object with a concrete `activity`, `updated_at`, and optionally `recent_outcome`. `completed`, `total`, and `unit` are published only together and only when the owner actually knows the bounds. Neither owners nor readers may infer a missing total, and startup bookkeeping is not an outcome.
-- A task root may contain `USER_PREFERENCES.md` beside `INDEX.md`, using `tasks/USER_PREFERENCES.example.md` as the format. Agents read it before choosing an unspecified output representation and update it only from explicit, reusable user instructions, citing the task the instruction came from. The current request and later continuations override it. Do not turn one-off task requirements into defaults, and do not infer preferences from prose.
+- A task root may contain `USER_PREFERENCES.md`, using `tasks/USER_PREFERENCES.example.md` as the format. Agents read it before choosing an unspecified output representation and update it only from explicit, reusable user instructions, citing the task the instruction came from. The current request and later continuations override it. Do not turn one-off task requirements into defaults, and do not infer preferences from prose.
 
 ## Requested Deliverables
 
@@ -159,7 +159,6 @@ Files the user explicitly requested are a separate, user-facing class of output.
   naming the reason and run IDs, after liveness has been checked, so a withdrawn
   task never holds a repository against every later task.
 - Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
-- Use `skills/task-executor/` as the ordered procedure a child agent follows to execute one prepared task: what to read at the start, how to work, and what must hold before it reports completion. It sequences and routes; the rules themselves stay owned by this file and by the skill each step names.
 - Use `skills/context-discovery/` before broad search, live checks, or describing an existing decision. It is the only owner of the lookup order and its fallbacks.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.
@@ -169,6 +168,8 @@ Files the user explicitly requested are a separate, user-facing class of output.
 ## Execution Contract
 
 When a parent agent delegates a task to a child agent, the task directory is the source of truth.
+
+The ordered procedure that child follows is generated, not read from a document: `build_child_prompt` in `skills/task-runner/scripts/task_runner.py` assembles it from the task's own paths, access profile, and review role, and the exact text a child received stays in that task's `.runner/prompt.txt`. It is the only executor instruction this repository has. A rule a child must follow therefore belongs either in that generated prompt or in the project rules and skills the child reads from the repository it works in — not in a separate executor document, which nothing would load.
 
 Before delegation, the parent agent should ensure `task.md` and `plan.md` contain enough context for independent execution. If the task has non-negotiable constraints, forbidden substitutions, or mandatory live verification gates, record them in `task_contract.json`.
 

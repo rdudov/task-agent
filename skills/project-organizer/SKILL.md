@@ -17,7 +17,7 @@ Use this skill when a task requires:
 
 Task-specific execution notes still belong in the active task directory. Reusable project data belongs under `data/projects/`.
 
-When a task materially concerns a project, update the task's `Projects` section and the corresponding row in `tasks/INDEX.md` to link that durable project record.
+When a task materially concerns a project, link that durable project record from the task's `Projects` section and from its `projects` frontmatter through `skills/task-creator/scripts/tasks_index.py`, which is what `query --project <record-name>` reads back.
 
 ## Storage Model
 

@@ -47,7 +47,7 @@ If a runtime path changed, include a smoke check against the real entrypoint in 
 
 After restoring from backup, run the repo-health skill before relying on local artifacts. Confirm that:
 
-- `tasks/INDEX.md` exists and task links resolve
+- `tasks_index.py query` answers from the restored tasks and task links resolve
 - task directories contain `task.md` and `plan.md`
 - durable data expected by active tasks or projects exists under `data/`
 - skills have valid manifests and scripts parse

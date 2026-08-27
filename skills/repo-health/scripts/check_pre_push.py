@@ -25,7 +25,6 @@ FORBIDDEN_PREFIXES = (
 # skeleton file that is missing here fails the pre-push check.
 ALLOWED_TEMPLATE_ARTIFACTS = {
     "tasks/.gitkeep",
-    "tasks/INDEX.example.md",
     "tasks/USER_PREFERENCES.example.md",
     "data/.gitkeep",
     "data/local-projects.example.md",

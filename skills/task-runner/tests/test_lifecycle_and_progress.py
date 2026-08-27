@@ -464,6 +464,80 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn(str(task_runner.workspace_root()), prompt)
 
 
+class ChildInstructionOwnerTests(unittest.TestCase):
+    """`build_child_prompt` is the only executor procedure this repository has.
+
+    A published `skills/task-executor/SKILL.md` once told readers that a standard
+    child follows an ordered document. Nothing loaded it: the launcher names no
+    skill, and the child receives the text built here. The document was true of
+    nothing and could drift from the prompt without any test noticing, so it was
+    removed rather than wired up.
+
+    These checks hold that decision from both sides. The prompt must still carry
+    the procedure, and no document may restate it or send a child to a file for
+    it.
+    """
+
+    REPO = Path(__file__).resolve().parents[3]
+
+    # Verbatim from the built prompt. A document that contains one of these has
+    # started keeping a second copy of the procedure.
+    PROMPT_SENTENCES = (
+        "Before doing substantial work:",
+        "Append a final trace entry summarizing what was done.",
+        "Do not store task outputs inside",
+    )
+
+    def _tracked(self, suffixes: tuple[str, ...]) -> list[str]:
+        listing = subprocess.run(
+            ["git", "-C", str(self.REPO), "ls-files", "-z"],
+            capture_output=True, text=True, check=True).stdout
+        return [name for name in listing.split("\0")
+                if name and name.endswith(suffixes)]
+
+    def _prompt(self) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "001-example"
+            task_dir.mkdir()
+            return task_runner.build_child_prompt(task_dir)
+
+    def test_the_generated_prompt_states_the_ordered_procedure(self) -> None:
+        prompt = self._prompt()
+        self.assertIn("Before doing substantial work:", prompt)
+        self.assertIn("While working:", prompt)
+        self.assertIn("Before finishing:", prompt)
+        for sentence in self.PROMPT_SENTENCES:
+            self.assertIn(sentence, prompt)
+
+    def test_no_document_keeps_a_second_copy_of_the_procedure(self) -> None:
+        for name in self._tracked((".md", ".mdc")):
+            text = (self.REPO / name).read_text(encoding="utf-8")
+            for sentence in self.PROMPT_SENTENCES:
+                self.assertNotIn(sentence, text, (
+                    f"{name} restates the generated child instruction. The prompt in "
+                    f"task_runner.py owns it; a document copy drifts unnoticed because "
+                    f"no child reads it"))
+
+    def test_nothing_sends_a_child_to_an_executor_document(self) -> None:
+        self.assertFalse(
+            (self.REPO / "skills" / "task-executor").exists(),
+            "skills/task-executor/ is back; the launcher loads no skill, so such a "
+            "file is a second, dormant statement of the author procedure")
+        this_file = str(Path(__file__).resolve().relative_to(self.REPO))
+        offenders = [name for name in self._tracked((".md", ".mdc", ".py", ".sh", ".json"))
+                     if name != this_file
+                     and "task-executor" in (self.REPO / name).read_text(encoding="utf-8")]
+        self.assertEqual(offenders, [], (
+            "these files name an executor skill that nothing activates: "
+            f"{', '.join(offenders)}"))
+
+    def test_the_entry_document_names_the_generator(self) -> None:
+        agents = (self.REPO / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("build_child_prompt", agents)
+        self.assertIn("skills/task-runner/scripts/task_runner.py", agents)
+        self.assertIn(".runner/prompt.txt", agents)
+
+
 class ProgressRobustnessTests(unittest.TestCase):
     """Regressions for review findings: a status reader must not be fragile."""
 

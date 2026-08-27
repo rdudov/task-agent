@@ -91,7 +91,7 @@ When a deliverable's correctness materially depends on its rendered appearance, 
 
 ## Context Discovery
 
-Invoke `context-discovery` before broad search, live checks, or describing an existing decision. That skill owns the lookup order, the unavailable-catalog fallback, and promotion; do not restate them here.
+Invoke `context-discovery` before broad search, live checks, or describing an existing decision, and follow `skills/context-discovery/SKILL.md`. That skill owns the lookup order, the unavailable-catalog fallback, and promotion; do not restate them here.
 
 Read `tasks/USER_PREFERENCES.md` as part of that lookup when the request leaves an output representation unspecified. Record new stable paths or recurring lookup details in the task artifacts while working.
 

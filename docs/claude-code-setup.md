@@ -70,14 +70,14 @@ remembers.
 
 ```bash
 claude -p --model haiku "Do not use any tools. Answer only from instructions already in your context, one line each:
-1) AGENTS: the path this project calls the canonical ordered task index, or NONE
+1) AGENTS: the script path this project calls the only interface that writes task metadata, or NONE
 2) BOOTSTRAP: complete 'Chat does not replace ...' from the task bootstrap rule, or NONE
 3) PUSHSAFETY: the script path the git push safety rule tells you to run, or NONE"
 
 claude -p --model haiku "Do not use any tools. List the names of any skills available to you that come from this repository. Comma-separated, or NONE."
 ```
 
-Expected: `tasks/INDEX.md`; the `task.md, plan.md, findings.md, or
+Expected: `skills/task-creator/scripts/tasks_index.py`; the `task.md, plan.md, findings.md, or
 verification.md` list; `skills/repo-health/scripts/check_pre_push.py`; and a skill
 list containing `task-runner`, `task-creator`, `task-artifacts`, `repo-health`,
 and the rest of `skills/`.

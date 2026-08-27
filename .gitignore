@@ -19,7 +19,6 @@ CLAUDE.local.md
 # Track only skeleton files from durable local artifact trees.
 tasks/*
 !tasks/.gitkeep
-!tasks/INDEX.example.md
 !tasks/USER_PREFERENCES.example.md
 data/*
 !data/.gitkeep
