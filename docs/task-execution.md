@@ -220,7 +220,8 @@ path at launch and validation; traversal outside the task remains refused.
 
 `statement-review` is the pre-author product variant. The caller supplies a
 task-local packet with the user's verbatim durable words and names the statement
-author's runner. The engine selects the other model family, starts a fresh
+author's runner from the product owner's recorded authorship identity. The
+engine selects the other model family, starts a fresh
 read-only phase with no repository candidate, and asks only whether the exact
 statement matches the user's job, observable result, decision owner, promised
 evidence, active conclusions, and forbidden substitutions. The reviewer writes
@@ -235,6 +236,11 @@ mail owner can make the message body self-sufficient without scraping markup. It
 creates a technical review round. Mail delivery and any launch refusal based on
 that result remain installation responsibilities exposed through the
 application adapter.
+
+That `--author-runner` value is a lifecycle consistency claim supplied by the
+caller. Admission binds and checks the resulting cross-family pair, but it does
+not cryptographically prove that the caller described the statement author
+honestly.
 
 The statement result also names the admission id of the review run that wrote
 it. The admission records whether that exact launch was statement, completion,
@@ -262,6 +268,10 @@ The statement HTML renders the full authored statement once as readable content.
 Result validation normalizes the visible words and the same semantic Markdown
 body used by the statement digest, excluding lifecycle frontmatter and the
 chronological `## Status` journal, then requires every authored word in order.
+Column-zero Markdown ordered-list numbers are syntax rather than authored
+words: the HTML renderer generates those markers visually instead of storing
+them as text. Indented numerics, every list item, and all other authored
+statement text remain required.
 A shortened
 attachment is not a delivery candidate, and a raw Markdown dump is not required
 or duplicated. A statement-only reviewer run passes through the registered

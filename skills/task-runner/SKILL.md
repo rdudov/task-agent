@@ -609,10 +609,18 @@ Before an author starts, an installation may use the statement-only variant:
   --author-runner codex
 ```
 
+The caller derives `--author-runner` from the product owner's recorded identity
+of the person or model that authored the statement; the engine uses it to select
+the other family. This is an admitted lifecycle consistency claim, not
+cryptographic proof that the caller named the author honestly.
+
 This is a non-recursive review phase of the same task number. It selects the
 other model family, grants no repository candidate, reads the task-local packet
 before the derived statement, and writes a digest-bound statement result plus
-one complete registered `deliverables/statement-review.html` document. The contract digest binds
+one complete registered `deliverables/statement-review.html` document. The
+completeness check compares authored words rather than column-zero Markdown
+ordered-list markers; indented numerics, every rendered list item, and all
+other authored text are still required. The contract digest binds
 canonical JSON content rather than formatting. The statement digest binds only
 the authored Markdown body: lifecycle-owned YAML fields such as `status` and
 `status_detail` and the chronological `## Status` journal cannot invalidate it,

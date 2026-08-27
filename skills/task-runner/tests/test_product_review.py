@@ -279,6 +279,45 @@ def test_readable_statement_does_not_require_a_raw_markdown_duplicate(tmp_path: 
     )
 
 
+def test_readable_statement_accepts_rendered_ordered_list_markers(tmp_path: Path) -> None:
+    task, _packet = statement_task(tmp_path)
+    (task / "task.md").write_text(
+        "# Проверка\n\n1. Первый полный пункт.\n2. Второй полный пункт.\n",
+        encoding="utf-8",
+    )
+    report = product_review.report_path(task, "statement")
+    report.write_text(
+        "<html><body><h1>Проверка</h1><ol>"
+        "<li>Первый полный пункт.</li><li>Второй полный пункт.</li>"
+        "</ol></body></html>\n",
+        encoding="utf-8",
+    )
+
+    assert product_review.report_contains_readable_statement(
+        report, (task / "task.md").read_text(encoding="utf-8")
+    )
+
+
+def test_readable_statement_requires_indented_numeric_continuation(tmp_path: Path) -> None:
+    task, _packet = statement_task(tmp_path)
+    (task / "task.md").write_text(
+        "# Проверка\n\n1. Решение подтверждено и принято\n"
+        "   1280. Полный пункт продолжается.\n",
+        encoding="utf-8",
+    )
+    report = product_review.report_path(task, "statement")
+    report.write_text(
+        "<html><body><h1>Проверка</h1><ol>"
+        "<li>Решение подтверждено и принято. Полный пункт продолжается.</li>"
+        "</ol></body></html>\n",
+        encoding="utf-8",
+    )
+
+    assert not product_review.report_contains_readable_statement(
+        report, (task / "task.md").read_text(encoding="utf-8")
+    )
+
+
 def test_readable_statement_ignores_lifecycle_status_journal(tmp_path: Path) -> None:
     task, _packet = statement_task(tmp_path)
     statement = task / "task.md"

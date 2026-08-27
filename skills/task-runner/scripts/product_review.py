@@ -80,6 +80,10 @@ def _readable_tokens(text: str, *, markdown: bool = False) -> list[str]:
         text = _statement_body(text)
         text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
         text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+        # Column-zero ordered-list numbers are Markdown syntax. A real HTML
+        # renderer shows them as generated list markers, so HTMLParser does not
+        # return them as text. Indented numerics remain authored words.
+        text = re.sub(r"(?m)^\d+[.)]\s+", "", text)
     return [token.casefold() for token in re.findall(r"[\w]+", text, flags=re.UNICODE)]
 
 
