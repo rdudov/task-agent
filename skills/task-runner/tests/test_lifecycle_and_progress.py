@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -103,6 +104,76 @@ class ChildLifecycleTests(unittest.TestCase):
                     task_dir, "standard", "codex", 0
                 )
             record.assert_called_once_with(task_dir)
+
+    def test_successful_statement_review_uses_nonterminal_run_state_after_application_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task_dir(tmp, "running")
+            task_runner.runner_dir(task_dir).mkdir()
+            task_runner.write_json(
+                task_runner.runner_meta_path(task_dir), {"review_kind": "statement"}
+            )
+            application = mock.Mock()
+            application.standard_run_finished.return_value = None
+            with (
+                mock.patch.object(task_runner, "load_application", return_value=application),
+                mock.patch.object(
+                    task_runner.product_review,
+                    "validate_result",
+                    return_value=(True, "statement review passed", {}),
+                ),
+            ):
+                task_runner.finalize_child_lifecycle(
+                    task_dir, "standard", "claude", 0
+                )
+            status = task_runner.read_json(task_runner.status_path(task_dir))
+        application.standard_run_finished.assert_called_once()
+        self.assertEqual(status["state"], "statement_review_finished")
+        self.assertTrue(status["statement_review_passed"])
+        self.assertEqual(status["current_step"], "statement review passed")
+        self.assertEqual(task_runner.task_phases.current_phase(task_dir), "planned")
+
+    def test_original_watcher_records_statement_review_as_its_own_run_outcome(self) -> None:
+        self.assertEqual(
+            task_runner.run_outcome_for_state("statement_review_finished", 0),
+            "statement_review_finished",
+        )
+        self.assertEqual(
+            task_runner.run_outcome_for_state("statement_review_finished", 9),
+            "failed",
+        )
+
+    def test_recovered_watcher_uses_the_same_statement_review_vocabulary(self) -> None:
+        self.assertEqual(
+            task_runner.run_outcome_for_state(
+                "statement_review_finished", None, recovered=True
+            ),
+            "recovered_statement_review_finished",
+        )
+
+    def test_statement_review_quota_pause_is_owned_before_result_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task_dir(tmp, "running")
+            task_runner.runner_dir(task_dir).mkdir()
+            task_runner.write_json(
+                task_runner.runner_meta_path(task_dir), {"review_kind": "statement"}
+            )
+            application = mock.Mock()
+            application.standard_run_finished.return_value = mock.Mock(
+                state="waiting_for_quota",
+                current_step="resume after reset",
+                metadata={"quota_wait": {"runner": "claude"}},
+            )
+            with (
+                mock.patch.object(task_runner, "load_application", return_value=application),
+                mock.patch.object(task_runner.product_review, "validate_result") as validate,
+                mock.patch.object(task_runner, "block_task_metadata"),
+            ):
+                task_runner.finalize_child_lifecycle(
+                    task_dir, "standard", "claude", 1
+                )
+            status = task_runner.read_json(task_runner.status_path(task_dir))
+        validate.assert_not_called()
+        self.assertEqual(status["state"], "waiting_for_quota")
 
     def test_a_child_written_completed_state_still_needs_durable_gates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,14 +388,28 @@ class ChildPromptContractTests(unittest.TestCase):
             task_dir.mkdir()
             packet = task_dir / "product-review-packet.md"
             packet.write_text("# Product review packet\n", encoding="utf-8")
+            (task_dir / "user-verbatim.json").write_text(
+                '{"schema_version":1,"messages":[{"channel":"cli","source_id":"m1",'
+                '"occurred_at":"2026-08-26T00:00:00Z","text":"do the exact job"}]}\n',
+                encoding="utf-8",
+            )
             packet_sha256 = hashlib.sha256(packet.read_bytes()).hexdigest()
+            subject = Path(tmp) / "subject"
+            subject.mkdir()
+            subprocess.run(["git", "init", "-q", str(subject)], check=True)
+            subprocess.run(["git", "-C", str(subject), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(subject), "config", "user.name", "Test"], check=True)
+            (subject / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(subject), "add", "candidate.txt"], check=True)
+            subprocess.run(["git", "-C", str(subject), "commit", "-qm", "candidate"], check=True)
             prompt = task_runner.build_child_prompt(
                 task_dir,
-                repository=Path(tmp) / "subject",
+                repository=subject,
                 review_subject="001-review",
                 review_subject_author="codex",
                 require_review_verdict=True,
                 product_review_packet=packet,
+                review_admission_record={"admission_id": "review-1"},
             )
         self.assertIn("Role: fresh independent product and technical reviewer", prompt)
         self.assertIn("1. Read only", prompt)
@@ -335,10 +420,43 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("Product verdict: not established", prompt)
         self.assertIn("Neither verdict substitutes for the other", prompt)
         self.assertIn("a concrete next-step", prompt)
+        self.assertIn("Cover every source_id from both `messages` and `excluded_messages`", prompt)
+        self.assertIn("`not_a_requirement`", prompt)
+        self.assertIn("`out_of_scope`", prompt)
         self.assertIn(packet_sha256, prompt)
         self.assertNotIn("1. Read `", prompt)
         for domain_hint in ("MOEX", "trading", "replay", "121:121"):
             self.assertNotIn(domain_hint, prompt)
+
+    def test_statement_review_prompt_never_requests_implementation_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "001-review"
+            task_dir.mkdir()
+            (task_dir / "task.md").write_text("# Exact statement\n", encoding="utf-8")
+            (task_dir / "task_contract.json").write_text('{"version": 1}\n', encoding="utf-8")
+            packet = task_dir / "statement-packet.json"
+            packet.write_text('{"verbatim_user_intent":"do the exact job"}\n', encoding="utf-8")
+            (task_dir / "user-verbatim.json").write_text(
+                '{"schema_version":1,"messages":[{"channel":"cli","source_id":"m1",'
+                '"occurred_at":"2026-08-26T00:00:00Z","text":"do the exact job"}]}\n',
+                encoding="utf-8",
+            )
+            prompt = task_runner.build_child_prompt(
+                task_dir,
+                statement_review_packet=packet,
+                statement_author_runner="codex",
+                review_admission_record={"admission_id": "statement-review-1"},
+            )
+        self.assertIn("Role: fresh independent statement product reviewer", prompt)
+        self.assertIn("Do not inspect implementation code, diffs, tests", prompt)
+        self.assertIn("complete readable statement", prompt)
+        self.assertIn("do not embed a second raw Markdown", prompt)
+        self.assertIn("review_admission_id` as `statement-review-1`", prompt)
+        self.assertIn("Cover every source_id from both `messages` and `excluded_messages`", prompt)
+        self.assertIn("Do not set the task itself to `completed` or `blocked`", prompt)
+        self.assertNotIn("Product verdict: not established", prompt)
+        self.assertNotIn("Verdict: approved", prompt)
+        self.assertNotIn("has `state` set to `completed` or `blocked`", prompt)
 
     def test_prompt_has_no_hardcoded_absolute_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

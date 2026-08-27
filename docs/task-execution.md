@@ -80,6 +80,11 @@ plus live-check tools. Cursor retains
 task-agent as its primary workspace. In the dev-pipeline workflow the same paths
 are the core owner's target repositories.
 
+Installation policy treats a review phase as non-recursive only when this
+admitted access profile is read-only and grants no repository writes. A public
+review-kind flag cannot exempt a write-capable launch from an installation's
+pre-start statement boundary; that launch is author work for boundary purposes.
+
 An installation binds automatic review/rework by passing both
 `--assurance-config` and `--review-packet` to the ordinary task-runner `start`
 entrypoint. Both paths survive detached watcher construction and reach the same
@@ -209,6 +214,91 @@ it pull technical context and issue the ordinary technical verdict. A bounded
 session that cannot finish reports `not established` rather than carrying the
 product decision across compaction or resume. Domain-specific cases are packet
 data and do not enter the generic runner prompt.
+The result records the packet's normalized path relative to the task directory,
+so the task root and task-local subdirectories such as `reviews/` use the same
+path at launch and validation; traversal outside the task remains refused.
+
+`statement-review` is the pre-author product variant. The caller supplies a
+task-local packet with the user's verbatim durable words and names the statement
+author's runner. The engine selects the other model family, starts a fresh
+read-only phase with no repository candidate, and asks only whether the exact
+statement matches the user's job, observable result, decision owner, promised
+evidence, active conclusions, and forbidden substitutions. The reviewer writes
+one complete registered `deliverables/statement-review.html` document and a
+JSON result bound to the packet, the authored task statement body, and the
+contract's canonical JSON content. Lifecycle-owned YAML frontmatter and the
+chronological `## Status` journal are excluded from the statement digest, so
+status reconciliation and round logging cannot make a valid review stale or
+masquerade as a statement correction. The result
+also carries the concise Russian conclusion shown in that HTML so the existing
+mail owner can make the message body self-sufficient without scraping markup. It neither reads implementation evidence nor
+creates a technical review round. Mail delivery and any launch refusal based on
+that result remain installation responsibilities exposed through the
+application adapter.
+
+The statement result also names the admission id of the review run that wrote
+it. The admission records whether that exact launch was statement, completion,
+or technical review. The validator requires that admission to be the latest
+admitted review of the same product stage, then derives the actual reviewer and
+expected statement-author families from the task-local admission ledger. A
+later author or technical-review run does not stale an unchanged statement
+verdict; a newer statement review or changed statement/contract/user words
+supersedes it. A completion verdict is likewise superseded by a newer completion
+review or changed candidate/user words. This lets the completion order remain
+reachable: review, mandatory mail, then terminal re-evaluation. An unrelated
+technical review, a superseded product-review run, or a result with only
+self-declared identities cannot release a launch. The ledger and result are
+inside the task directory writable by its executor; this binds ordinary runner
+records and catches accidental/stale substitution, but is not a tamper-proof
+security boundary against an executor fabricating both files.
+Completion uses the same actor check and binds a digest of each whole
+Git-visible candidate, including HEAD, index, tracked worktree changes, and
+non-ignored untracked content. Thus review of an uncommitted candidate remains
+exact and any later candidate edit makes the result stale. The repository set
+comes from that completion review's admitted read-only access profile, not from
+whichever author or terminal-recheck run happened to write `runner.json` later.
+
+The statement HTML renders the full authored statement once as readable content.
+Result validation normalizes the visible words and the same semantic Markdown
+body used by the statement digest, excluding lifecycle frontmatter and the
+chronological `## Status` journal, then requires every authored word in order.
+A shortened
+attachment is not a delivery candidate, and a raw Markdown dump is not required
+or duplicated. A statement-only reviewer run passes through the registered
+application's standard-run hook first, so quota pause/resume remains owned by
+the installation, then records `statement_review_finished`. That run-only
+outcome never becomes a task-completed phase or message, and the reviewer prompt
+does not ask the child to write a terminal task state. A recovered watcher uses
+the recorded statement-review kind even if a former generic prompt left a
+terminal-looking word, validates the result, records
+`recovered_statement_review_finished`, and
+leaves the planned task phase unchanged. Its separate
+digest-bound result and Gmail receipt decide whether an author may start. Both
+review commands turn a missing or malformed `user-verbatim.json` into a named
+pre-launch refusal rather than a child traceback.
+
+Both product variants read the task's single `user-verbatim.json` before the
+derived packet. Each included message carries its channel, source identity,
+time and exact text. A consciously excluded message remains in
+`excluded_messages` with the same identity fields, exact text and a required
+reason, so the reviewer can challenge the exclusion. The reviewer result binds
+the file's canonical JSON SHA-256, so formatting-only rewrites are inert, and
+contains a structured per-requirement comparison
+covering every included and consciously excluded source message. A satisfied
+row means a requirement is observably met; `not_a_requirement` keeps an
+included receipt or question visible without inventing a requirement;
+`out_of_scope` is reserved for a message already stored in
+`excluded_messages`, and both dispositions require a reason. Any
+`not_satisfied` row refuses a satisfied verdict. The same rows, statuses and
+reasons appear in the completion letter. A later substantive user message
+invalidates the completion verdict. At either stage, an authenticated receipt,
+approval, or authorization without an objection remains in the source file but
+does not by itself invalidate the already delivered verdict. The mail owner
+must have verified that bounded classification against the exact reply and
+stored the canonical verbatim digest before and after each append. The gate
+requires one unbroken append chain from the reviewed digest to the current file,
+so editing any earlier message invalidates the verdict; an unverified
+caller-provided `approval` label never preserves it.
 
 That blocked state is canonical metadata, not only a runtime annotation: if an
 author prematurely wrote `completed`, the finalizer restores `blocked` through

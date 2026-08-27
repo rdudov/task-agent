@@ -153,6 +153,21 @@ class ClassificationTests(unittest.TestCase):
 
 
 class PairingTests(unittest.TestCase):
+    def test_pre_author_statement_review_binds_the_expected_author_and_actual_reviewer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "001-statement"
+            task_dir.mkdir()
+            pair = review_admission.resolve_review_launch_pair(
+                task_dir,
+                reviewer_runner="claude",
+                access_grant=READ_ONLY_GRANT,
+                expected_author_runner="codex",
+            )
+        self.assertTrue(pair["bound"])
+        self.assertEqual(pair["author_family"], "Codex")
+        self.assertEqual(pair["reviewer_family"], "Claude")
+        self.assertEqual(pair["reviewer_source"], "pre_author_statement_review")
+
     def test_configured_provider_uses_the_contract_executable_resolver(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             executable = Path(raw) / "provider-cli"
@@ -1719,6 +1734,12 @@ class ReviewCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             task_dir = Path(raw) / "001-task"
             task_dir.mkdir()
+            (task_dir / "user-verbatim.json").write_text(
+                '{"schema_version":1,"messages":[{"channel":"cli",'
+                '"source_id":"original","occurred_at":"2026-08-26T00:00:00Z",'
+                '"text":"Do the exact job"}]}\n',
+                encoding="utf-8",
+            )
             packet = task_dir / "product-review-packet.md"
             packet.write_text("# Packet\n", encoding="utf-8")
             args = argparse.Namespace(
@@ -1740,6 +1761,79 @@ class ReviewCommandTests(unittest.TestCase):
             args = argparse.Namespace(task_dir=str(task_dir), packet=str(packet))
             with self.assertRaisesRegex(SystemExit, "inside the task directory"):
                 task_runner.cmd_product_review(args)
+
+    def test_statement_review_selects_the_other_family_without_a_code_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw) / "001-task"
+            task_dir.mkdir()
+            packet = task_dir / "statement-packet.json"
+            packet.write_text("{}\n", encoding="utf-8")
+            (task_dir / "user-verbatim.json").write_text(
+                '{"schema_version":1,"messages":[{"channel":"cli",'
+                '"source_id":"m1","occurred_at":"2026-08-26T00:00:00Z",'
+                '"text":"do the exact job"}]}\n',
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                task_dir=str(task_dir), packet=str(packet), author_runner="codex",
+                model=None, application=None, destination=None, memory_limit=None,
+                dry_run=True, foreground=False,
+            )
+            with mock.patch.object(
+                review_admission,
+                "resolve_pair",
+                return_value={
+                    "outcome": "bound",
+                    "reviewer_runner": "claude",
+                    "detail": "independent family is available",
+                },
+            ), mock.patch.object(task_runner, "cmd_start") as start:
+                task_runner.cmd_statement_review(args)
+        start.assert_called_once_with(args)
+        self.assertEqual(args.runner, "claude")
+        self.assertEqual(args.review_kind, "statement")
+        self.assertEqual(args.repo, [])
+        self.assertFalse(args.require_review_verdict)
+
+    def test_statement_review_refuses_a_packet_outside_the_task(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw) / "001-task"
+            task_dir.mkdir()
+            packet = Path(raw) / "statement-packet.json"
+            packet.write_text("{}\n", encoding="utf-8")
+            args = argparse.Namespace(
+                task_dir=str(task_dir), packet=str(packet), author_runner="codex"
+            )
+            with self.assertRaisesRegex(SystemExit, "inside the task directory"):
+                task_runner.cmd_statement_review(args)
+
+    def test_statement_review_names_missing_verbatim_source_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw) / "001-task"
+            task_dir.mkdir()
+            packet = task_dir / "statement-packet.json"
+            packet.write_text("{}\n", encoding="utf-8")
+            args = argparse.Namespace(
+                task_dir=str(task_dir), packet=str(packet), author_runner="codex"
+            )
+            with self.assertRaisesRegex(
+                SystemExit, "user-verbatim.json first"
+            ) as caught:
+                task_runner.cmd_statement_review(args)
+        self.assertNotIn("Traceback", str(caught.exception))
+
+    def test_product_review_names_missing_verbatim_source_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw) / "001-task"
+            task_dir.mkdir()
+            packet = task_dir / "product-review-packet.json"
+            packet.write_text("{}\n", encoding="utf-8")
+            args = argparse.Namespace(task_dir=str(task_dir), packet=str(packet))
+            with self.assertRaisesRegex(
+                SystemExit, "user-verbatim.json first"
+            ) as caught:
+                task_runner.cmd_product_review(args)
+        self.assertNotIn("Traceback", str(caught.exception))
 
     def test_role_parsers_do_not_let_the_caller_choose_reviewer_access(self) -> None:
         with mock.patch.object(

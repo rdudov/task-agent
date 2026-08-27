@@ -234,7 +234,9 @@ def phase_for_state(state: str) -> str | None:
     return STATE_PHASES.get(state)
 
 
-def phase_for_standard_start(task_dir: Path, *, require_review_verdict: bool) -> str:
+def phase_for_standard_start(
+    task_dir: Path, *, require_review_verdict: bool, review_kind: str | None = None
+) -> str | None:
     """The phase a `standard` run is entering, so both profiles agree.
 
     A standard run publishes no lifecycle events, so the phase comes from what
@@ -243,6 +245,8 @@ def phase_for_standard_start(task_dir: Path, *, require_review_verdict: bool) ->
     review is rework, not a fresh implementation, which is exactly the
     distinction that used to require a new task number.
     """
+    if review_kind == "statement":
+        return None
     if require_review_verdict:
         return REVIEW
     return REWORK if REVIEW in phase_sequence(task_dir) else IMPLEMENTATION

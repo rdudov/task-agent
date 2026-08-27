@@ -171,6 +171,12 @@ sandbox argument is accepted: the command reuses the author's exact candidate
 set read-only while keeping the task notebook writable and live checks
 available.
 
+Only that admitted read-only access profile makes a product or technical review
+non-recursive at an installation's pre-start boundary. A caller-controlled
+review kind does not exempt a launch that has repository write access; such a
+launch is treated as author work and must satisfy the current statement review
+and delivery gate.
+
 ```bash
 .venv/bin/python skills/task-runner/scripts/task_runner.py review tasks/001-example
 ```
@@ -595,6 +601,82 @@ same bound reviewer and lifecycle rather than another controller:
   tasks/001-example --packet tasks/001-example/product-review-packet.md
 ```
 
+Before an author starts, an installation may use the statement-only variant:
+
+```bash
+.venv/bin/python skills/task-runner/scripts/task_runner.py statement-review \
+  tasks/001-example --packet tasks/001-example/statement-packet.json \
+  --author-runner codex
+```
+
+This is a non-recursive review phase of the same task number. It selects the
+other model family, grants no repository candidate, reads the task-local packet
+before the derived statement, and writes a digest-bound statement result plus
+one complete registered `deliverables/statement-review.html` document. The contract digest binds
+canonical JSON content rather than formatting. The statement digest binds only
+the authored Markdown body: lifecycle-owned YAML fields such as `status` and
+`status_detail` and the chronological `## Status` journal cannot invalidate it,
+while a change to the remaining body does. The result repeats the
+concise Russian conclusion for the mail body. It does not inspect code, issue
+a technical verdict, or register a technical review round. An installation may
+use that result as a pre-launch boundary; the public engine does not send mail
+or enable installation policy itself.
+
+Both product-review results name the exact admitted review launch that produced
+them. Each admission records its review kind, and validation requires that
+admission to remain the latest admitted review of the same product stage before
+resolving reviewer and author families from the task-local admission ledger.
+Later author and technical-review runs do not consume an unchanged statement
+verdict; a newer same-stage review supersedes it. Completion therefore has a
+reachable order: completion review, mandatory mail receipt, then terminal
+re-evaluation. An unrelated technical review or a superseded same-stage review
+cannot authorize a new result; identities asserted only inside the result are
+never evidence of independence. Because the ledger and result live in the
+executor-writable task directory, this is an ordinary lifecycle consistency
+binding rather than a tamper-proof security boundary against fabrication of
+both files.
+Completion additionally binds the full Git-visible candidate:
+HEAD, staged index, tracked worktree bytes, and every non-ignored untracked path
+and byte digest. A post-review edit in any of those classes invalidates the
+result before terminal completion.
+At either product stage, an authenticated receipt, approval, or authorization
+without an objection remains in `user-verbatim.json` but does not by itself
+invalidate the delivered verdict. The mail owner must bind that classification
+to the exact reply text and record the canonical verbatim digest immediately
+before and after each append. The gate accepts only an unbroken append chain
+from the reviewed digest to the current file, so editing an earlier message
+fails closed; a caller-provided label alone is not an approval. A substantive message still makes a
+completion verdict stale and must be reviewed against the exact candidate.
+
+The HTML renders the full authored statement once as readable content. The shared
+result validator compares normalized visible words with the same semantic body
+as the statement digest, excluding lifecycle frontmatter and the chronological
+`## Status` journal, so a shortened attachment is refused without forcing a
+second raw Markdown dump. A statement-review child first passes through the installation's ordinary
+standard-run hook for quota handling, then records the nonterminal run outcome
+`statement_review_finished`; its prompt explicitly leaves task completion to the
+lifecycle owner instead of asking the reviewer to write `completed` or `blocked`.
+It never writes a completed task phase or message.
+The ordinary watcher records that same distinct run outcome; a replacement
+watcher classifies the run from its recorded `review_kind`, not from a generic
+state the child may have left, and after validating the result records
+`recovered_statement_review_finished` instead of turning it into a failed run.
+The separate statement result and Gmail receipt release the author. Both review
+commands refuse missing or malformed `user-verbatim.json` input by name before
+launch.
+
+Both statement and completion product review require the task-local
+`user-verbatim.json`. Its digest is canonical JSON, so formatting-only rewrites
+do not invalidate a verdict. Read it before the derived packet and cover every source
+message from both `messages` and `excluded_messages` in the structured
+`requirement_comparison`. A consciously excluded message remains visible with
+exact identity, text and a required reason; its comparison row is
+`out_of_scope`. An included receipt or question that adds no requirement stays
+visible as `not_a_requirement` with a reason. The completion HTML and JSON map
+each verbatim requirement or disposition to the observed result; matching only
+the derived task statement is not a verdict. A later user message invalidates a
+completion result by changing the bound digest.
+
 The task-local packet is input, not a ledger. It carries the complete user
 contract, exact candidate identity, inputs, black-box happy and false-positive
 commands, a source manifest for later pull-based explanation, and explicit
@@ -606,6 +688,9 @@ pulling technical context, then writes the ordinary technical `Verdict:` to
 If the scenarios do not fit the fresh session, the product verdict is `not
 established`; it is not continued from compacted or resumed context. Domain
 examples belong only in packets, never in this canonical instruction.
+Record the packet's normalized task-relative path in the result. Packets may
+live in a task-local subdirectory such as `reviews/`; launch and validation
+resolve that same path, while traversal outside the task is refused.
 
 A standard review's decision reaches the ledger from the one canonical `Verdict:`
 line its contract already requires. When a new admitted review starts, the

@@ -60,7 +60,7 @@ try:  # package install
         published_review_verdict,
         require_review_verdict_contract,
     )
-    from . import review_admission, task_phases, task_workspace, write_admission
+    from . import product_review, review_admission, task_phases, task_workspace, write_admission
 except ImportError:  # direct repository script
     from application_adapter import (
         APPLICATION_API_VERSION,
@@ -104,6 +104,7 @@ except ImportError:  # direct repository script
         published_review_verdict,
         require_review_verdict_contract,
     )
+    import product_review
     import review_admission
     import task_phases
     import task_workspace
@@ -317,6 +318,9 @@ def build_child_prompt(
     review_subject_author: str | None = None,
     require_review_verdict: bool = False,
     product_review_packet: Path | None = None,
+    statement_review_packet: Path | None = None,
+    statement_author_runner: str | None = None,
+    review_admission_record: dict | None = None,
 ) -> str:
     task_dir = task_dir.resolve()
     task_md = task_dir / 'task.md'
@@ -329,7 +333,19 @@ def build_child_prompt(
     deliverables_dir = task_dir / 'deliverables'
     manifest_json = deliverables_dir / 'manifest.json'
     product_review_html = deliverables_dir / 'product-review.html'
+    statement_review_html = product_review.report_path(task_dir, "statement")
+    statement_review_json = product_review.result_path(task_dir, "statement")
+    verbatim_user_words = product_review.verbatim_path(task_dir)
     role = ""
+    finishing_steps = f"""- Ensure `{status_json}` has `state` set to `completed` or `blocked`.
+- Re-read the original request and every continuation, then check that your response and
+  the registered deliverables satisfy the latest complete intent. A later clarification
+  may replace an earlier requested representation. If they do not match, keep the task
+  blocked instead of claiming completion.
+- If the user requested output files, verify that each one exists in `{deliverables_dir}`,
+  is non-empty, and is listed in `{manifest_json}`.
+- Append a final trace entry summarizing what was done.
+- In your final response, summarize the result briefly and reference the task artifacts you updated."""
     opening_steps = f"""1. Read `{task_md}`
 2. Read `{plan_md}`
 3. Read `{task_contract_json}` if it exists and treat it as a structured execution contract.
@@ -338,22 +354,91 @@ def build_child_prompt(
 5. If `{task_md}` is missing execution-critical inputs from the original request, add them before continuing.
 6. Update `{status_json}` to reflect active work.
 7. Append a short note to `{trace_md}` describing what you are doing."""
-    if require_review_verdict and product_review_packet is not None:
+    if statement_review_packet is not None:
+        statement_review_packet = statement_review_packet.resolve()
+        statement_review_packet_name = product_review.task_relative_path(
+            task_dir, statement_review_packet
+        )
+        packet_sha256 = hashlib.sha256(statement_review_packet.read_bytes()).hexdigest()
+        statement_digests = product_review.current_statement_digests(task_dir)
+        verbatim_digest = product_review.verbatim_sha256(task_dir)
+        review_admission_id = (review_admission_record or {}).get("admission_id")
+        if not isinstance(review_admission_id, str) or not review_admission_id:
+            raise ValueError("statement review prompt has no admitted review identity")
+        role = f"""
+Role: fresh independent statement product reviewer.
+- Read `{verbatim_user_words}` first in full, then the immutable statement packet,
+  and compare every verbatim requirement with the exact statement. Do not inspect implementation code, diffs, tests,
+  findings, or a candidate that does not exist yet. This is not technical review.
+- Verify `{statement_review_packet}` has SHA-256 `{packet_sha256}`. A mismatch means
+  `not established`.
+- Decide only `satisfied`, `not_satisfied`, or `not_established`. Check the user job,
+  observable result, required decision owner, evidence promised, strongest false
+  proxy, active product conclusions, and forbidden substitutions.
+- Write one self-contained HTML document to `{statement_review_html}`. It contains
+  the complete readable statement authored in `{task_md}` and a concise Russian conclusion.
+  Render the authored statement once as readable HTML, excluding lifecycle metadata
+  and the chronological `## Status` journal. The delivery gate compares that same
+  semantic body; do not embed a second raw Markdown dump or create a duplicate
+  Markdown document.
+- Register `statement-review.html` in `{manifest_json}` without removing other
+  registered deliverables.
+- Write `{statement_review_json}` as JSON with exactly the durable facts needed by
+  the gate: `schema_version` 1, `stage` "statement", `verdict`, `reviewed_at`,
+  `packet` task-relative path `{statement_review_packet_name}`, `packet_sha256`, `task_sha256` `{statement_digests['task_sha256']}`,
+  `contract_sha256` {json.dumps(statement_digests['contract_sha256'])},
+  `verbatim_user_words_sha256` `{verbatim_digest}`, and `requirement_comparison`.
+  {product_review.comparison_instruction('statement')}
+  `report_sha256`, `conclusion_ru` containing the concise Russian conclusion from
+  the HTML, and `reviewer` with `runner` and family (`Codex` or `Claude`).
+- Record `review_admission_id` as `{review_admission_id}`. The gate resolves both
+  reviewer and expected statement-author families from that append-only admission;
+  identity fields asserted only by your own result are not accepted.
+- Do not write a technical `Verdict:` line and do not register a technical review
+  round. Treat repositories as read-only; writes are limited to task review artifacts.
+"""
+        opening_steps = f"""1. Read only `{verbatim_user_words}` and then `{statement_review_packet}`.
+2. Verify both SHA-256 values and establish every verbatim requirement before opening `{task_md}`.
+3. Read `{task_md}` and `{task_contract_json}` only as the statement being reviewed.
+4. Write `{statement_review_html}` and `{statement_review_json}` as specified above.
+5. Update `{status_json}` and append a concise note to `{trace_md}`."""
+        finishing_steps = f"""- Do not set the task itself to `completed` or `blocked`. A statement review
+  ends only this nonterminal review run; leave final classification to the lifecycle owner.
+- Verify `{statement_review_html}` and `{statement_review_json}` are complete, non-empty,
+  digest-bound, and registered as required.
+- Append a final trace entry summarizing the statement-review result.
+- In your final response, summarize the statement-review verdict and reference its artifacts."""
+    elif require_review_verdict and product_review_packet is not None:
         product_review_packet = product_review_packet.resolve()
+        product_review_packet_name = product_review.task_relative_path(
+            task_dir, product_review_packet
+        )
         product_review_packet_sha256 = hashlib.sha256(
             product_review_packet.read_bytes()
         ).hexdigest()
+        verbatim_digest = product_review.verbatim_sha256(task_dir)
+        review_admission_id = (review_admission_record or {}).get("admission_id")
+        if not isinstance(review_admission_id, str) or not review_admission_id:
+            raise ValueError("completion review prompt has no admitted review identity")
+        candidate_states = {
+            str(path.resolve()): product_review.git_candidate_state(path)
+            for path in (repository if isinstance(repository, list) else [repository])
+            if path is not None
+        }
         role = f"""
 Role: fresh independent product and technical reviewer.
 - Review the exact candidate for subject `{review_subject or task_dir}` written by
   `{review_subject_author or 'the recorded author'}`; do not repair it.
 - The configured target repository is `{repository}` and is read-only.
-- `{product_review_packet}` is the immutable product-review packet. It must contain
+- `{verbatim_user_words}` is the complete named source of the user's original words
+  and every continuation. Read it in full before the packet. Its SHA-256 is
+  `{verbatim_digest}`. `{product_review_packet}` is the immutable product-review packet. It must contain
   the complete user contract, exact candidate identity, inputs, black-box commands,
   source manifest, and any explicit exclusions. Domain cases belong in that packet,
   never in this canonical instruction. Before using it, verify its SHA-256 is
   `{product_review_packet_sha256}`; a mismatch makes the product verdict
   `not established`.
+- {product_review.comparison_instruction('completion')}
 - Evidence order is part of the result. Before reading `{task_md}`, `{plan_md}`,
   existing findings, implementation files, source code, diffs, tests, or technical
   explanations, read only the packet and begin `{product_review_html}` with one
@@ -384,8 +469,20 @@ Role: fresh independent product and technical reviewer.
 - Register `product-review.html` in `{manifest_json}` without removing other
   registered deliverables. Treat all subject and repository files as read-only;
   writes are limited to this task's review artifacts.
+- Also write `{product_review.result_path(task_dir, 'completion')}` with schema 1,
+  stage `completion`, verdict `satisfied|not_satisfied|not_established`, reviewed_at,
+  packet task-relative path `{product_review_packet_name}` and SHA-256, report SHA-256, `conclusion_ru` containing the
+  concise Russian conclusion from the HTML, reviewer runner/family, and
+  `review_admission_id` `{review_admission_id}`, plus `candidate_states`
+  {json.dumps(candidate_states, sort_keys=True)} mapping every reviewed absolute
+  Git repository path to the exact digest of HEAD, staged index, tracked worktree,
+  and non-ignored untracked content captured immediately before this review;
+  `verbatim_user_words_sha256` `{verbatim_digest}`, and `requirement_comparison`.
+  Show the same comparison list
+  in the HTML report. This record does not replace either
+  the HTML product verdict or the technical verdict.
 """
-        opening_steps = f"""1. Read only `{product_review_packet}`.
+        opening_steps = f"""1. Read only `{verbatim_user_words}` and then `{product_review_packet}`.
 2. Before opening any implementation or author evidence, write the four-line opening
    section required above to `{product_review_html}`.
 3. Execute both black-box paths and record the product verdict in that same report.
@@ -501,15 +598,7 @@ While working:
 - If verification or publication is blocked, record the reason and current repository state in task artifacts before finishing.
 
 Before finishing:
-- Ensure `{status_json}` has `state` set to `completed` or `blocked`.
-- Re-read the original request and every continuation, then check that your response and
-  the registered deliverables satisfy the latest complete intent. A later clarification
-  may replace an earlier requested representation. If they do not match, keep the task
-  blocked instead of claiming completion.
-- If the user requested output files, verify that each one exists in `{deliverables_dir}`,
-  is non-empty, and is listed in `{manifest_json}`.
-- Append a final trace entry summarizing what was done.
-- In your final response, summarize the result briefly and reference the task artifacts you updated.
+{finishing_steps}
 """
 
 
@@ -1300,7 +1389,7 @@ def watcher_options(args: argparse.Namespace) -> dict:
     """Return lifecycle inputs that must survive the detached watcher boundary."""
     options = {
         name: getattr(args, name, None)
-        for name in ("operation", "application", "destination")
+        for name in ("operation", "application", "destination", "review_kind")
     }
     if getattr(args, "workflow", None) == "dev-pipeline":
         options.update(dev_pipeline_options(args))
@@ -1383,7 +1472,12 @@ def redact_sensitive_arguments(command: list[str]) -> list[str]:
     return redacted
 
 
-def prepared_application_launch(args: argparse.Namespace, task_dir: Path) -> dict:
+def prepared_application_launch(
+    args: argparse.Namespace,
+    task_dir: Path,
+    *,
+    access_profile: dict[str, object] | None = None,
+) -> dict:
     """Resolve v1 policy once and reuse its exact standard-session arguments."""
     spec = getattr(args, "application", None)
     operation = getattr(args, "operation", "start")
@@ -1418,6 +1512,11 @@ def prepared_application_launch(args: argparse.Namespace, task_dir: Path) -> dic
 
     adapter = load_application(spec)
     requested = parse_memory_limit(getattr(args, "memory_limit", None))
+    read_only_review = bool(getattr(args, "review_kind", None)) and bool(
+        isinstance(access_profile, dict)
+        and access_profile.get("sandbox_mode") == "read-only"
+        and access_profile.get("grants_write") is False
+    )
     policy = adapter.launch_policy(
         LaunchRequestV1(
             task_dir=task_dir,
@@ -1426,6 +1525,7 @@ def prepared_application_launch(args: argparse.Namespace, task_dir: Path) -> dic
             operation=operation,
             destination=destination,
             requested_memory_limit_bytes=requested,
+            role=("reviewer" if read_only_review else "author"),
         )
     )
     if not hasattr(policy, "memory_limit_bytes"):
@@ -2051,6 +2151,11 @@ def cmd_start(args: argparse.Namespace) -> None:
     ownership_lock = acquire_run_ownership(task_dir)
     require_no_live_run(task_dir)
     ensure_task_contract(task_dir)
+    review_kind = getattr(args, "review_kind", None)
+    if review_kind is None and getattr(args, "require_review_verdict", False):
+        review_kind = "technical"
+        args.review_kind = review_kind
+    is_review_launch = bool(review_kind)
     if getattr(args, "require_review_verdict", False):
         try:
             require_review_verdict_contract(task_dir)
@@ -2092,7 +2197,12 @@ def cmd_start(args: argparse.Namespace) -> None:
             access_grant=access_grant,
             contract=load_task_contract(task_dir),
             declared_reviewer=getattr(args, "reviewer_runner", None),
-            review_launch=bool(getattr(args, "require_review_verdict", False)),
+            review_launch=is_review_launch,
+            expected_author_runner=(
+                getattr(args, "statement_author_runner", None)
+                if review_kind == "statement"
+                else None
+            ),
             assurance=configured_assurance(args),
             persist=committing,
         )
@@ -2115,6 +2225,12 @@ def cmd_start(args: argparse.Namespace) -> None:
         append_trace(task_dir, notification["trace"])
         ownership_lock.close()
         raise SystemExit(exc.record["message"]) from None
+    if is_review_launch:
+        # The admission id identifies one launch; the kind identifies what that
+        # launch was admitted to review. Product verdicts bind both, so an
+        # unrelated technical or earlier product-review admission cannot be
+        # borrowed by a hand-written result.
+        review_record["review_kind"] = review_kind
     append_trace(
         task_dir,
         review_record["message"]
@@ -2127,7 +2243,9 @@ def cmd_start(args: argparse.Namespace) -> None:
     admission_receipt: dict | None = None
 
     try:
-        application_launch = prepared_application_launch(args, task_dir)
+        application_launch = prepared_application_launch(
+            args, task_dir, access_profile=review_record.get("access_profile")
+        )
     except ApplicationAdapterError as exc:
         raise SystemExit(f"Application launch policy refused the run: {exc}") from None
 
@@ -2142,7 +2260,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     if args.workflow == "standard":
         repository = access_directories if access_directories else None
         review_subject, review_author = review_prompt_identity(
-            task_dir, review_record, bool(getattr(args, "require_review_verdict", False))
+            task_dir, review_record, is_review_launch
         )
         prompt = build_child_prompt(
             task_dir,
@@ -2155,6 +2273,13 @@ def cmd_start(args: argparse.Namespace) -> None:
                 if getattr(args, "product_review_packet", None)
                 else None
             ),
+            statement_review_packet=(
+                Path(args.statement_review_packet)
+                if getattr(args, "statement_review_packet", None)
+                else None
+            ),
+            statement_author_runner=getattr(args, "statement_author_runner", None),
+            review_admission_record=review_record,
         )
         runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
     else:
@@ -2208,6 +2333,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         "application": application_launch,
         "access_grant": access_grant,
         "review_admission": review_record,
+        "review_kind": review_kind,
         "progress_baseline": observe_progress_state(task_dir),
         "pid_namespace": pid_namespace_identity(),
     }
@@ -2491,6 +2617,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     args.sandbox_mode = "read-only"
     args.repo = list(targets)
     args.operation = "start"
+    args.review_kind = getattr(args, "review_kind", None) or "technical"
     cmd_start(args)
 
 
@@ -2519,8 +2646,51 @@ def cmd_product_review(args: argparse.Namespace) -> None:
         raise SystemExit("The product-review packet must be inside the task directory.") from None
     if not packet.is_file() or packet.stat().st_size == 0:
         raise SystemExit(f"Product-review packet is missing or empty: {packet}")
+    try:
+        product_review.verbatim_sha256(task_dir)
+    except ValueError as exc:
+        raise SystemExit(
+            f"Product review cannot start: {exc}. Record the original user message, "
+            "every continuation, and any consciously excluded message with its reason "
+            "in this task's user-verbatim.json first."
+        ) from None
     args.product_review_packet = str(packet)
+    args.review_kind = "completion"
     cmd_review(args)
+
+
+def cmd_statement_review(args: argparse.Namespace) -> None:
+    """Review a statement before any material author is allowed to start."""
+    task_dir = resolve_task_dir(args.task_dir)
+    packet = Path(args.packet).expanduser().resolve()
+    try:
+        packet.relative_to(task_dir.resolve())
+    except ValueError:
+        raise SystemExit("The statement-review packet must be inside the task directory.") from None
+    if not packet.is_file() or packet.stat().st_size == 0:
+        raise SystemExit(f"Statement-review packet is missing or empty: {packet}")
+    try:
+        product_review.verbatim_sha256(task_dir)
+    except ValueError as exc:
+        raise SystemExit(
+            f"Statement review cannot start: {exc}. Record the original user message "
+            "and every continuation in this task's user-verbatim.json first."
+        ) from None
+    pair = review_admission.resolve_pair(author_runner=args.author_runner)
+    reviewer = pair.get("reviewer_runner")
+    if pair.get("outcome") != "bound" or reviewer not in review_admission.REVIEW_RUNNERS:
+        raise SystemExit(f"No independent statement reviewer is available: {pair.get('detail')}")
+    args.runner = reviewer
+    args.workflow = "standard"
+    args.require_review_verdict = False
+    args.statement_review_packet = str(packet)
+    args.statement_author_runner = args.author_runner
+    args.review_kind = "statement"
+    args.reviewer_runner = None
+    args.sandbox_mode = "read-only"
+    args.repo = []
+    args.operation = "start"
+    cmd_start(args)
 
 
 def record_terminal_phase(task_dir: Path, state: str) -> None:
@@ -2618,6 +2788,8 @@ def record_standard_review_round(task_dir: Path, runner: str) -> dict | None:
 
     The round is keyed on this run, so finalizing twice records one round.
     """
+    if read_json(runner_meta_path(task_dir)).get("review_kind") == "statement":
+        return None
     admission = review_admission.recorded_admission(task_dir)
     classification = admission.get("classification")
     work_class = (
@@ -2668,8 +2840,9 @@ def finalize_child_lifecycle(
     """
     review_round = None
     approved_refusal: str | None = None
+    metadata = read_json(runner_meta_path(task_dir))
+    statement_review = workflow == "standard" and metadata.get("review_kind") == "statement"
     if workflow == "standard":
-        metadata = read_json(runner_meta_path(task_dir))
         registration = metadata.get("application")
         application_record = registration if isinstance(registration, dict) else {}
         spec = application_record.get("spec")
@@ -2737,6 +2910,32 @@ def finalize_child_lifecycle(
                     task_dir,
                     f"Could not reconcile failed task metadata: {metadata_exc}",
                 )
+            return
+        if statement_review:
+            if return_code == 0:
+                passed, detail, _result = product_review.validate_result(
+                    task_dir, "statement"
+                )
+            else:
+                passed = False
+                detail = f"Statement reviewer exited with code {return_code}"
+            write_status(
+                task_dir,
+                "statement_review_finished",
+                detail,
+                {
+                    "runner": runner,
+                    "workflow": workflow,
+                    "exit_code": return_code,
+                    "statement_review_passed": passed,
+                },
+            )
+            append_trace(
+                task_dir,
+                "Statement product review finished with a current satisfied verdict."
+                if passed
+                else "Statement product review did not establish a current satisfied verdict.",
+            )
             return
         # A quota pause returns above without depositing a review round. Once
         # the application confirms the run reached its own end, a clean
@@ -2963,6 +3162,36 @@ def report_launch_failure(task_dir: Path, args: argparse.Namespace, exc: Excepti
     print(json.dumps({"ok": False, "error": str(exc)}), flush=True)
 
 
+def run_outcome_for_state(
+    state: str | None, return_code: int | None, *, recovered: bool = False
+) -> str:
+    """Name one run outcome from the durable status vocabulary.
+
+    This is the single owner used by both the original watcher and a recovered
+    watcher. A statement review ends its run without ending the task, so it is
+    intentionally neither a task success nor a task failure.
+    """
+    if recovered:
+        recovered_outcomes = {
+            "completed": "recovered_completed",
+            "failed": "recovered_failed",
+            "blocked": "recovered_blocked",
+            "waiting": "recovered_waiting_for_quota",
+            "waiting_for_quota": "recovered_waiting_for_quota",
+            "statement_review_finished": "recovered_statement_review_finished",
+        }
+        return recovered_outcomes.get(state, "recovered_terminal_state_unknown")
+    if state in {"waiting", "waiting_for_quota"}:
+        return "waiting_for_quota"
+    if state == "statement_review_finished" and return_code == 0:
+        return "statement_review_finished"
+    if state == "completed" and return_code == 0:
+        return "succeeded"
+    if state == "blocked" and return_code == 0:
+        return "rejected_completion_contract"
+    return "failed"
+
+
 def cmd_run_child(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
@@ -2994,7 +3223,9 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             getattr(args, "repo", None),
             require_git_worktree=bool(getattr(args, "require_git_worktree", False)),
         )
-        application_launch = prepared_application_launch(args, task_dir)
+        application_launch = prepared_application_launch(
+            args, task_dir, access_profile=access_grant
+        )
         workflow_command = build_workflow_command(
             args.workflow,
             args.runner,
@@ -3073,13 +3304,15 @@ def cmd_run_child(args: argparse.Namespace) -> None:
                     or enforced_review_verdict(load_task_contract(task_dir)) is not None
                 )
             ),
+            review_kind=getattr(args, "review_kind", None),
         )
-        task_phases.record_phase(
-            task_dir,
-            entering,
-            cause={"source": "task-runner", "workflow": args.workflow, "runner": args.runner},
-        )
-        append_trace(task_dir, f"Task entered the `{entering}` phase.")
+        if entering is not None:
+            task_phases.record_phase(
+                task_dir,
+                entering,
+                cause={"source": "task-runner", "workflow": args.workflow, "runner": args.runner},
+            )
+            append_trace(task_dir, f"Task entered the `{entering}` phase.")
 
     write_scope_run_id = None
     if write_targets:
@@ -3109,7 +3342,11 @@ def cmd_run_child(args: argparse.Namespace) -> None:
     removed_verdicts = 0
     try:
         log_handle = runner_log_path(task_dir).open("ab")
-        if args.workflow == "standard" and review_admission.launch_is_review(task_dir):
+        if (
+            args.workflow == "standard"
+            and review_admission.launch_is_review(task_dir)
+            and getattr(args, "review_kind", None) != "statement"
+        ):
             requirement = enforced_review_verdict(load_task_contract(task_dir)) or {}
             findings_path = task_dir / requirement.get("path", "findings.md")
             if findings_path.is_file():
@@ -3211,14 +3448,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         task_dir,
         read_json(status_path(task_dir)).get("state"),
     )
-    if terminal_state in {"waiting", "waiting_for_quota"}:
-        outcome = "waiting_for_quota"
-    elif terminal_state == "completed" and return_code == 0:
-        outcome = "succeeded"
-    elif terminal_state == "blocked" and return_code == 0:
-        outcome = "rejected_completion_contract"
-    else:
-        outcome = "failed"
+    outcome = run_outcome_for_state(terminal_state, return_code)
     update_runner_meta(
         task_dir,
         {
@@ -3292,10 +3522,31 @@ def cmd_monitor_existing(args: argparse.Namespace) -> None:
         recovered=True,
     )
     state = apply_terminal_workspace_cleanup(task_dir, state, recovered=True)
-    if state in {"completed", "failed", "blocked"}:
-        outcome = f"recovered_{state}"
-    else:
-        outcome = "recovered_terminal_state_unknown"
+    if (
+        meta.get("workflow") == "standard"
+        and meta.get("review_kind") == "statement"
+        and state not in {"waiting", "waiting_for_quota", "statement_review_finished"}
+    ):
+        passed, detail, _result = product_review.validate_result(task_dir, "statement")
+        write_status(
+            task_dir,
+            "statement_review_finished",
+            detail,
+            {
+                "runner": meta.get("runner"),
+                "workflow": meta.get("workflow"),
+                "statement_review_passed": passed,
+                "recovered": True,
+            },
+        )
+        append_trace(
+            task_dir,
+            "Recovered watcher finalized the statement product-review result "
+            "without changing the task phase.",
+        )
+        state = "statement_review_finished"
+    outcome = run_outcome_for_state(state, None, recovered=True)
+    if outcome == "recovered_terminal_state_unknown":
         write_status(
             task_dir,
             "failed",
@@ -3732,6 +3983,23 @@ def parse_args() -> argparse.Namespace:
     product_review_parser.add_argument("--foreground", action="store_true")
     product_review_parser.set_defaults(func=cmd_product_review)
 
+    statement_review_parser = subparsers.add_parser(
+        "statement-review",
+        help="Run a fresh statement-only product review before author launch.",
+    )
+    statement_review_parser.add_argument("task_dir", help="Task directory path.")
+    statement_review_parser.add_argument("--packet", required=True)
+    statement_review_parser.add_argument(
+        "--author-runner", required=True, choices=sorted(review_admission.REVIEW_RUNNERS)
+    )
+    statement_review_parser.add_argument("--model")
+    statement_review_parser.add_argument("--application")
+    statement_review_parser.add_argument("--destination")
+    statement_review_parser.add_argument("--memory-limit")
+    statement_review_parser.add_argument("--dry-run", action="store_true")
+    statement_review_parser.add_argument("--foreground", action="store_true")
+    statement_review_parser.set_defaults(func=cmd_statement_review)
+
     run_child_parser = subparsers.add_parser("_run-child", help=argparse.SUPPRESS)
     run_child_parser.add_argument("task_dir", help="Task directory path.")
     run_child_parser.add_argument("--runner", choices=list(CLI_RUNNERS), default=DEFAULT_RUNNER)
@@ -3768,6 +4036,7 @@ def parse_args() -> argparse.Namespace:
     )
     run_child_parser.add_argument("--assurance-config", help=argparse.SUPPRESS)
     run_child_parser.add_argument("--review-packet", help=argparse.SUPPRESS)
+    run_child_parser.add_argument("--review-kind", help=argparse.SUPPRESS)
     run_child_parser.set_defaults(func=cmd_run_child)
 
     monitor_parser = subparsers.add_parser("_monitor-existing", help=argparse.SUPPRESS)

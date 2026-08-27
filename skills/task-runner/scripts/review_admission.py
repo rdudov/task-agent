@@ -621,6 +621,7 @@ def resolve_review_launch_pair(
     *,
     reviewer_runner: str,
     access_grant: dict[str, Any] | None = None,
+    expected_author_runner: str | None = None,
 ) -> dict[str, Any]:
     """Check that this review is the one the number was promised.
 
@@ -652,6 +653,37 @@ def resolve_review_launch_pair(
         return pair
     binding = bound_author_admission(task_dir)
     if binding is None:
+        if expected_author_runner:
+            expected = resolve_pair(author_runner=expected_author_runner)
+            if (
+                expected.get("outcome") != "bound"
+                or expected.get("reviewer_runner") != reviewer_runner
+            ):
+                pair.update(
+                    {
+                        "outcome": "review_by_unbound_family",
+                        "detail": (
+                            f"`{reviewer_runner}` is not the independent reviewer "
+                            f"resolved for the expected {family_of(expected_author_runner)} "
+                            "statement author"
+                        ),
+                    }
+                )
+                return pair
+            pair.update(expected)
+            pair.update(
+                {
+                    "bound": True,
+                    "outcome": "bound",
+                    "reviewer_source": "pre_author_statement_review",
+                    "detail": (
+                        f"`{reviewer_runner}` is the {expected['reviewer_family']} "
+                        f"reviewer independently resolved before the expected "
+                        f"{expected['author_family']} statement author starts"
+                    ),
+                }
+            )
+            return pair
         pair.update(
             {
                 "bound": True,
@@ -818,6 +850,7 @@ def evaluate(
     contract: dict[str, Any],
     declared_reviewer: str | None = None,
     review_launch: bool = False,
+    expected_author_runner: str | None = None,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
     configured_resolver: Callable[[str], str | None] = resolve_executable,
@@ -836,6 +869,7 @@ def evaluate(
             task_dir,
             reviewer_runner=author_runner,
             access_grant=access_grant,
+            expected_author_runner=expected_author_runner,
         )
     else:
         pair = resolve_pair(
@@ -1127,6 +1161,7 @@ def admit_launch(
     contract: dict[str, Any],
     declared_reviewer: str | None = None,
     review_launch: bool = False,
+    expected_author_runner: str | None = None,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
     configured_resolver: Callable[[str], str | None] = resolve_executable,
@@ -1158,6 +1193,7 @@ def admit_launch(
         contract=contract,
         declared_reviewer=declared_reviewer,
         review_launch=review_launch,
+        expected_author_runner=expected_author_runner,
         assurance=assurance,
         which=which,
         configured_resolver=configured_resolver,

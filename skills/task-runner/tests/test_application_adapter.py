@@ -28,8 +28,10 @@ class RecordingApplication:
 
     def __init__(self) -> None:
         self.events = []
+        self.launches = []
 
     def launch_policy(self, request):
+        self.launches.append(request)
         return application_adapter.LaunchPolicyV1(request.requested_memory_limit_bytes)
 
     def standard_session(self, request):
@@ -106,6 +108,30 @@ class ApplicationAdapterTests(unittest.TestCase):
                 ["--resume", "native-1"],
             )
             self.assertEqual(resumed["memory_limit_bytes"], 2 * 1024**3)
+
+    def test_only_read_only_review_reaches_application_as_non_recursive(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            args = self._args()
+            args.review_kind = "technical"
+            task_runner.prepared_application_launch(
+                args,
+                task,
+                access_profile={"sandbox_mode": "read-only", "grants_write": False},
+            )
+        self.assertEqual(self.module.adapter.launches[-1].role, "reviewer")
+
+    def test_write_capable_review_label_reaches_application_as_author(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            args = self._args()
+            args.review_kind = "technical"
+            task_runner.prepared_application_launch(
+                args,
+                task,
+                access_profile={"sandbox_mode": "workspace-write", "grants_write": True},
+            )
+        self.assertEqual(self.module.adapter.launches[-1].role, "author")
 
     def test_standard_watcher_receives_and_reparses_application_context(self) -> None:
         args = self._args("resume")

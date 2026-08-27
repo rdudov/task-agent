@@ -232,6 +232,77 @@ class ReattachTests(unittest.TestCase):
         self.addCleanup(process.kill)
         return process
 
+    def _write_valid_statement_result(self, task_dir: Path) -> None:
+        (task_dir / "task_contract.json").write_text(
+            '{"version": 1}\n', encoding="utf-8"
+        )
+        (task_dir / "user-verbatim.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "messages": [{
+                    "channel": "cli",
+                    "source_id": "m1",
+                    "occurred_at": "2026-08-26T00:00:00Z",
+                    "text": "Reattach",
+                }],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        packet = task_dir / "statement-packet.json"
+        packet.write_text("{}\n", encoding="utf-8")
+        report = task_runner.product_review.report_path(task_dir, "statement")
+        report.parent.mkdir(parents=True)
+        report.write_text(
+            "<html><body><h1>Reattach</h1></body></html>\n", encoding="utf-8"
+        )
+        result = {
+            "schema_version": 1,
+            "stage": "statement",
+            "verdict": "satisfied",
+            "conclusion_ru": "Постановка соответствует запросу.",
+            "reviewed_at": "2026-08-26T00:00:00Z",
+            "packet": packet.name,
+            "packet_sha256": task_runner.product_review.file_sha256(packet),
+            "report_sha256": task_runner.product_review.file_sha256(report),
+            "verbatim_user_words_sha256": task_runner.product_review.verbatim_sha256(
+                task_dir
+            ),
+            "requirement_comparison": [{
+                "source_ids": ["m1"],
+                "requirement": "Reattach",
+                "observed_result": "Постановка сохраняет требование",
+                "outcome": "satisfied",
+            }],
+            **task_runner.product_review.current_statement_digests(task_dir),
+            "review_admission_id": "statement-review-test",
+            "reviewer": {"runner": "claude", "family": "Claude"},
+        }
+        admissions = task_dir / "reviews" / "admissions.jsonl"
+        admissions.parent.mkdir(parents=True, exist_ok=True)
+        admissions.write_text(json.dumps({
+            "schema_version": 1,
+            "admission_id": "statement-review-test",
+            "decision": "admitted_review",
+            "review_kind": "statement",
+            "classification": {"work_class": "review"},
+            "pair": {
+                "author_runner": "codex", "author_family": "Codex",
+                "reviewer_runner": "claude", "reviewer_family": "Claude",
+            },
+        }) + "\n", encoding="utf-8")
+        task_runner.write_json(
+            task_dir / ".runner" / "runner.json",
+            {
+                "review_kind": "statement",
+                "review_admission": {
+                    "admission_id": "statement-review-test",
+                },
+            },
+        )
+        result_path = task_runner.product_review.result_path(task_dir, "statement")
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(json.dumps(result) + "\n", encoding="utf-8")
+
     def _reattach(self, task_dir: Path) -> subprocess.CompletedProcess:
         return subprocess.run(
             [
@@ -370,6 +441,56 @@ class ReattachTests(unittest.TestCase):
                 (task_dir / ".runner" / "runner.json").read_text(encoding="utf-8")
             )
             self.assertEqual(runner_meta["outcome"], "recovered_completed")
+
+    def test_recovered_watcher_finalizes_a_valid_statement_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = self._task_dir(tmp)
+            self._write_valid_statement_result(task_dir)
+            passed, detail, _result = task_runner.product_review.validate_result(
+                task_dir, "statement"
+            )
+            self.assertTrue(passed, detail)
+            child = self._live_child()
+            task_runner.write_json(
+                task_dir / ".runner" / "runner.json",
+                {
+                    "pid": child.pid,
+                    "process_identity": task_runner.process_identity(child.pid),
+                    "runner": "claude",
+                    "workflow": "standard",
+                    "review_kind": "statement",
+                    "review_admission": {
+                        "admission_id": "statement-review-test",
+                    },
+                },
+            )
+            task_runner.write_json(
+                task_runner.status_path(task_dir),
+                {
+                    "state": "completed",
+                    "current_step": "statement reviewer followed the former generic prompt ending",
+                    "phase": "planned",
+                },
+            )
+            result = self._reattach(task_dir)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            recovered_watcher = json.loads(result.stdout)["watcher_pid"]
+
+            child.kill()
+            child.wait()
+            self.assertTrue(
+                _wait_until(lambda: not task_runner.pid_is_running(recovered_watcher), 30)
+            )
+            status = json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
+            runner_meta = json.loads(
+                (task_dir / ".runner" / "runner.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(status["state"], "statement_review_finished")
+            self.assertTrue(status["statement_review_passed"], status["current_step"])
+            self.assertEqual(status["phase"], "planned")
+            self.assertEqual(
+                runner_meta["outcome"], "recovered_statement_review_finished"
+            )
 
 
 class StopRefusesRecycledPidTests(unittest.TestCase):

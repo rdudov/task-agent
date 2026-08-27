@@ -148,6 +148,18 @@ class StandardParityTests(unittest.TestCase):
                 "review",
             )
 
+    def test_statement_review_does_not_enter_engineering_review_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            self.assertIsNone(
+                task_phases.phase_for_standard_start(
+                    task_dir,
+                    require_review_verdict=True,
+                    review_kind="statement",
+                )
+            )
+            self.assertEqual(task_phases.current_phase(task_dir), "planned")
+
     def test_the_first_run_is_implementation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             self.assertEqual(
@@ -171,6 +183,9 @@ class StandardParityTests(unittest.TestCase):
         self.assertEqual(task_phases.phase_for_state("failed"), "failed")
         self.assertEqual(task_phases.phase_for_state("blocked"), "blocked")
         self.assertIsNone(task_phases.phase_for_state("running"))
+
+    def test_statement_review_finish_does_not_end_the_task_phase(self) -> None:
+        self.assertIsNone(task_phases.phase_for_state("statement_review_finished"))
 
     def test_the_record_is_replaced_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

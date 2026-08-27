@@ -36,6 +36,7 @@ class LaunchRequestV1:
     operation: str
     destination: str | None
     requested_memory_limit_bytes: int | None
+    role: str = "author"
 
 
 @dataclass(frozen=True)
