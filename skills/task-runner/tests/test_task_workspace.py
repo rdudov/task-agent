@@ -110,6 +110,47 @@ class WorkspaceCleanupTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "removed")
         self.assertFalse(clone.exists())
 
+    def test_foreign_task_number_in_clone_name_is_never_removed(self) -> None:
+        clone = self.root / "project-701"
+        git(self.root, "clone", str(self.canonical), str(clone))
+
+        result = task_workspace.cleanup_workspace(self.task, self.meta(clone))
+
+        self.assertEqual(result["reason"], "path_not_task_owned")
+        self.assertTrue(clone.exists())
+
+    def test_ignored_task_data_is_never_removed(self) -> None:
+        clone = self.root / "project-700"
+        git(self.root, "clone", str(self.canonical), str(clone))
+        (clone / ".gitignore").write_text("data/\n", encoding="utf-8")
+        git(clone, "config", "user.email", "tests@example.invalid")
+        git(clone, "config", "user.name", "Task Agent Tests")
+        git(clone, "add", ".gitignore")
+        git(clone, "commit", "-m", "ignore runtime data")
+        git(self.canonical, "fetch", str(clone), "HEAD:refs/heads/with-ignore")
+        (clone / "data").mkdir()
+        (clone / "data" / "replay.json").write_text("{}\n", encoding="utf-8")
+
+        result = task_workspace.cleanup_workspace(self.task, self.meta(clone))
+
+        self.assertEqual(result["reason"], "protected_ignored_paths")
+        self.assertEqual(result["protected_ignored_paths"], ["data/replay.json"])
+        self.assertTrue(clone.exists())
+
+    def test_ignored_path_inspection_failure_retains_clone(self) -> None:
+        clone = self.root / "project-700"
+        git(self.root, "clone", str(self.canonical), str(clone))
+
+        with mock.patch.object(
+            task_workspace,
+            "_protected_ignored_paths",
+            return_value=None,
+        ):
+            result = task_workspace.cleanup_workspace(self.task, self.meta(clone))
+
+        self.assertEqual(result["reason"], "ignored_paths_unreadable")
+        self.assertTrue(clone.exists())
+
     def test_unnumbered_canonical_repository_is_never_removed(self) -> None:
         result = task_workspace.cleanup_workspace(
             self.task, self.meta(self.canonical)
@@ -117,6 +158,22 @@ class WorkspaceCleanupTests(unittest.TestCase):
 
         self.assertEqual(result["reason"], "path_not_task_owned")
         self.assertTrue(self.canonical.exists())
+
+    def test_clone_removal_error_is_a_retained_outcome(self) -> None:
+        clone = self.root / "project-700"
+        git(self.root, "clone", str(self.canonical), str(clone))
+
+        with mock.patch.object(
+            task_workspace.shutil,
+            "rmtree",
+            side_effect=OSError("read-only boundary"),
+        ):
+            result = task_workspace.cleanup_workspace(self.task, self.meta(clone))
+
+        self.assertEqual(result["outcome"], "retained")
+        self.assertEqual(result["reason"], "workspace_remove_failed")
+        self.assertIn("read-only boundary", result["detail"])
+        self.assertTrue(clone.exists())
 
     def test_process_with_workspace_cwd_retains_the_clone(self) -> None:
         clone = self.root / "project-700"

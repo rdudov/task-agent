@@ -168,6 +168,32 @@ def test_completed_status_retries_cleanup_for_a_finished_run(repo: Path) -> None
     ).read_text(encoding="utf-8")
 
 
+def test_cancelled_status_retries_cleanup_for_a_finished_run(repo: Path) -> None:
+    task = make_task(repo, 129, "cancel-later", status="blocked")
+    canonical = repo / "canonical"
+    seed_repository(canonical)
+    workspace = repo / "portfolio-workspace"
+    git(repo, "clone", str(canonical), str(workspace))
+    runner_dir = task / ".runner"
+    runner_dir.mkdir()
+    (runner_dir / "runner.json").write_text(
+        json.dumps(
+            {
+                "finished_at": "2026-08-28T00:00:00+00:00",
+                "access_grant": {"granted_directories": [str(workspace)]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run(repo, "set-status", "129", "cancelled")
+
+    assert not workspace.exists()
+    assert "Terminal workspace cleanup: removed (safe)" in (
+        task / "trace.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_completed_status_leaves_a_running_child_workspace_to_its_watcher(
     repo: Path,
 ) -> None:

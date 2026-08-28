@@ -29,16 +29,20 @@ completion to `blocked`; the exact result is recorded as `scope_cleanup` in
 `runner.json` and is visible through `task_runner.py status`.
 
 After completion is accepted, the watcher evaluates its single exact admitted
-target directory for workspace cleanup. The canonical `set-status … completed`
-command retries that same owner when an already-finished task is closed later by
-an installation or publication step; it leaves a still-running child to its
-watcher. Removal requires all of the following: the exact granted path is a Git
-root, the tree is clean, no live process references it, and HEAD is reachable
+target directory for workspace cleanup. The canonical `set-status` transition
+to `completed` or `cancelled` retries that same owner when an already-finished
+task is closed later by an installation, publication, or cancellation step; it
+leaves a still-running child to its watcher. Removal requires all of the
+following: the exact granted path is a Git root, the tree is clean, it contains
+no ignored durable state below `tasks/`, `data/`, or `.state/`, no live process
+references it, and HEAD is reachable
 from the linked worktree's common repository, a local origin, or an `origin`
 tracking ref refreshed successfully from the remote. Ownership is established
-by either the task number in the basename or Git itself proving that an exact
-granted target is a registered worktree or a clone of another local repository;
-an unnumbered canonical checkout remains protected. Linked worktrees are removed
+by either the current task number in the basename or Git itself proving that an
+exact granted target with no other task-like number is a registered worktree or
+a clone of another local repository; an unnumbered canonical checkout remains
+protected. A run with several granted directories is retained as
+`target_not_unique` for explicit per-workspace classification. Linked worktrees are removed
 with `git worktree remove`; standalone clones are removed directly. A retained
 target is normal and records one reason in `runner.json` as `workspace_cleanup`
 (for example `dirty`, `head_unreachable`, `live_processes`, or

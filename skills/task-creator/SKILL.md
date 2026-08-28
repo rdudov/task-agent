@@ -171,6 +171,11 @@ skills/task-creator/scripts/tasks_index.py reindex
 skills/task-creator/scripts/tasks_index.py check
 ```
 
+For a finished runner, changing status to `completed` or `cancelled` also asks
+the existing task-runner cleanup owner to re-evaluate its one exact admitted Git
+workspace. A cleanup refusal is recorded and does not undo the metadata write;
+multi-repository grants remain retained for explicit per-workspace handling.
+
 `<task>` is a **task number**, a bare directory name, or a path. Prefer the
 number: it is the task's identity, so a caller holding one is not broken by a
 later rename. A number shared by two directories — the recorded legacy
@@ -319,7 +324,7 @@ The full schema is documented in [docs/task-execution.md](../../docs/task-execut
 
 There is exactly one carrier of the status *value*: the frontmatter `status`
 field. The body's `## Status` section is a prose slot for the longer explanation
-and must not repeat the value — `set-status` only writes frontmatter, so a status
+and must not repeat the value — `set-status` only stores that value in frontmatter, so a status
 word left in the body goes stale on the first transition. `check` reports a body
 section that consists of nothing but a canonical status word disagreeing with the
 frontmatter as a note. Task directories created before 2026-07-28 still carry a

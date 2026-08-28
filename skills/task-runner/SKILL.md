@@ -236,13 +236,17 @@ Restore supervision of a child whose watcher was lost:
 When a watcher for a systemd-scoped run reaches the terminal path, it terminates
 all remaining peers in its own cgroup and verifies that only the watcher remains
 before accepting completion. It then evaluates the one recorded exact admitted
-target for task-workspace cleanup. The canonical `set-status … completed`
-command retries the same owner when a finished task is closed later after
-installation or publication, but defers a live child to its watcher. Only the
-exact granted Git root that is clean, unoccupied, and whose HEAD is reachable
-outside a standalone clone is removed. Its basename need not contain the task
-number when Git proves it is a registered worktree or a clone of another local
-repository; an unnumbered canonical checkout stays protected. Remote tracking
+target for task-workspace cleanup. The canonical `set-status` transition to
+`completed` or `cancelled` retries the same owner when a finished task closes
+later after installation, publication, or cancellation, but defers a live child
+to its watcher. Only the exact granted Git root that is clean, has no ignored
+durable state below `tasks/`, `data/`, or `.state/`, is unoccupied, and whose
+HEAD is reachable outside a standalone clone is removed. Its basename need not
+contain the task number when Git proves it is a registered worktree or a clone
+of another local repository and the name carries no other task-like number; an
+unnumbered canonical checkout stays protected. A run with several granted
+directories is retained as `target_not_unique` for explicit per-workspace
+classification. Remote tracking
 refs must refresh successfully before they count as proof; every refusal is
 retained with one reason under `scope_cleanup` or
 `workspace_cleanup` in `runner.json`, both visible through `status`.

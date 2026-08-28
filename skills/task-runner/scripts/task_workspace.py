@@ -49,6 +49,32 @@ def _path_names_task(path: Path, task_number: str) -> bool:
     )
 
 
+def _path_task_numbers(path: Path) -> set[str]:
+    """Return task-like numeric components carried by a workspace basename."""
+    return {
+        match.group(1)
+        for match in re.finditer(r"(?:^|[-_])(?:task)?(\d+)(?=[-_]|$)", path.name)
+    }
+
+
+def _protected_ignored_paths(repository: Path) -> list[str] | None:
+    """Find ignored durable task/data state that cleanup must not erase."""
+    ignored = _run_git(
+        repository,
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--",
+        "tasks/",
+        "data/",
+        ".state/",
+    )
+    if ignored.returncode:
+        return None
+    return sorted(line for line in ignored.stdout.splitlines() if line)
+
+
 def _absolute_git_path(repository: Path, value: str) -> Path:
     path = Path(value)
     if not path.is_absolute():
@@ -149,9 +175,10 @@ def inspect_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
     git_dir = _absolute_git_path(repository, git_dir_raw)
     common_dir = _absolute_git_path(repository, common_raw)
     disposable_by_git = git_dir != common_dir or _local_origin(repository) is not None
-    if (
-        not number
-        or (not _path_names_task(repository, number) and not disposable_by_git)
+    path_numbers = _path_task_numbers(repository)
+    if not number or (
+        not _path_names_task(repository, number)
+        and (path_numbers or not disposable_by_git)
     ):
         return {**result, "reason": "path_not_task_owned"}
     dirty = _run_git(repository, "status", "--porcelain=v1", "--untracked-files=all")
@@ -160,6 +187,15 @@ def inspect_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
     dirty_paths = len(dirty.stdout.splitlines())
     if dirty_paths:
         return {**result, "reason": "dirty", "dirty_paths": dirty_paths}
+    protected_ignored = _protected_ignored_paths(repository)
+    if protected_ignored is None:
+        return {**result, "reason": "ignored_paths_unreadable"}
+    if protected_ignored:
+        return {
+            **result,
+            "reason": "protected_ignored_paths",
+            "protected_ignored_paths": protected_ignored,
+        }
     head = _git_value(repository, "rev-parse", "HEAD")
     if head is None:
         return {**result, "reason": "head_unreadable"}
@@ -188,6 +224,20 @@ def cleanup_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
     dirty = _run_git(repository, "status", "--porcelain=v1", "--untracked-files=all")
     if dirty.returncode or dirty.stdout:
         return {**result, "outcome": "retained", "reason": "changed_before_removal"}
+    protected_ignored = _protected_ignored_paths(repository)
+    if protected_ignored is None:
+        return {
+            **result,
+            "outcome": "retained",
+            "reason": "ignored_paths_unreadable",
+        }
+    if protected_ignored:
+        return {
+            **result,
+            "outcome": "retained",
+            "reason": "protected_ignored_paths",
+            "protected_ignored_paths": protected_ignored,
+        }
     live = processes_referencing(repository, exclude={os.getpid()})
     if live:
         return {
@@ -214,7 +264,15 @@ def cleanup_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
                 "detail": removal.stderr.strip(),
             }
     else:
-        shutil.rmtree(repository)
+        try:
+            shutil.rmtree(repository)
+        except OSError as exc:
+            return {
+                **result,
+                "outcome": "retained",
+                "reason": "workspace_remove_failed",
+                "detail": str(exc),
+            }
     return {**result, "outcome": "removed", "reason": "safe"}
 
 

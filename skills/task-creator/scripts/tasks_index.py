@@ -819,20 +819,19 @@ def _write_command(token: str, updates, announce, after_write=None) -> int:
 
 
 def _retry_completed_workspace_cleanup(task_dir: Path) -> None:
-    """Retry the runner-owned cleanup when a finished task is closed later."""
+    """Retry the runner-owned cleanup when a finished task closes later."""
     try:
-        from task_agent import task_workspace
-    except ImportError:
-        scripts = Path(__file__).resolve().parents[2] / "task-runner" / "scripts"
-        sys.path.insert(0, str(scripts))
-        import task_workspace  # type: ignore[no-redef]
-
-    try:
+        try:
+            from task_agent import task_workspace
+        except ImportError:
+            scripts = Path(__file__).resolve().parents[2] / "task-runner" / "scripts"
+            sys.path.insert(0, str(scripts))
+            import task_workspace  # type: ignore[no-redef]
         task_workspace.record_completed_workspace_cleanup(
             task_dir,
             require_finished_run=True,
         )
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         trace_path = task_dir / "trace.md"
         if not trace_path.exists():
             trace_path.write_text("# Trace\n\n", encoding="utf-8")
@@ -869,7 +868,9 @@ def cmd_set_status(args: argparse.Namespace) -> int:
         args.slug,
         updates,
         lambda d: f"{d.name}: {args.status}{detail}",
-        _retry_completed_workspace_cleanup if args.status == "completed" else None,
+        _retry_completed_workspace_cleanup
+        if args.status in {"completed", "cancelled"}
+        else None,
     )
 
 
