@@ -2759,19 +2759,9 @@ def apply_terminal_workspace_cleanup(
     if state != "completed":
         return state
     label = "Recovered terminal" if recovered else "Terminal"
-    workspace_cleanup = task_workspace.cleanup_workspace(
-        task_dir, read_json(runner_meta_path(task_dir))
-    )
-    update_runner_meta(task_dir, {"workspace_cleanup": workspace_cleanup})
-    append_trace(
+    task_workspace.record_completed_workspace_cleanup(
         task_dir,
-        f"{label} workspace cleanup: "
-        f"{workspace_cleanup.get('outcome')} ({workspace_cleanup.get('reason')})"
-        + (
-            f" for {workspace_cleanup['path']}."
-            if workspace_cleanup.get("path")
-            else "."
-        ),
+        label=label,
     )
     return state
 

@@ -782,7 +782,7 @@ def cmd_add(args: argparse.Namespace) -> int:
     return 0
 
 
-def _write_command(token: str, updates, announce) -> int:
+def _write_command(token: str, updates, announce, after_write=None) -> int:
     """One lock from resolution through frontmatter replacement and row refresh.
 
     `updates` is a mapping, or a callable given the resolved directory:
@@ -812,8 +812,36 @@ def _write_command(token: str, updates, announce) -> int:
             refresh_row(conn, task_dir)
     finally:
         conn.close()
+    if after_write is not None:
+        after_write(task_dir)
     print(announce(task_dir))
     return 0
+
+
+def _retry_completed_workspace_cleanup(task_dir: Path) -> None:
+    """Retry the runner-owned cleanup when a finished task is closed later."""
+    try:
+        from task_agent import task_workspace
+    except ImportError:
+        scripts = Path(__file__).resolve().parents[2] / "task-runner" / "scripts"
+        sys.path.insert(0, str(scripts))
+        import task_workspace  # type: ignore[no-redef]
+
+    try:
+        task_workspace.record_completed_workspace_cleanup(
+            task_dir,
+            require_finished_run=True,
+        )
+    except (OSError, ValueError) as exc:
+        trace_path = task_dir / "trace.md"
+        if not trace_path.exists():
+            trace_path.write_text("# Trace\n\n", encoding="utf-8")
+        timestamp = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        with trace_path.open("a", encoding="utf-8") as trace:
+            trace.write(
+                f"- {timestamp} Terminal workspace cleanup: retained "
+                f"(cleanup_error: {exc}).\n"
+            )
 
 
 def cmd_set_status(args: argparse.Namespace) -> int:
@@ -837,7 +865,12 @@ def cmd_set_status(args: argparse.Namespace) -> int:
         return changes
 
     detail = f" ({args.detail})" if args.detail else ""
-    return _write_command(args.slug, updates, lambda d: f"{d.name}: {args.status}{detail}")
+    return _write_command(
+        args.slug,
+        updates,
+        lambda d: f"{d.name}: {args.status}{detail}",
+        _retry_completed_workspace_cleanup if args.status == "completed" else None,
+    )
 
 
 def cmd_set_title(args: argparse.Namespace) -> int:

@@ -235,11 +235,16 @@ Restore supervision of a child whose watcher was lost:
 
 When a watcher for a systemd-scoped run reaches the terminal path, it terminates
 all remaining peers in its own cgroup and verifies that only the watcher remains
-before accepting completion. It then evaluates the one recorded target for
-task-workspace cleanup. Only a task-number-owned Git root that is clean,
-unoccupied, and whose HEAD is reachable outside a standalone clone is removed;
-remote tracking refs must refresh successfully before they count as proof;
-every refusal is retained with one reason under `scope_cleanup` or
+before accepting completion. It then evaluates the one recorded exact admitted
+target for task-workspace cleanup. The canonical `set-status … completed`
+command retries the same owner when a finished task is closed later after
+installation or publication, but defers a live child to its watcher. Only the
+exact granted Git root that is clean, unoccupied, and whose HEAD is reachable
+outside a standalone clone is removed. Its basename need not contain the task
+number when Git proves it is a registered worktree or a clone of another local
+repository; an unnumbered canonical checkout stays protected. Remote tracking
+refs must refresh successfully before they count as proof; every refusal is
+retained with one reason under `scope_cleanup` or
 `workspace_cleanup` in `runner.json`, both visible through `status`.
 
 A recorded pid is not, by itself, a handle on a process: the kernel recycles pids, so a stale pid can name something unrelated. `process_identity(pid)` pins the specific incarnation by hashing the process start-time tick from `/proc/<pid>/stat`. Command text takes no part in it, because a process may rewrite its own argv after launch — the Node-based Codex CLI does. Both identities are recorded in `.runner/runner.json` as `process_identity` and `watcher_process_identity`.

@@ -101,7 +101,16 @@ class WorkspaceCleanupTests(unittest.TestCase):
         self.assertFalse(worktree.exists())
         self.assertEqual(git(self.canonical, "rev-parse", "task/700"), self.head)
 
-    def test_non_task_path_is_never_removed(self) -> None:
+    def test_exact_granted_path_does_not_need_a_task_number_in_its_name(self) -> None:
+        clone = self.root / "portfolio-workspace"
+        git(self.root, "clone", str(self.canonical), str(clone))
+
+        result = task_workspace.cleanup_workspace(self.task, self.meta(clone))
+
+        self.assertEqual(result["outcome"], "removed")
+        self.assertFalse(clone.exists())
+
+    def test_unnumbered_canonical_repository_is_never_removed(self) -> None:
         result = task_workspace.cleanup_workspace(
             self.task, self.meta(self.canonical)
         )

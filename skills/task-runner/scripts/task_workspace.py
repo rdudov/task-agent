@@ -7,6 +7,9 @@ data.  Every refusal is a normal retained outcome with one stable reason.
 
 from __future__ import annotations
 
+import datetime as dt
+import fcntl
+import json
 import os
 import re
 import shutil
@@ -133,14 +136,24 @@ def inspect_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
         "outcome": "retained",
         "path": str(repository),
     }
-    number = _task_number(task_dir)
-    if number is None or not _path_names_task(repository, number):
-        return {**result, "reason": "path_not_task_owned"}
     if not repository.is_dir():
         return {**result, "reason": "path_missing"}
     root = _git_value(repository, "rev-parse", "--show-toplevel")
     if root is None or Path(root).resolve() != repository:
         return {**result, "reason": "not_git_root"}
+    number = _task_number(task_dir)
+    git_dir_raw = _git_value(repository, "rev-parse", "--git-dir")
+    common_raw = _git_value(repository, "rev-parse", "--git-common-dir")
+    if not git_dir_raw or not common_raw:
+        return {**result, "reason": "git_metadata_unreadable"}
+    git_dir = _absolute_git_path(repository, git_dir_raw)
+    common_dir = _absolute_git_path(repository, common_raw)
+    disposable_by_git = git_dir != common_dir or _local_origin(repository) is not None
+    if (
+        not number
+        or (not _path_names_task(repository, number) and not disposable_by_git)
+    ):
+        return {**result, "reason": "path_not_task_owned"}
     dirty = _run_git(repository, "status", "--porcelain=v1", "--untracked-files=all")
     if dirty.returncode:
         return {**result, "reason": "git_status_failed"}
@@ -203,6 +216,55 @@ def cleanup_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
     else:
         shutil.rmtree(repository)
     return {**result, "outcome": "removed", "reason": "safe"}
+
+
+def record_completed_workspace_cleanup(
+    task_dir: Path,
+    *,
+    require_finished_run: bool = False,
+    label: str = "Terminal",
+) -> dict[str, Any] | None:
+    """Run and record the existing cleanup owner after accepted completion.
+
+    The watcher calls this after a child exits.  The metadata command calls it
+    only for an already-finished run, which covers a task closed later by an
+    installation or publication step without racing a still-running child.
+    """
+    runner_dir = task_dir / ".runner"
+    runner_meta_path = runner_dir / "runner.json"
+    if not runner_meta_path.is_file():
+        return None
+
+    with (runner_dir / "ownership.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        runner_meta = json.loads(runner_meta_path.read_text(encoding="utf-8"))
+        if require_finished_run and not runner_meta.get("finished_at"):
+            return None
+
+        prior = runner_meta.get("workspace_cleanup")
+        if isinstance(prior, dict) and prior.get("outcome") == "removed":
+            prior_path = prior.get("path")
+            if isinstance(prior_path, str) and not Path(prior_path).exists():
+                return prior
+
+        result = cleanup_workspace(task_dir, runner_meta)
+        runner_meta["workspace_cleanup"] = result
+        temporary = runner_meta_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(runner_meta, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, runner_meta_path)
+
+        trace_path = task_dir / "trace.md"
+        if not trace_path.exists():
+            trace_path.write_text("# Trace\n\n", encoding="utf-8")
+        timestamp = dt.datetime.now(dt.timezone.utc).isoformat()
+        with trace_path.open("a", encoding="utf-8") as trace:
+            trace.write(
+                f"- {timestamp} {label} workspace cleanup: "
+                f"{result.get('outcome')} ({result.get('reason')})"
+                + (f" for {result['path']}." if result.get("path") else ".")
+                + "\n"
+            )
+        return result
 
 
 def _task_cgroup(unit: str) -> Path | None:

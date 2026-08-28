@@ -24,6 +24,27 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 
+def git(repository: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repository), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def seed_repository(repository: Path) -> str:
+    repository.mkdir()
+    git(repository, "init", "-b", "main")
+    git(repository, "config", "user.email", "tests@example.invalid")
+    git(repository, "config", "user.name", "Task Agent Tests")
+    (repository / "tracked.txt").write_text("seed\n", encoding="utf-8")
+    git(repository, "add", "tracked.txt")
+    git(repository, "commit", "-m", "seed")
+    return git(repository, "rev-parse", "HEAD")
+
+
 # --- strict path containment ---------------------------------------------------
 
 @pytest.mark.parametrize("token", [
@@ -116,6 +137,73 @@ def test_a_write_touches_only_the_line_of_the_key_it_changes(repo: Path) -> None
     assert "# single quotes, trailing comment" in after
     assert "# a comment line inside the block" in after
     assert "Body prose with `status: completed` inside it." in after
+
+
+def test_completed_status_retries_cleanup_for_a_finished_run(repo: Path) -> None:
+    task = make_task(repo, 129, "publish-later", status="blocked")
+    canonical = repo / "canonical"
+    head = seed_repository(canonical)
+    workspace = repo / "portfolio-workspace"
+    git(repo, "clone", str(canonical), str(workspace))
+    runner_dir = task / ".runner"
+    runner_dir.mkdir()
+    (runner_dir / "runner.json").write_text(
+        json.dumps(
+            {
+                "finished_at": "2026-08-28T00:00:00+00:00",
+                "access_grant": {"granted_directories": [str(workspace)]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run(repo, "set-status", "129", "completed")
+
+    assert not workspace.exists()
+    recorded = json.loads((runner_dir / "runner.json").read_text(encoding="utf-8"))
+    assert recorded["workspace_cleanup"]["outcome"] == "removed"
+    assert recorded["workspace_cleanup"]["head"] == head
+    assert "Terminal workspace cleanup: removed (safe)" in (
+        task / "trace.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_completed_status_leaves_a_running_child_workspace_to_its_watcher(
+    repo: Path,
+) -> None:
+    task = make_task(repo, 129, "still-running", status="in_progress")
+    canonical = repo / "canonical"
+    seed_repository(canonical)
+    workspace = repo / "portfolio-workspace"
+    git(repo, "clone", str(canonical), str(workspace))
+    runner_dir = task / ".runner"
+    runner_dir.mkdir()
+    (runner_dir / "runner.json").write_text(
+        json.dumps(
+            {"access_grant": {"granted_directories": [str(workspace)]}}
+        ),
+        encoding="utf-8",
+    )
+
+    run(repo, "set-status", "129", "completed")
+
+    assert workspace.exists()
+    assert not (task / "trace.md").exists()
+
+
+def test_cleanup_record_failure_does_not_undo_completed_metadata(repo: Path) -> None:
+    task = make_task(repo, 129, "broken-runner-record", status="blocked")
+    runner_dir = task / ".runner"
+    runner_dir.mkdir()
+    (runner_dir / "runner.json").write_text("{broken", encoding="utf-8")
+
+    result = run(repo, "set-status", "129", "completed")
+
+    assert result.returncode == 0
+    assert 'status: "completed"' in (task / "task.md").read_text(encoding="utf-8")
+    assert "Terminal workspace cleanup: retained (cleanup_error:" in (
+        task / "trace.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_the_body_status_section_is_never_rewritten(repo: Path) -> None:
