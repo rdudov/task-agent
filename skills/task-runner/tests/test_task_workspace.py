@@ -175,13 +175,13 @@ class WorkspaceCleanupTests(unittest.TestCase):
         self.assertIn("read-only boundary", result["detail"])
         self.assertTrue(clone.exists())
 
-    def test_mounted_clone_is_retained_before_removal_starts(self) -> None:
+    def test_clone_with_mount_is_retained_before_removal_starts(self) -> None:
         clone = self.root / "project-700"
         git(self.root, "clone", str(self.canonical), str(clone))
 
         with mock.patch.object(
             task_workspace,
-            "_is_mountpoint",
+            "_contains_mountpoint",
             return_value=True,
         ), mock.patch.object(task_workspace.shutil, "rmtree") as rmtree:
             result = task_workspace.cleanup_workspace(self.task, self.meta(clone))
@@ -190,6 +190,30 @@ class WorkspaceCleanupTests(unittest.TestCase):
         self.assertEqual(result["reason"], "workspace_is_mountpoint")
         rmtree.assert_not_called()
         self.assertEqual(git(clone, "status", "--porcelain=v1"), "")
+
+    def test_worktree_with_mount_is_retained_before_removal_starts(self) -> None:
+        worktree = self.root / "project-700"
+        git(self.canonical, "worktree", "add", "-b", "task/700", str(worktree))
+
+        with mock.patch.object(
+            task_workspace,
+            "_contains_mountpoint",
+            return_value=True,
+        ):
+            result = task_workspace.cleanup_workspace(self.task, self.meta(worktree))
+
+        self.assertEqual(result["outcome"], "retained")
+        self.assertEqual(result["reason"], "workspace_is_mountpoint")
+        self.assertEqual(git(worktree, "status", "--porcelain=v1"), "")
+
+    def test_descendant_mountpoint_is_detected_from_mountinfo(self) -> None:
+        workspace = self.root / "workspace with space"
+        workspace.mkdir()
+        mountpoint = f"{workspace}/.agents".replace(" ", r"\040")
+        mountinfo = f"99 1 0:1 / {mountpoint} rw - none none rw\n"
+
+        with mock.patch.object(Path, "read_text", return_value=mountinfo):
+            self.assertTrue(task_workspace._contains_mountpoint(workspace))
 
     def test_process_with_workspace_cwd_retains_the_clone(self) -> None:
         clone = self.root / "project-700"

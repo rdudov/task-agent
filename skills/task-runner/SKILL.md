@@ -246,9 +246,9 @@ contain the task number when Git proves it is a registered worktree or a clone
 of another local repository and the name carries no other task-like number; an
 unnumbered canonical checkout stays protected. A run with several granted
 directories is retained as `target_not_unique` for explicit per-workspace
-classification. A standalone clone whose root is a mountpoint is retained before
-recursive removal starts, so an injected sandbox bind mount cannot turn a
-retained refusal into a partially deleted checkout. Remote tracking
+classification. A target with a mountpoint at its root or anywhere below it is
+retained before clone or linked-worktree removal starts, so an injected sandbox
+bind mount cannot turn a retained refusal into a partially deleted checkout. Remote tracking
 refs must refresh successfully before they count as proof; every refusal is
 retained with one reason under `scope_cleanup` or
 `workspace_cleanup` in `runner.json`, both visible through `status`.
