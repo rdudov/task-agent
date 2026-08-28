@@ -82,6 +82,27 @@ def _absolute_git_path(repository: Path, value: str) -> Path:
     return path.resolve()
 
 
+def _is_mountpoint(path: Path) -> bool:
+    """Detect bind mounts too; os.path.ismount cannot identify all of them."""
+    resolved = str(path.resolve())
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return os.path.ismount(path)
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        mountpoint = re.sub(
+            r"\\([0-7]{3})",
+            lambda match: chr(int(match.group(1), 8)),
+            fields[4],
+        )
+        if os.path.normpath(mountpoint) == resolved:
+            return True
+    return os.path.ismount(path)
+
+
 def _containing_refs(repository: Path, head: str, *prefixes: str) -> list[str]:
     command = ["for-each-ref", "--format=%(refname)", f"--contains={head}", *prefixes]
     result = _run_git(repository, *command)
@@ -264,6 +285,16 @@ def cleanup_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
                 "detail": removal.stderr.strip(),
             }
     else:
+        # An exact sandbox grant can expose the repository root as a bind mount.
+        # rmtree would then delete children before failing with EBUSY at the
+        # mounted root or one of its injected metadata views. Refuse before the
+        # first deletion so a retained outcome still means an intact checkout.
+        if _is_mountpoint(repository):
+            return {
+                **result,
+                "outcome": "retained",
+                "reason": "workspace_is_mountpoint",
+            }
         try:
             shutil.rmtree(repository)
         except OSError as exc:

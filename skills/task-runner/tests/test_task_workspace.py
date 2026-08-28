@@ -175,6 +175,22 @@ class WorkspaceCleanupTests(unittest.TestCase):
         self.assertIn("read-only boundary", result["detail"])
         self.assertTrue(clone.exists())
 
+    def test_mounted_clone_is_retained_before_removal_starts(self) -> None:
+        clone = self.root / "project-700"
+        git(self.root, "clone", str(self.canonical), str(clone))
+
+        with mock.patch.object(
+            task_workspace,
+            "_is_mountpoint",
+            return_value=True,
+        ), mock.patch.object(task_workspace.shutil, "rmtree") as rmtree:
+            result = task_workspace.cleanup_workspace(self.task, self.meta(clone))
+
+        self.assertEqual(result["outcome"], "retained")
+        self.assertEqual(result["reason"], "workspace_is_mountpoint")
+        rmtree.assert_not_called()
+        self.assertEqual(git(clone, "status", "--porcelain=v1"), "")
+
     def test_process_with_workspace_cwd_retains_the_clone(self) -> None:
         clone = self.root / "project-700"
         git(self.root, "clone", str(self.canonical), str(clone))

@@ -43,7 +43,9 @@ exact granted target with no other task-like number is a registered worktree or
 a clone of another local repository; an unnumbered canonical checkout remains
 protected. A run with several granted directories is retained as
 `target_not_unique` for explicit per-workspace classification. Linked worktrees are removed
-with `git worktree remove`; standalone clones are removed directly. A retained
+with `git worktree remove`; standalone clones are removed directly only when
+their root is not a mountpoint, because a sandbox bind mount can make recursive
+deletion fail after already removing children. A retained
 target is normal and records one reason in `runner.json` as `workspace_cleanup`
 (for example `dirty`, `head_unreachable`, `live_processes`, or
 `path_not_task_owned`). No daemon, timer, cleanup registry, or second cleanup
