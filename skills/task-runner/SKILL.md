@@ -260,6 +260,13 @@ bind mount cannot turn a retained refusal into a partially deleted checkout. Rem
 refs must refresh successfully before they count as proof; every refusal is
 retained with one reason under `scope_cleanup` or
 `workspace_cleanup` in `runner.json`, both visible through `status`.
+If `git worktree remove` fails, the owner rechecks the checkout path: an intact
+path is `retained` with `worktree_remove_failed`, while a checkout Git already
+deleted is `removed` with `worktree_registration_remove_failed`, making the
+remaining administrative entry explicit instead of falsely claiming the bytes
+were retained. Multi-workspace results use `all_task_workspaces_removed`,
+`some_task_workspaces_retained`, or `no_task_workspaces`; a failed Git listing is
+recorded per target as `worktree_list_failed`.
 
 A recorded pid is not, by itself, a handle on a process: the kernel recycles pids, so a stale pid can name something unrelated. `process_identity(pid)` pins the specific incarnation by hashing the process start-time tick from `/proc/<pid>/stat`. Command text takes no part in it, because a process may rewrite its own argv after launch — the Node-based Codex CLI does. Both identities are recorded in `.runner/runner.json` as `process_identity` and `watcher_process_identity`.
 

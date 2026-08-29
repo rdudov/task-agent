@@ -317,6 +317,13 @@ def cleanup_workspace(
             text=True,
         )
         if removal.returncode:
+            if not repository.exists():
+                return {
+                    **result,
+                    "outcome": "removed",
+                    "reason": "worktree_registration_remove_failed",
+                    "detail": removal.stderr.strip(),
+                }
             return {
                 **result,
                 "outcome": "retained",

@@ -56,7 +56,14 @@ in `runner.json`. Linked worktrees are removed with `git worktree remove`;
 standalone clones are removed directly. Both paths
 first refuse a target with a mountpoint at its root or anywhere below it,
 because a sandbox bind mount can make removal fail after already deleting
-ordinary children. A retained
+ordinary children. If `git worktree remove` exits unsuccessfully, the owner
+rechecks the checkout path. An intact checkout is retained as
+`worktree_remove_failed`; one Git already deleted is recorded honestly as
+`removed` with `worktree_registration_remove_failed`, which exposes the stale
+administrative entry that still needs Git pruning. Aggregate results are
+`all_task_workspaces_removed`, `some_task_workspaces_retained`, or
+`no_task_workspaces`, and an unreadable Git worktree list is
+`worktree_list_failed` for that discovery target. A retained
 target is normal and records one reason in `runner.json` as `workspace_cleanup`;
 the task trace also names the path and reason for each retained workspace
 (for example `dirty`, `head_unreachable`, `live_processes`, or

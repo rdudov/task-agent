@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -101,6 +102,57 @@ class WorkspaceCleanupTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "removed")
         self.assertFalse(worktree.exists())
         self.assertEqual(git(self.canonical, "rev-parse", "task/700"), self.head)
+
+    def test_failed_worktree_removal_retains_an_intact_checkout(self) -> None:
+        worktree = self.root / "project-700"
+        git(self.canonical, "worktree", "add", "-b", "task/700", str(worktree))
+        failed = subprocess.CompletedProcess(
+            args=["git", "worktree", "remove"],
+            returncode=1,
+            stdout="",
+            stderr="administrative removal failed",
+        )
+        original_run = task_workspace.subprocess.run
+
+        def fail_remove(*args, **kwargs):
+            if "worktree" in args[0] and "remove" in args[0]:
+                return failed
+            return original_run(*args, **kwargs)
+
+        with mock.patch.object(
+            task_workspace.subprocess, "run", side_effect=fail_remove
+        ):
+            result = task_workspace.cleanup_workspace(self.task, self.meta(worktree))
+
+        self.assertEqual(result["outcome"], "retained")
+        self.assertEqual(result["reason"], "worktree_remove_failed")
+        self.assertTrue(worktree.exists())
+
+    def test_failed_worktree_removal_reports_deleted_checkout_honestly(self) -> None:
+        worktree = self.root / "project-700"
+        git(self.canonical, "worktree", "add", "-b", "task/700", str(worktree))
+        original_run = task_workspace.subprocess.run
+
+        def remove_then_fail(*args, **kwargs):
+            if "worktree" in args[0] and "remove" in args[0]:
+                shutil.rmtree(worktree)
+                return subprocess.CompletedProcess(
+                    args=args[0],
+                    returncode=1,
+                    stdout="",
+                    stderr="administrative removal failed",
+                )
+            return original_run(*args, **kwargs)
+
+        with mock.patch.object(
+            task_workspace.subprocess, "run", side_effect=remove_then_fail
+        ):
+            result = task_workspace.cleanup_workspace(self.task, self.meta(worktree))
+
+        self.assertEqual(result["outcome"], "removed")
+        self.assertEqual(result["reason"], "worktree_registration_remove_failed")
+        self.assertFalse(worktree.exists())
+        self.assertIn("administrative removal failed", result["detail"])
 
     def test_exact_granted_path_does_not_need_a_task_number_in_its_name(self) -> None:
         clone = self.root / "portfolio-workspace"
