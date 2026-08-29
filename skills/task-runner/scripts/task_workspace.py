@@ -526,12 +526,16 @@ def record_completed_workspace_cleanup(
                 + "\n"
             )
             for workspace in result.get("workspaces", []):
-                if workspace.get("outcome") != "retained":
-                    continue
-                trace.write(
-                    f"- {timestamp} {label} workspace retained "
-                    f"({workspace.get('reason')}) for {workspace.get('path')}.\n"
-                )
+                if workspace.get("outcome") == "retained":
+                    trace.write(
+                        f"- {timestamp} {label} workspace retained "
+                        f"({workspace.get('reason')}) for {workspace.get('path')}.\n"
+                    )
+                elif workspace.get("reason") != "safe":
+                    trace.write(
+                        f"- {timestamp} {label} workspace removed "
+                        f"({workspace.get('reason')}) for {workspace.get('path')}.\n"
+                    )
         return result
 
 

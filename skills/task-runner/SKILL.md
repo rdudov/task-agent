@@ -264,7 +264,7 @@ If `git worktree remove` fails, the owner rechecks the checkout path: an intact
 path is `retained` with `worktree_remove_failed`, while a checkout Git already
 deleted is `removed` with `worktree_registration_remove_failed`, making the
 remaining administrative entry explicit instead of falsely claiming the bytes
-were retained. Multi-workspace results use `all_task_workspaces_removed`,
+were retained; an aggregate trace names that path and reason too. Multi-workspace results use `all_task_workspaces_removed`,
 `some_task_workspaces_retained`, or `no_task_workspaces`; a failed Git listing is
 recorded per target as `worktree_list_failed`.
 

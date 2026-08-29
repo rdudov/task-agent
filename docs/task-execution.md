@@ -60,7 +60,8 @@ ordinary children. If `git worktree remove` exits unsuccessfully, the owner
 rechecks the checkout path. An intact checkout is retained as
 `worktree_remove_failed`; one Git already deleted is recorded honestly as
 `removed` with `worktree_registration_remove_failed`, which exposes the stale
-administrative entry that still needs Git pruning. Aggregate results are
+administrative entry that still needs Git pruning; an aggregate task trace also
+names that path and reason. Aggregate results are
 `all_task_workspaces_removed`, `some_task_workspaces_retained`, or
 `no_task_workspaces`, and an unreadable Git worktree list is
 `worktree_list_failed` for that discovery target. A retained

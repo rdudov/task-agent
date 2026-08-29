@@ -374,7 +374,7 @@ class WorkspaceCleanupTests(unittest.TestCase):
         aggregate = {
             "outcome": "retained",
             "reason": "some_task_workspaces_retained",
-            "removed": 0,
+            "removed": 1,
             "retained": 2,
             "workspaces": [
                 {"outcome": "retained", "reason": "dirty", "path": str(first)},
@@ -382,6 +382,11 @@ class WorkspaceCleanupTests(unittest.TestCase):
                     "outcome": "retained",
                     "reason": "live_processes",
                     "path": str(second),
+                },
+                {
+                    "outcome": "removed",
+                    "reason": "worktree_registration_remove_failed",
+                    "path": str(self.task / "worktrees" / "partial"),
                 },
             ],
         }
@@ -394,6 +399,11 @@ class WorkspaceCleanupTests(unittest.TestCase):
         trace = (self.task / "trace.md").read_text(encoding="utf-8")
         self.assertIn(f"workspace retained (dirty) for {first}.", trace)
         self.assertIn(f"workspace retained (live_processes) for {second}.", trace)
+        self.assertIn(
+            "workspace removed (worktree_registration_remove_failed) for "
+            f"{self.task / 'worktrees' / 'partial'}.",
+            trace,
+        )
 
 
 class ScopeCleanupTests(unittest.TestCase):
