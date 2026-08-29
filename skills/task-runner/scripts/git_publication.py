@@ -15,8 +15,17 @@ the remotes are asked directly rather than through `refs/remotes/*`, which is a
 local file any command can write without a byte leaving the disk. Deciding that
 a remote's tip already contains a branch is still a walk over parents in this
 clone, which `refs/replace/*` and the graft file rewrite just as cheaply, so
-those are off here too. The resulting claim is bounded and worth stating
-plainly: every remote this repository is configured with reported these commits.
+those are off here too.
+
+A remote is only worth asking if answering yes means something. Seven of the
+twenty-five checkouts on the host this was written for have a single remote that
+is a directory beside them, so a push there copies the work from one place on
+the disk to another and the disk still loses all of it. Such a remote is not
+storage this gate accepts; it is named, and a repository that has only remotes
+like it is refused exactly as a repository with no remote is. What passing means
+is therefore bounded and worth stating plainly: some remote that is not a
+directory on this machine reported these commits. Where its bytes actually sit
+is its transport's business and is not claimed here.
 
 A repository whose state is deliberately left alone is named in the task's own
 `publication.json`, with a reason and the person or role who will send it. That
@@ -131,6 +140,52 @@ def _unsaved_work(repository: Path) -> str | None:
     )
 
 
+def _same_machine_directory(repository: Path, url: str) -> Path | None:
+    """The directory on this machine a remote URL names, if it names one.
+
+    Git reaches a plain path, and the `file://` spelling of one, by opening it
+    here; anything else it hands to a transport. Only the first kind can be
+    shown to keep the work on this disk, and showing that is all this decides.
+    """
+    candidate = url
+    if candidate.startswith("file://"):
+        host, _slash, path = candidate[len("file://") :].partition("/")
+        if host not in ("", "localhost"):
+            return None
+        candidate = f"/{path}"
+    location = Path(candidate).expanduser()
+    if not location.is_absolute():
+        # Git resolves a relative remote against the repository itself.
+        location = repository / location
+    try:
+        resolved = location.resolve()
+    except OSError:
+        return None
+    return resolved if resolved.is_dir() else None
+
+
+def _offsite_remotes(repository: Path) -> tuple[list[str], list[str]]:
+    """Remotes that could hold the work elsewhere, and the ones that cannot.
+
+    `git ls-remote --get-url` is asked rather than the configured string,
+    because that is the address the query below will really use, rewrites and
+    all.
+    """
+    remotes = _git(repository, "remote")
+    if remotes.returncode:
+        return [], []
+    offsite: list[str] = []
+    on_this_machine: list[str] = []
+    for remote in remotes.stdout.split():
+        url = _git(repository, "ls-remote", "--get-url", remote).stdout.strip()
+        directory = _same_machine_directory(repository, url) if url else None
+        if directory is None:
+            offsite.append(remote)
+        else:
+            on_this_machine.append(f"{remote} is the directory {directory}")
+    return offsite, on_this_machine
+
+
 def _remote_commits(repository: Path) -> tuple[list[str], int, str | None]:
     """Ask every remote what it holds: its tips known here, its tips unknown, why not.
 
@@ -139,15 +194,20 @@ def _remote_commits(repository: Path) -> tuple[list[str], int, str | None]:
     the disk; the whole point of this gate is that the bytes are somewhere else.
     A remote that cannot answer leaves the question open, which is a refusal.
     """
-    remotes = _git(repository, "remote")
-    if remotes.returncode or not remotes.stdout.split():
+    offsite, on_this_machine = _offsite_remotes(repository)
+    if not offsite:
+        if not on_this_machine:
+            return [], 0, (
+                f"{repository} has no Git remote, so nothing committed there can "
+                "leave this disk"
+            )
         return [], 0, (
-            f"{repository} has no Git remote, so nothing committed there can "
-            "leave this disk"
+            f"{repository} has no remote off this machine — {_named(on_this_machine)} "
+            "— so a push there leaves every copy on this disk"
         )
 
     reported: list[str] = []
-    for remote in remotes.stdout.split():
+    for remote in offsite:
         listed = _git(
             repository,
             "ls-remote",
@@ -252,7 +312,10 @@ def _unpublished_history(repository: Path) -> str | None:
         if unknown_tips
         else ""
     )
-    return f"{repository} has {_named(clauses)} that no remote has{unfetched}"
+    return (
+        f"{repository} has {_named(clauses)} that no remote off this machine "
+        f"has{unfetched}"
+    )
 
 
 def _shared_history(repository: Path) -> str:

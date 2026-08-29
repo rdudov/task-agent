@@ -902,17 +902,29 @@ its local refs hold that its remotes do not. The reasons are:
 - a dirty working tree, naming up to eight uncommitted paths and how many more
   there are — untracked non-ignored files included, because bytes in no Git
   object are the plainest case of work living in one copy;
-- commits no remote has, naming every local branch (and the detached HEAD) that
-  holds them with its count, not only the checked-out one: a branch nobody has
-  looked at since committing to it is the case this gate exists for;
+- commits no remote off this machine has, naming every local branch (and the
+  detached HEAD) that holds them with its count, not only the checked-out one: a
+  branch nobody has looked at since committing to it is the case this gate exists
+  for;
 - no remote at all, so nothing committed there can leave this disk;
+- no remote except a directory on this machine, named with the directory it is:
+  a push into the clone next door copies the work from one place on the disk to
+  another, and the disk still loses both;
 - a remote that could not answer, which leaves the question open rather than
   answered.
 
-`refs/remotes/*` is deliberately not the evidence. It is an ordinary local ref
-namespace that `git update-ref` writes without a byte leaving the disk, so each
-remote is asked directly with `git ls-remote` and the commits it reports are what
-count as published. That is a network call: `TASK_AGENT_REMOTE_QUERY_TIMEOUT_SECONDS`
+Which remotes are asked is itself part of the question. Git reaches a plain path,
+and the `file://` spelling of one, by opening it here, so a remote whose
+`git ls-remote --get-url` answer is a directory on this machine cannot be
+evidence that anything left the disk — seven of the twenty-five checkouts on the
+host this was written for have exactly one such remote. Those are named and not
+asked; a repository left with none but them is refused like one with no remote at
+all, and a repository that also has a real remote is judged by that one.
+
+`refs/remotes/*` is deliberately not the evidence either. It is an ordinary local
+ref namespace that `git update-ref` writes without a byte leaving the disk, so
+each remaining remote is asked directly with `git ls-remote` and the commits it
+reports are what count as published. That is a network call: `TASK_AGENT_REMOTE_QUERY_TIMEOUT_SECONDS`
 bounds it, defaulting to 30, and a remote that errors or times out is refused by
 name rather than assumed good. A commit the remote reports but this repository
 does not have is left out of the comparison, which can only make the answer more
@@ -925,9 +937,10 @@ local files rewrite that walk. A `refs/replace/*` ref and the graft file each
 make a genuine remote tip look like it descends from work that was never sent,
 again without a byte leaving the disk, so every command this gate runs has
 `GIT_NO_REPLACE_OBJECTS=1` and an empty `GIT_GRAFT_FILE`. What the gate then
-states is exactly this and no more: every remote this repository is configured
-with reported these commits. Where those remotes keep them is the repository's
-own configuration, not a finding of this gate.
+states is exactly this and no more: some remote that is not a directory on this
+machine reported these commits. Whether that remote's own storage is one disk, a
+building away, or a service is beyond what a local check can see, and the gate
+does not claim it.
 
 An unborn HEAD above a clean tree holds nothing back and is not refused.
 
@@ -1085,7 +1098,7 @@ current task status or current refusal text.
 - Do not assume backward compatibility or a legacy fallback path unless the user request or project contract explicitly requires it.
 - Mocked providers, fake models, and test-only harnesses are useful for unit coverage but are not sufficient acceptance evidence for production-reachable runtime branches by themselves.
 - If behavior diverges by threshold, mode, provider, credential, feature flag, model path, transport, or fallback logic, each production-relevant branch touched by the task needs explicit validation evidence or a clearly recorded verification gap.
-- If git-tracked source changes in a repository with a remote, fetch and sync the base branch before branching, commit after verification, run the pre-push leak check, then push. Completion refuses a granted repository or task-owned worktree that is dirty, holds commits no remote has, or has no remote at all; local-only work or a blocked push clears that refusal only through the task's own `publication.json`, which names the repository, the reason, and who will send it. See "Saved And Published".
+- If git-tracked source changes in a repository with a remote, fetch and sync the base branch before branching, commit after verification, run the pre-push leak check, then push. Completion refuses a granted repository or task-owned worktree that is dirty, holds commits no remote off this machine has, or has no such remote at all — a remote that is a directory here is named and does not count; local-only work or a blocked push clears that refusal only through the task's own `publication.json`, which names the repository, the reason, and who will send it. See "Saved And Published".
 - If task lifecycle, skill behavior, orchestration, restore, or resume behavior changes, update project docs in the same source change.
 - If a source change was committed locally and then found to be wrong before it was pushed or shared, prefer removing that local commit with `git reset` or another explicit history rewrite after checking the working tree and commit graph. Use a revert commit only for pushed/shared history, ambiguous ownership, or explicit audit-history requirements.
 - If the task-runner, prompt pipeline, or parent orchestration caused a material mistake, fix the active task and update the relevant skill/docs/rules in the same corrective pass so the failure mode is less likely to recur. If the prevention change is substantial or changes policy tradeoffs, record concrete options and ask the user before implementing the broad change.

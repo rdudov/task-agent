@@ -35,10 +35,27 @@ def commit(repository: Path, name: str, message: str = "seed") -> str:
     return git(repository, "rev-parse", "HEAD")
 
 
+def treat_the_local_origin_as_offsite(test: unittest.TestCase) -> None:
+    """Let a test push somewhere real while asking a question about something else.
+
+    A test can only create a remote on the machine it runs on, and this gate
+    refuses exactly that (see `RemotesOnThisMachineTests`, which uses real
+    directories and no patch). So tests whose subject is dirty files, branch
+    counting or deferrals stub the one answer they are not about: where the
+    remote lives.
+    """
+    patch = unittest.mock.patch.object(
+        git_publication, "_same_machine_directory", return_value=None
+    )
+    patch.start()
+    test.addCleanup(patch.stop)
+
+
 class SavedAndPublishedTests(unittest.TestCase):
     """What keeps a task's Git work on one disk, named one repository at a time."""
 
     def setUp(self) -> None:
+        treat_the_local_origin_as_offsite(self)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
         self.origin = self.root / "origin.git"
@@ -118,7 +135,7 @@ class SavedAndPublishedTests(unittest.TestCase):
 
         self.assertEqual(len(problems), 1)
         self.assertIn("2 commits on branch main", problems[0])
-        self.assertIn("no remote has", problems[0])
+        self.assertIn("no remote off this machine has", problems[0])
 
     def test_pushing_those_commits_clears_the_refusal(self) -> None:
         self._grant(self.project)
@@ -198,7 +215,7 @@ class SavedAndPublishedTests(unittest.TestCase):
 
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("1 commit on branch task/side", problems[0])
-        self.assertIn("no remote has", problems[0])
+        self.assertIn("no remote off this machine has", problems[0])
 
     def test_every_unpublished_branch_is_named_in_one_refusal(self) -> None:
         self._grant(self.project)
@@ -221,7 +238,7 @@ class SavedAndPublishedTests(unittest.TestCase):
 
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("1 commit on branch main", problems[0])
-        self.assertIn("no remote has", problems[0])
+        self.assertIn("no remote off this machine has", problems[0])
 
     def _local_parent_of(self, published: str, unpublished: str) -> str:
         """A commit holding the published tree with unpublished work as parent."""
@@ -316,7 +333,7 @@ class SavedAndPublishedTests(unittest.TestCase):
         commit(self.project, "first.txt", "first")
         self._defer(self.root / "elsewhere")
 
-        self.assertIn("no remote has", git_publication.publication_problems(self.task)[0])
+        self.assertIn("no remote off this machine has", git_publication.publication_problems(self.task)[0])
 
     def test_a_deferral_without_an_owner_is_refused_by_name(self) -> None:
         self._grant(self.project)
@@ -327,7 +344,7 @@ class SavedAndPublishedTests(unittest.TestCase):
 
         self.assertEqual(len(problems), 2)
         self.assertIn("`owner`", problems[0])
-        self.assertIn("no remote has", problems[1])
+        self.assertIn("no remote off this machine has", problems[1])
 
     def test_an_unreadable_deferral_record_defers_nothing(self) -> None:
         self._grant(self.project)
@@ -341,10 +358,131 @@ class SavedAndPublishedTests(unittest.TestCase):
         self.assertIn("cannot be read", problems[0])
 
 
+class RemotesOnThisMachineTests(unittest.TestCase):
+    """A remote that is a directory here does not get the work off this disk.
+
+    Real directories and real pushes, no patch: this is the one question the
+    other classes stub out. Seven of the twenty-five checkouts on the host this
+    was written for are in exactly this state.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        self.mirror = self.root / "mirror.git"
+        git(self.root, "init", "--bare", "-b", "main", str(self.mirror))
+        self.project = self.root / "project"
+        self.project.mkdir()
+        git(self.project, "init", "-b", "main")
+        commit(self.project, "tracked.txt")
+        self.task = self.root / "700-example"
+        (self.task / ".runner").mkdir(parents=True)
+        (self.task / "task.md").write_text(
+            '---\nid: 700\nslug: "example"\ntitle: "x"\ndate: 2026-08-27\n'
+            'status: "completed"\n---\n# x\n',
+            encoding="utf-8",
+        )
+        (self.task / "plan.md").write_text("# Plan\n", encoding="utf-8")
+        (self.task / "task_contract.json").write_text(
+            '{"version": 1}', encoding="utf-8"
+        )
+        (self.task / ".runner" / "runner.json").write_text(
+            json.dumps(
+                {
+                    "workflow": "standard",
+                    "access_grant": {"granted_directories": [str(self.project)]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_the_close_is_refused_even_though_the_push_succeeded(self) -> None:
+        git(self.project, "remote", "add", "origin", str(self.mirror))
+        git(self.project, "push", "-u", "origin", "main")
+
+        ready, reason = task_completion.completion_ready(self.task, workflow="standard")
+
+        self.assertFalse(ready)
+        self.assertEqual(reason.gate, "git_publication")
+        self.assertIn("no remote off this machine", reason)
+
+    def test_pushing_to_a_directory_beside_the_clone_is_still_one_disk(self) -> None:
+        git(self.project, "remote", "add", "origin", str(self.mirror))
+        git(self.project, "push", "-u", "origin", "main")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("no remote off this machine", problems[0])
+        self.assertIn("origin is the directory", problems[0])
+        self.assertIn(str(self.mirror), problems[0])
+
+    def test_the_file_url_spelling_of_that_directory_is_the_same_place(self) -> None:
+        git(self.project, "remote", "add", "origin", f"file://{self.mirror}")
+        git(self.project, "push", "-u", "origin", "main")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("origin is the directory", problems[0])
+
+    def test_a_remote_reached_by_transport_is_the_one_asked(self) -> None:
+        """A local mirror holding everything does not answer for a real remote."""
+        git(self.project, "remote", "add", "origin", str(self.mirror))
+        git(self.project, "push", "-u", "origin", "main")
+        git(
+            self.project,
+            "remote",
+            "add",
+            "publish",
+            "git@github.invalid:nobody/nothing.git",
+        )
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("cannot be compared with remote publish", problems[0])
+
+    def test_a_relative_remote_path_is_resolved_against_the_repository(self) -> None:
+        git(self.project, "remote", "add", "origin", "../mirror.git")
+        git(self.project, "push", "-u", "origin", "main")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(str(self.mirror), problems[0])
+
+    def test_a_recorded_deferral_still_clears_it(self) -> None:
+        git(self.project, "remote", "add", "origin", str(self.mirror))
+        git(self.project, "push", "-u", "origin", "main")
+        (self.task / git_publication.PUBLICATION_RECORD_NAME).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "deferred": [
+                        {
+                            "repository": str(self.project),
+                            "reason": "this clone mirrors a repository that is "
+                            "published from elsewhere",
+                            "owner": "product owner",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(git_publication.publication_problems(self.task), [])
+
+
 class CompletionRefusesUnpublishedWorkTests(unittest.TestCase):
     """The existing completion step is where the question is asked."""
 
     def setUp(self) -> None:
+        treat_the_local_origin_as_offsite(self)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
         self.origin = self.root / "origin.git"
@@ -411,7 +549,8 @@ class TheChildIsToldAboutTheGateTests(unittest.TestCase):
             Path("/tasks/700-example"), repository=Path("/repo")
         )
 
-        self.assertIn("whose commits no remote has", prompt)
+        self.assertIn("whose commits no remote off this machine has", prompt)
+        self.assertIn("a directory on this machine does not count", prompt)
         self.assertIn("/tasks/700-example/publication.json", prompt)
         self.assertIn(
             '{"schema_version": 1, "deferred": [{"repository": "...", '
