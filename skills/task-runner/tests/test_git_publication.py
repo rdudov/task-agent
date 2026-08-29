@@ -5,12 +5,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import git_publication
 import task_completion
 import task_runner
+import task_workspace
 
 
 def git(repository: Path, *arguments: str) -> str:
@@ -165,13 +167,96 @@ class SavedAndPublishedTests(unittest.TestCase):
         worktree = self.task / "checkout"
         git(self.project, "worktree", "add", "-b", "task/700", str(worktree))
         commit(worktree, "work.txt", "work that lives only here")
+        git(worktree, "push", "-u", "origin", "task/700")
+        (worktree / "unsaved.txt").write_text("only in this checkout", encoding="utf-8")
         self._grant(self.project)
 
         problems = git_publication.publication_problems(self.task)
 
-        self.assertEqual(len(problems), 1)
+        self.assertEqual(len(problems), 1, problems)
         self.assertIn(str(worktree), problems[0])
+        self.assertIn("unsaved.txt", problems[0])
+
+    def test_a_worktree_does_not_repeat_the_branches_it_shares(self) -> None:
+        worktree = self.task / "checkout"
+        git(self.project, "worktree", "add", "-b", "task/700", str(worktree))
+        commit(worktree, "work.txt", "work that lives only here")
+        self._grant(self.project)
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
         self.assertIn("1 commit on branch task/700", problems[0])
+
+    def test_a_branch_nobody_has_checked_out_is_still_judged(self) -> None:
+        self._grant(self.project)
+        git(self.project, "checkout", "-b", "task/side")
+        commit(self.project, "side.txt", "side")
+        git(self.project, "checkout", "main")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("1 commit on branch task/side", problems[0])
+        self.assertIn("no remote has", problems[0])
+
+    def test_every_unpublished_branch_is_named_in_one_refusal(self) -> None:
+        self._grant(self.project)
+        commit(self.project, "first.txt", "first")
+        git(self.project, "checkout", "-b", "task/side")
+        commit(self.project, "side.txt", "side")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("1 commit on branch main", problems[0])
+        self.assertIn("2 commits on branch task/side", problems[0])
+
+    def test_a_local_remote_tracking_ref_is_not_a_remote(self) -> None:
+        self._grant(self.project)
+        commit(self.project, "first.txt", "first")
+        git(self.project, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("1 commit on branch main", problems[0])
+        self.assertIn("no remote has", problems[0])
+
+    def test_a_remote_that_cannot_answer_is_refused_not_assumed(self) -> None:
+        self._grant(self.project)
+        commit(self.project, "first.txt", "first")
+        git(self.project, "remote", "set-url", "origin", str(self.root / "gone.git"))
+        git(self.project, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("cannot be compared with remote origin", problems[0])
+        self.assertIn("ever left this disk is unknown", problems[0])
+
+    def test_a_workspace_set_that_cannot_be_listed_is_refused(self) -> None:
+        self._grant(self.project)
+
+        with unittest.mock.patch.object(
+            task_workspace, "_registered_worktrees", return_value=None
+        ):
+            problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("cannot list its Git worktrees", problems[0])
+        self.assertIn("worktree_list_failed", problems[0])
+
+    def test_a_deferral_clears_a_workspace_set_that_cannot_be_listed(self) -> None:
+        self._grant(self.project)
+        self._defer(self.project)
+
+        with unittest.mock.patch.object(
+            task_workspace, "_registered_worktrees", return_value=None
+        ):
+            problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(problems, [])
 
     def test_a_granted_directory_that_is_not_a_repository_is_not_one(self) -> None:
         plain = self.root / "notes"

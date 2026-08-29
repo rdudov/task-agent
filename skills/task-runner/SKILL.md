@@ -888,15 +888,36 @@ repository its own author admissions granted, plus every Git worktree registered
 below its task directory — the same set the workspace cleanup owner discovers,
 before cleanup narrows it to what may be deleted. Nothing is scanned, no
 registry of repositories is kept, and a granted directory that is not a Git
-repository is not one of them. Each is refused for exactly one reason:
+repository is not one of them. A set that could not be computed is not an empty
+set: if that owner cannot list a repository's worktrees, or a path carries a
+`.git` this Git cannot read, the unknown itself is the refusal.
+
+Two questions are asked, because they fail in different places. Every working
+tree is asked what it holds that no commit does, since uncommitted bytes exist in
+exactly one directory and a task's own worktree hides them from the checkout it
+was added from. Every distinct history — worktrees share the branches of the
+repository they came from, so it is asked once for all of them — is asked what
+its local refs hold that its remotes do not. The reasons are:
 
 - a dirty working tree, naming up to eight uncommitted paths and how many more
   there are — untracked non-ignored files included, because bytes in no Git
   object are the plainest case of work living in one copy;
-- commits no remote has, naming the branch (or the detached HEAD) and the count,
-  measured against local remote-tracking refs so the check neither fetches nor
-  needs the network;
-- no remote at all, so nothing committed there can leave this disk.
+- commits no remote has, naming every local branch (and the detached HEAD) that
+  holds them with its count, not only the checked-out one: a branch nobody has
+  looked at since committing to it is the case this gate exists for;
+- no remote at all, so nothing committed there can leave this disk;
+- a remote that could not answer, which leaves the question open rather than
+  answered.
+
+`refs/remotes/*` is deliberately not the evidence. It is an ordinary local ref
+namespace that `git update-ref` writes without a byte leaving the disk, so each
+remote is asked directly with `git ls-remote` and the commits it reports are what
+count as published. That is a network call: `TASK_AGENT_REMOTE_QUERY_TIMEOUT_SECONDS`
+bounds it, defaulting to 30, and a remote that errors or times out is refused by
+name rather than assumed good. A commit the remote reports but this repository
+does not have is left out of the comparison, which can only make the answer more
+cautious; when that happens under a refusal, the refusal says so and says to
+fetch.
 
 An unborn HEAD above a clean tree holds nothing back and is not refused.
 
