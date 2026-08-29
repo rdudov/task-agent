@@ -919,6 +919,16 @@ does not have is left out of the comparison, which can only make the answer more
 cautious; when that happens under a refusal, the refusal says so and says to
 fetch.
 
+Asking the remote settles which commits it holds; whether a local branch is
+already inside one of them is still a walk over parents here, and Git lets two
+local files rewrite that walk. A `refs/replace/*` ref and the graft file each
+make a genuine remote tip look like it descends from work that was never sent,
+again without a byte leaving the disk, so every command this gate runs has
+`GIT_NO_REPLACE_OBJECTS=1` and an empty `GIT_GRAFT_FILE`. What the gate then
+states is exactly this and no more: every remote this repository is configured
+with reported these commits. Where those remotes keep them is the repository's
+own configuration, not a finding of this gate.
+
 An unborn HEAD above a clean tree holds nothing back and is not refused.
 
 The refusal is engine-owned, which is what lets an approved review still name

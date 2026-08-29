@@ -223,6 +223,45 @@ class SavedAndPublishedTests(unittest.TestCase):
         self.assertIn("1 commit on branch main", problems[0])
         self.assertIn("no remote has", problems[0])
 
+    def _local_parent_of(self, published: str, unpublished: str) -> str:
+        """A commit holding the published tree with unpublished work as parent."""
+        return git(
+            self.project,
+            "commit-tree",
+            f"{published}^{{tree}}",
+            "-p",
+            unpublished,
+            "-m",
+            "a local rewrite of what the remote tip contains",
+        )
+
+    def test_a_replace_ref_cannot_put_local_work_inside_a_remote_tip(self) -> None:
+        self._grant(self.project)
+        published = git(self.project, "rev-parse", "HEAD")
+        git(self.project, "checkout", "-b", "task/side")
+        unpublished = commit(self.project, "side.txt", "side")
+        rewritten = self._local_parent_of(published, unpublished)
+        git(self.project, "replace", published, rewritten)
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("1 commit on branch task/side", problems[0])
+
+    def test_a_graft_file_cannot_put_local_work_inside_a_remote_tip(self) -> None:
+        self._grant(self.project)
+        published = git(self.project, "rev-parse", "HEAD")
+        git(self.project, "checkout", "-b", "task/side")
+        unpublished = commit(self.project, "side.txt", "side")
+        info = Path(git(self.project, "rev-parse", "--absolute-git-dir")) / "info"
+        info.mkdir(exist_ok=True)
+        (info / "grafts").write_text(f"{published} {unpublished}\n", encoding="utf-8")
+
+        problems = git_publication.publication_problems(self.task)
+
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("1 commit on branch task/side", problems[0])
+
     def test_a_remote_that_cannot_answer_is_refused_not_assumed(self) -> None:
         self._grant(self.project)
         commit(self.project, "first.txt", "first")

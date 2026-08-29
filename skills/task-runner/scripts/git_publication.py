@@ -12,7 +12,11 @@ what it holds that no commit does: uncommitted bytes live in exactly one
 directory, and a task's own worktree hides them from the main checkout. Every
 distinct history is asked what its local refs hold that its remotes do not, and
 the remotes are asked directly rather than through `refs/remotes/*`, which is a
-local file any command can write without a byte leaving the disk.
+local file any command can write without a byte leaving the disk. Deciding that
+a remote's tip already contains a branch is still a walk over parents in this
+clone, which `refs/replace/*` and the graft file rewrite just as cheaply, so
+those are off here too. The resulting claim is bounded and worth stating
+plainly: every remote this repository is configured with reported these commits.
 
 A repository whose state is deliberately left alone is named in the task's own
 `publication.json`, with a reason and the person or role who will send it. That
@@ -74,8 +78,19 @@ def _git(
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
-            # A gate must never stop to ask a person for a password.
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env={
+                **os.environ,
+                # A gate must never stop to ask a person for a password.
+                "GIT_TERMINAL_PROMPT": "0",
+                # Whether a remote's tip already contains a local commit is
+                # decided by walking parents, and Git lets two local files
+                # rewrite that walk: `refs/replace/*` and the graft file. Either
+                # one can make unpublished work look reachable from a genuine
+                # remote tip without a byte leaving the disk, so both are turned
+                # off for every command asked here.
+                "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_GRAFT_FILE": os.devnull,
+            },
         )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(
