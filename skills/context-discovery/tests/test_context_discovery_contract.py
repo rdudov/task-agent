@@ -35,6 +35,10 @@ CONDITION = "no useful match"
 SCOPE = "all markdown task artifacts below"
 WHOLE_TREE = "whole tree"
 FRAMING = "reading order, not a search boundary"
+EXCLUDED_IS_NO_MATCH = "excluded by the task's time or scope as no useful match"
+COMPLETION = "discovery is complete only after the relevant primary files listed in step 4"
+PROVENANCE = "follow that provenance to the original task"
+OUTCOME = "record the concrete prior outcome that changes the current work"
 
 # Entry points. Each states the trigger and routes; none states the procedure.
 ENTRY_POINTS = [
@@ -131,6 +135,28 @@ def test_the_window_is_named_a_reading_order_not_a_boundary() -> None:
     assert FRAMING in normalized(surface(OWNER)), (
         "the owner does not say the window is a reading order rather than a search "
         "boundary, which is the sentence that stops the next agent from re-scoping it")
+
+
+def test_an_excluded_candidate_does_not_end_discovery() -> None:
+    text = normalized(surface(OWNER))
+    assert EXCLUDED_IS_NO_MATCH in text
+    assert COMPLETION in text
+    assert "excluded candidate is not a completion result" in text
+
+
+def test_a_derived_candidate_leads_to_the_original_primary_files() -> None:
+    text = normalized(surface(OWNER))
+    assert "read every relevant primary artifact that exists" in text
+    assert all(name in text for name in ("task.md", "findings.md", "verification.md", "sources.md"))
+    assert PROVENANCE in text
+    assert "original observation behind a derived candidate" in text
+
+
+def test_discovery_returns_the_reusable_prior_outcome() -> None:
+    text = normalized(surface(OWNER))
+    assert OUTCOME in text
+    assert "accepted repair or result identifier" in text
+    assert "relevant prior outcome and its identifier were recorded" in text
 
 
 def test_the_owner_names_the_catalog_this_repository_actually_builds() -> None:

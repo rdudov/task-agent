@@ -514,6 +514,11 @@ class ChildInstructionOwnerTests(unittest.TestCase):
         activation = "Invoke `context-discovery` by reading and following"
         self.assertIn(activation, prompt)
         self.assertIn("skills/context-discovery/SKILL.md", prompt)
+        self.assertIn(
+            "Do not continue until the skill's own completion condition is satisfied",
+            " ".join(prompt.split()),
+        )
+        self.assertIn("every result it requires is recorded", " ".join(prompt.split()))
         self.assertLess(prompt.index(activation), prompt.index("While working:"))
 
     def test_no_document_keeps_a_second_copy_of_the_procedure(self) -> None:

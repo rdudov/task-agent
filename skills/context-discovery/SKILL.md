@@ -22,12 +22,18 @@ carries its reasons.
    or `--search <term>` when a keyword is known. The recent window includes every
    status and is the primary catalog; `--status active` is only the secondary
    view for unfinished work.
-3. For an indirect reference, open only useful recent candidates. On no useful
-   match there, search all Markdown task artifacts below `tasks/`, across the
-   whole tree. The window is a reading order, not a search boundary. `date` is
-   the creation date, not when work finished: a task created three weeks ago and
-   completed yesterday is outside `--since 10d`.
-4. Read relevant `task.md`, `findings.md`, `verification.md`, and `sources.md`.
+3. For an indirect reference, open only useful recent candidates. Treat a
+   candidate excluded by the task's time or scope as no useful match; on no
+   useful match there, search all Markdown task artifacts below `tasks/`, across
+   the whole tree. The window is a reading order, not a search boundary. `date`
+   is the creation date, not when work finished: a task created three weeks ago
+   and completed yesterday is outside `--since 10d`.
+4. Read every relevant primary artifact that exists: `task.md`, `findings.md`,
+   `verification.md`, and `sources.md`. When a candidate describes or reproduces
+   an observation made by another task, follow that provenance to the original
+   task and read its primary artifacts before concluding. Record the concrete
+   prior outcome that changes the current work, including an accepted repair or
+   result identifier when the primary record provides one.
 5. Read linked records under `data/projects/` and `data/trips/`, and the local
    repository/path indexes under `data/`, whose format
    `data/local-projects.example.md` describes. For repository subsystems, read
@@ -40,6 +46,12 @@ carries its reasons.
    remembered defaults; when a construct looks wrong but the declared runtime
    makes it valid, record the runtime-context gap instead of reporting breakage.
 7. Search sibling repositories only after durable local context is exhausted.
+
+Discovery is complete only after the relevant primary files listed in step 4
+were opened, including the original observation behind a derived candidate, or
+the required whole-tree fallback was exhausted, and the relevant prior outcome
+and its identifier were recorded when found. A zero query, failed query, or
+excluded candidate is not a completion result.
 
 ## Unavailable Catalog
 

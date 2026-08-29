@@ -354,7 +354,8 @@ def build_child_prompt(
    representation. The current request and later continuations override it.
 5. Invoke `context-discovery` by reading and following
    `{context_discovery_skill}` before any broad search, live check, or analysis
-   of an existing decision.
+   of an existing decision. Do not continue until the skill's own completion
+   condition is satisfied and every result it requires is recorded.
 6. If `{task_md}` is missing execution-critical inputs from the original request, add them before continuing.
 7. Update `{status_json}` to reflect active work.
 8. Append a short note to `{trace_md}` describing what you are doing."""
