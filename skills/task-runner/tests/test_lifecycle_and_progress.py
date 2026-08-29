@@ -509,6 +509,13 @@ class ChildInstructionOwnerTests(unittest.TestCase):
         for sentence in self.PROMPT_SENTENCES:
             self.assertIn(sentence, prompt)
 
+    def test_standard_prompt_activates_context_discovery_before_work(self) -> None:
+        prompt = self._prompt()
+        activation = "Invoke `context-discovery` by reading and following"
+        self.assertIn(activation, prompt)
+        self.assertIn("skills/context-discovery/SKILL.md", prompt)
+        self.assertLess(prompt.index(activation), prompt.index("While working:"))
+
     def test_no_document_keeps_a_second_copy_of_the_procedure(self) -> None:
         for name in self._tracked((".md", ".mdc")):
             text = (self.REPO / name).read_text(encoding="utf-8")

@@ -330,6 +330,7 @@ def build_child_prompt(
     trace_md = task_dir / 'trace.md'
     progress_json = progress_path(task_dir)
     preferences_md = user_preferences_path(task_dir)
+    context_discovery_skill = repo_root() / 'skills/context-discovery/SKILL.md'
     deliverables_dir = task_dir / 'deliverables'
     manifest_json = deliverables_dir / 'manifest.json'
     product_review_html = deliverables_dir / 'product-review.html'
@@ -351,9 +352,12 @@ def build_child_prompt(
 3. Read `{task_contract_json}` if it exists and treat it as a structured execution contract.
 4. Read `{preferences_md}` if it exists, before choosing any unspecified output
    representation. The current request and later continuations override it.
-5. If `{task_md}` is missing execution-critical inputs from the original request, add them before continuing.
-6. Update `{status_json}` to reflect active work.
-7. Append a short note to `{trace_md}` describing what you are doing."""
+5. Invoke `context-discovery` by reading and following
+   `{context_discovery_skill}` before any broad search, live check, or analysis
+   of an existing decision.
+6. If `{task_md}` is missing execution-critical inputs from the original request, add them before continuing.
+7. Update `{status_json}` to reflect active work.
+8. Append a short note to `{trace_md}` describing what you are doing."""
     if statement_review_packet is not None:
         statement_review_packet = statement_review_packet.resolve()
         statement_review_packet_name = product_review.task_relative_path(

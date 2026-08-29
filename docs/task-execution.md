@@ -5,7 +5,7 @@ This document describes the parent-child execution model for non-trivial tasks.
 ## Recommended Model
 
 1. Apply the substantial-request check from `AGENTS.md`. Default to a task directory unless the request is clearly trivial or the user explicitly opts out.
-2. Before broad search or live checks, invoke `context-discovery` and follow `skills/context-discovery/SKILL.md`, which owns the lookup order and its fallbacks.
+2. Before broad search or live checks, invoke `context-discovery` and follow `skills/context-discovery/SKILL.md`, which owns the lookup order and its fallbacks. Standard Codex and Claude children receive this activation from the existing generated child prompt; Cursor receives it from its always-on rule.
 3. Before file edits, shell-driven implementation, delegation, or live verification, create or update the task directory via `skills/task-creator/`.
 4. Ensure `task.md` and `plan.md` preserve enough context for independent execution.
 5. Add `task_contract.json` for non-negotiable constraints, forbidden substitutions, or mandatory live verification gates.
