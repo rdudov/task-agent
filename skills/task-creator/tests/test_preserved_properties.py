@@ -168,6 +168,43 @@ def test_completed_status_retries_cleanup_for_a_finished_run(repo: Path) -> None
     ).read_text(encoding="utf-8")
 
 
+def test_completed_status_removes_every_registered_worktree_below_task(
+    repo: Path,
+) -> None:
+    task = make_task(repo, 129, "multi-worktree", status="blocked")
+    canonical = repo / "canonical"
+    head = seed_repository(canonical)
+    first = task / "worktrees" / "first"
+    second = task / "worktrees" / "second"
+    first.parent.mkdir()
+    git(canonical, "worktree", "add", "--detach", str(first), head)
+    git(canonical, "worktree", "add", "--detach", str(second), head)
+    runner_dir = task / ".runner"
+    runner_dir.mkdir()
+    (runner_dir / "runner.json").write_text(
+        json.dumps(
+            {
+                "finished_at": "2026-08-28T00:00:00+00:00",
+                "access_grant": {"granted_directories": [str(canonical)]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run(repo, "set-status", "129", "completed")
+
+    assert not first.exists()
+    assert not second.exists()
+    assert canonical.exists()
+    assert git(canonical, "worktree", "list", "--porcelain").count("worktree ") == 1
+    recorded = json.loads((runner_dir / "runner.json").read_text(encoding="utf-8"))
+    cleanup = recorded["workspace_cleanup"]
+    assert cleanup["outcome"] == "removed"
+    assert cleanup["reason"] == "all_task_workspaces_removed"
+    assert cleanup["removed"] == 2
+    assert cleanup["retained"] == 0
+
+
 def test_cancelled_status_retries_cleanup_for_a_finished_run(repo: Path) -> None:
     task = make_task(repo, 129, "cancel-later", status="blocked")
     canonical = repo / "canonical"

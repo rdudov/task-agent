@@ -235,18 +235,26 @@ Restore supervision of a child whose watcher was lost:
 
 When a watcher for a systemd-scoped run reaches the terminal path, it terminates
 all remaining peers in its own cgroup and verifies that only the watcher remains
-before accepting completion. It then evaluates the one recorded exact admitted
-target for task-workspace cleanup. The canonical `set-status` transition to
+before accepting completion. It then evaluates the recorded exact admitted
+author target set and every task-contained worktree Git registers with those
+repositories for task-workspace cleanup. It reads the durable author admissions,
+not a final reviewer grant, and never scans directories. Git registration below
+the exact task directory proves a worktree's ownership without basename
+guessing; an admitted target is only a discovery root and still passes the
+existing path and Git-disposability check. The canonical `set-status` transition to
 `completed` or `cancelled` retries the same owner when a finished task closes
 later after installation, publication, or cancellation, but defers a live child
-to its watcher. Only the exact granted Git root that is clean, has no ignored
+to its watcher. Only an admitted target or Git-registered task worktree that is
+clean, has no ignored
 durable state below `tasks/`, `data/`, or `.state/`, is unoccupied, and whose
-HEAD is reachable outside a standalone clone is removed. Its basename need not
-contain the task number when Git proves it is a registered worktree or a clone
-of another local repository and the name carries no other task-like number; an
-unnumbered canonical checkout stays protected. A run with several granted
-directories is retained as `target_not_unique` for explicit per-workspace
-classification. A target with a mountpoint at its root or anywhere below it is
+HEAD is reachable outside a standalone clone is removed. A Git-registered
+worktree below the task directory needs no basename proof; a standalone clone
+must be task-named or carry no foreign task-like number and point to another
+local repository. An unnumbered canonical checkout stays protected. Several
+targets are classified independently, every decision is retained in the
+aggregate cleanup record, and the trace names the path and reason for each
+retained workspace.
+A target with a mountpoint at its root or anywhere below it is
 retained before clone or linked-worktree removal starts, so an injected sandbox
 bind mount cannot turn a retained refusal into a partially deleted checkout. Remote tracking
 refs must refresh successfully before they count as proof; every refusal is

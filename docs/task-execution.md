@@ -28,26 +28,37 @@ signals another scope. Failure to prove that cgroup empty changes a would-be
 completion to `blocked`; the exact result is recorded as `scope_cleanup` in
 `runner.json` and is visible through `task_runner.py status`.
 
-After completion is accepted, the watcher evaluates its single exact admitted
-target directory for workspace cleanup. The canonical `set-status` transition
-to `completed` or `cancelled` retries that same owner when an already-finished
-task is closed later by an installation, publication, or cancellation step; it
-leaves a still-running child to its watcher. Removal requires all of the
-following: the exact granted path is a Git root, the tree is clean, it contains
+After completion is accepted, the watcher asks the existing cleanup owner to
+evaluate every workspace owned by the task. The owner starts from the durable
+author admission (because the final runner record may describe a read-only
+reviewer), asks Git for the worktrees registered with each admitted repository,
+and adds every registered worktree below the durable task directory. It does not
+scan directories. Git registration below that exact directory proves ownership
+without interpreting the worktree basename. An exact admitted target itself
+remains a candidate only when the existing path and Git-disposability check
+accepts it, which covers task-named standalone clones while protecting a target
+whose name carries another task number. The canonical `set-status` transition to
+`completed` or `cancelled` retries that same owner when an already-finished task
+is closed later by an installation, publication, or cancellation step; it
+leaves a still-running child to its watcher. Removal of each candidate requires
+all of the following: the path is a Git root, the tree is clean, it contains
 no ignored durable state below `tasks/`, `data/`, or `.state/`, no live process
 references it, and HEAD is reachable
 from the linked worktree's common repository, a local origin, or an `origin`
 tracking ref refreshed successfully from the remote. Ownership is established
-by either the current task number in the basename or Git itself proving that an
-exact granted target with no other task-like number is a registered worktree or
-a clone of another local repository; an unnumbered canonical checkout remains
-protected. A run with several granted directories is retained as
-`target_not_unique` for explicit per-workspace classification. Linked worktrees are removed
-with `git worktree remove`; standalone clones are removed directly. Both paths
+either by Git registering the worktree below this exact task directory or, for
+a standalone clone, by the existing task-name and disposable-Git checks; an
+author target is a discovery root, not proof that it may be removed. The
+existing single-workspace guard still protects an unnumbered canonical checkout.
+Several admitted repositories and several
+registered task worktrees are evaluated independently, with every result kept
+in `runner.json`. Linked worktrees are removed with `git worktree remove`;
+standalone clones are removed directly. Both paths
 first refuse a target with a mountpoint at its root or anywhere below it,
 because a sandbox bind mount can make removal fail after already deleting
 ordinary children. A retained
-target is normal and records one reason in `runner.json` as `workspace_cleanup`
+target is normal and records one reason in `runner.json` as `workspace_cleanup`;
+the task trace also names the path and reason for each retained workspace
 (for example `dirty`, `head_unreachable`, `live_processes`, or
 `path_not_task_owned`). No daemon, timer, cleanup registry, or second cleanup
 implementation is involved.

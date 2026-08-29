@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -228,6 +229,119 @@ class WorkspaceCleanupTests(unittest.TestCase):
         self.assertEqual(result["reason"], "live_processes")
         self.assertIn(process.pid, result["live_pids"])
         self.assertTrue(clone.exists())
+
+    def test_task_cleanup_removes_all_git_registered_worktrees_below_task(self) -> None:
+        first = self.task / "experiment" / "a"
+        second = self.task / "experiment" / "b"
+        first.parent.mkdir()
+        git(self.canonical, "worktree", "add", "--detach", str(first), self.head)
+        git(self.canonical, "worktree", "add", "--detach", str(second), self.head)
+
+        result = task_workspace.cleanup_task_workspaces(
+            self.task, self.meta(self.canonical)
+        )
+
+        self.assertEqual(result["outcome"], "removed")
+        self.assertEqual(result["reason"], "all_task_workspaces_removed")
+        self.assertEqual(result["removed"], 2)
+        self.assertEqual(result["retained"], 0)
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+        self.assertTrue(self.canonical.exists())
+        self.assertEqual(
+            git(self.canonical, "worktree", "list", "--porcelain").count(
+                "worktree "
+            ),
+            1,
+        )
+
+    def test_registered_sibling_hashes_do_not_change_task_ownership(self) -> None:
+        long = self.task / "worktrees" / "long-50d1dc8"
+        numeric = self.task / "worktrees" / "short-6950872"
+        long.parent.mkdir()
+        git(self.canonical, "worktree", "add", "--detach", str(long), self.head)
+        git(self.canonical, "worktree", "add", "--detach", str(numeric), self.head)
+
+        result = task_workspace.cleanup_task_workspaces(
+            self.task, self.meta(self.canonical)
+        )
+
+        self.assertEqual(result["outcome"], "removed")
+        self.assertEqual(result["removed"], 2)
+        self.assertFalse(long.exists())
+        self.assertFalse(numeric.exists())
+
+    def test_task_cleanup_retains_dirty_tree_and_removes_safe_sibling(self) -> None:
+        dirty = self.task / "worktrees" / "dirty"
+        safe = self.task / "worktrees" / "safe"
+        dirty.parent.mkdir()
+        git(self.canonical, "worktree", "add", "--detach", str(dirty), self.head)
+        git(self.canonical, "worktree", "add", "--detach", str(safe), self.head)
+        (dirty / "local.txt").write_text("preserve me", encoding="utf-8")
+
+        result = task_workspace.cleanup_task_workspaces(
+            self.task, self.meta(self.canonical)
+        )
+
+        self.assertEqual(result["outcome"], "retained")
+        self.assertEqual(result["reason"], "some_task_workspaces_retained")
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["retained"], 1)
+        self.assertTrue(dirty.exists())
+        self.assertFalse(safe.exists())
+        self.assertEqual(result["workspaces"][0]["reason"], "dirty")
+
+    def test_bound_author_target_survives_empty_reviewer_runner_grant(self) -> None:
+        clone = self.root / "project-700"
+        git(self.root, "clone", str(self.canonical), str(clone))
+        (self.task / "reviews").mkdir()
+        admission = {
+            "admission_id": "author",
+            "classification": {"work_class": "material"},
+            "decision": "admitted",
+            "access_profile": {"target_repositories": [str(clone)]},
+        }
+        (self.task / "reviews" / "admissions.jsonl").write_text(
+            json.dumps(admission) + "\n", encoding="utf-8"
+        )
+
+        result = task_workspace.cleanup_task_workspaces(
+            self.task,
+            {"access_grant": {"granted_directories": []}},
+        )
+
+        self.assertEqual(result["outcome"], "removed")
+        self.assertFalse(clone.exists())
+
+    def test_aggregate_trace_names_each_retained_path_and_reason(self) -> None:
+        runner_dir = self.task / ".runner"
+        runner_dir.mkdir()
+        (runner_dir / "runner.json").write_text("{}\n", encoding="utf-8")
+        first = self.task / "worktrees" / "first"
+        second = self.task / "worktrees" / "second"
+        aggregate = {
+            "outcome": "retained",
+            "reason": "some_task_workspaces_retained",
+            "removed": 0,
+            "retained": 2,
+            "workspaces": [
+                {"outcome": "retained", "reason": "dirty", "path": str(first)},
+                {
+                    "outcome": "retained",
+                    "reason": "live_processes",
+                    "path": str(second),
+                },
+            ],
+        }
+
+        with mock.patch.object(
+            task_workspace, "cleanup_task_workspaces", return_value=aggregate
+        ):
+            task_workspace.record_completed_workspace_cleanup(self.task)
+
+        trace = (self.task / "trace.md").read_text(encoding="utf-8")
+        self.assertIn(f"workspace retained (dirty) for {first}.", trace)
+        self.assertIn(f"workspace retained (live_processes) for {second}.", trace)
 
 
 class ScopeCleanupTests(unittest.TestCase):

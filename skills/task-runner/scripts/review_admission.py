@@ -616,6 +616,53 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
     return None
 
 
+def author_target_repositories(task_dir: Path) -> list[str]:
+    """Every exact repository admitted for an author of this task number.
+
+    Rework may legitimately use a narrower or empty target set, while cleanup
+    after final review still owns worktrees created by an earlier author run.
+    The append-only ledger therefore contributes every non-withdrawn material
+    author target in stable order. Tasks predating the ledger fall back to the
+    current bound author admission.
+    """
+    entries = admissions(task_dir)
+    withdrawn = {
+        entry.get("annuls")
+        for entry in entries
+        if entry.get("kind") == ANNULLED_ADMISSION and entry.get("annuls")
+    }
+    outstanding = admission_commitment(task_dir)
+    if outstanding:
+        withdrawn.add(outstanding.get("admission_id"))
+    targets: list[str] = []
+    for entry in entries:
+        if entry.get("kind") == ANNULLED_ADMISSION:
+            continue
+        if entry.get("admission_id") in withdrawn:
+            continue
+        classification = entry.get("classification")
+        work_class = (
+            classification.get("work_class")
+            if isinstance(classification, dict)
+            else None
+        )
+        if work_class != MATERIAL or entry.get("decision") != "admitted":
+            continue
+        profile = entry.get("access_profile")
+        raw = profile.get("target_repositories") if isinstance(profile, dict) else []
+        if not isinstance(raw, list):
+            continue
+        for value in raw:
+            if isinstance(value, str) and value not in targets:
+                targets.append(value)
+    if targets or entries:
+        return targets
+    admission = bound_author_admission(task_dir)
+    profile = admission.get("access_profile") if admission else {}
+    raw = profile.get("target_repositories") if isinstance(profile, dict) else []
+    return [value for value in raw if isinstance(value, str)] if isinstance(raw, list) else []
+
+
 def resolve_review_launch_pair(
     task_dir: Path,
     *,

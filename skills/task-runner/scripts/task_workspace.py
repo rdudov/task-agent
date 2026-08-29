@@ -1,8 +1,9 @@
-"""Terminal cleanup for a task runner's own process scope and Git workspace.
+"""Terminal cleanup for a task runner's own process scope and Git workspaces.
 
 This module deliberately has no scheduler or registry.  It consumes only the
-current runner record, the current systemd scope, and Git's own reachability
-data.  Every refusal is a normal retained outcome with one stable reason.
+task's authentic author binding, the current runner record, the current systemd
+scope, and Git's own worktree/reachability data.  Every refusal is a normal
+retained outcome with one stable reason.
 """
 
 from __future__ import annotations
@@ -186,7 +187,12 @@ def processes_referencing(path: Path, *, exclude: set[int] | None = None) -> lis
     return sorted(owners)
 
 
-def inspect_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, Any]:
+def inspect_workspace(
+    task_dir: Path,
+    runner_meta: dict[str, Any],
+    *,
+    ownership_proven_by_git: bool = False,
+) -> dict[str, Any]:
     grants = runner_meta.get("access_grant", {}).get("granted_directories", [])
     if len(grants) != 1:
         return {"outcome": "retained", "reason": "target_not_unique"}
@@ -210,7 +216,8 @@ def inspect_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
     disposable_by_git = git_dir != common_dir or _local_origin(repository) is not None
     path_numbers = _path_task_numbers(repository)
     if not number or (
-        not _path_names_task(repository, number)
+        not ownership_proven_by_git
+        and not _path_names_task(repository, number)
         and (path_numbers or not disposable_by_git)
     ):
         return {**result, "reason": "path_not_task_owned"}
@@ -246,9 +253,18 @@ def inspect_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
     return {**result, "outcome": "eligible", "reason": "safe"}
 
 
-def cleanup_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, Any]:
+def cleanup_workspace(
+    task_dir: Path,
+    runner_meta: dict[str, Any],
+    *,
+    ownership_proven_by_git: bool = False,
+) -> dict[str, Any]:
     """Remove one proven-safe task target, or retain it with an exact reason."""
-    result = inspect_workspace(task_dir, runner_meta)
+    result = inspect_workspace(
+        task_dir,
+        runner_meta,
+        ownership_proven_by_git=ownership_proven_by_git,
+    )
     if result.get("outcome") != "eligible":
         return result
     repository = Path(result["path"])
@@ -320,6 +336,133 @@ def cleanup_workspace(task_dir: Path, runner_meta: dict[str, Any]) -> dict[str, 
     return {**result, "outcome": "removed", "reason": "safe"}
 
 
+def _author_targets(task_dir: Path, runner_meta: dict[str, Any]) -> list[Path]:
+    """Return the exact repositories admitted for the task's author.
+
+    The current record describes a reviewer by final acceptance time, so its
+    empty read-only grant cannot replace the durable author binding.  Older task
+    records predate that ledger and retain the original grant as the fallback.
+    """
+    try:
+        from . import review_admission
+    except ImportError:  # Standalone source-module execution in repository tests.
+        import review_admission  # type: ignore[no-redef]
+
+    raw_targets = review_admission.author_target_repositories(task_dir)
+    if not raw_targets:
+        raw_targets = runner_meta.get("access_grant", {}).get(
+            "granted_directories", []
+        )
+    targets: list[Path] = []
+    for value in raw_targets:
+        if not isinstance(value, str):
+            continue
+        target = Path(value).expanduser().resolve()
+        if target not in targets:
+            targets.append(target)
+    return targets
+
+
+def _registered_worktrees(repository: Path) -> list[Path] | None:
+    """Ask Git for every worktree registered with repository's common dir."""
+    listed = _run_git(repository, "worktree", "list", "--porcelain", "-z")
+    if listed.returncode:
+        return None
+    paths: list[Path] = []
+    for field in listed.stdout.split("\0"):
+        if not field.startswith("worktree "):
+            continue
+        path = Path(field.removeprefix("worktree ")).expanduser().resolve()
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _is_below(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return path != parent
+
+
+def _discover_task_workspace_candidates(
+    task_dir: Path, runner_meta: dict[str, Any]
+) -> tuple[list[tuple[Path, bool]], list[dict[str, Any]]]:
+    """Resolve the task's exact targets and task-contained Git worktrees.
+
+    Direct targets come from the authentic author admission.  Additional
+    worktrees are discovered only through each target's Git registry and belong
+    to this task only when their registered path is below its durable task
+    directory.  Directory scanning and basename guessing are deliberately not
+    involved.
+    """
+    candidates: dict[Path, bool] = {}
+    discovery_failures: list[dict[str, Any]] = []
+    task_root = task_dir.resolve()
+    for target in _author_targets(task_dir, runner_meta):
+        direct = inspect_workspace(
+            task_dir,
+            {"access_grant": {"granted_directories": [str(target)]}},
+        )
+        if direct.get("reason") != "path_not_task_owned":
+            candidates.setdefault(target, False)
+        registered = _registered_worktrees(target)
+        if registered is None:
+            discovery_failures.append(
+                {
+                    "outcome": "retained",
+                    "reason": "worktree_list_failed",
+                    "path": str(target),
+                }
+            )
+            continue
+        for worktree in registered:
+            if _is_below(worktree, task_root):
+                candidates[worktree] = True
+    return list(candidates.items()), discovery_failures
+
+
+def task_workspace_candidates(
+    task_dir: Path, runner_meta: dict[str, Any]
+) -> tuple[list[Path], list[dict[str, Any]]]:
+    """Return candidate paths while keeping discovery provenance internal."""
+    candidates, failures = _discover_task_workspace_candidates(task_dir, runner_meta)
+    return [path for path, _ownership_proven_by_git in candidates], failures
+
+
+def cleanup_task_workspaces(
+    task_dir: Path, runner_meta: dict[str, Any]
+) -> dict[str, Any]:
+    """Run the existing safe removal decision for every task-owned workspace."""
+    candidates, results = _discover_task_workspace_candidates(task_dir, runner_meta)
+    for candidate, ownership_proven_by_git in candidates:
+        results.append(
+            cleanup_workspace(
+                task_dir,
+                {"access_grant": {"granted_directories": [str(candidate)]}},
+                ownership_proven_by_git=ownership_proven_by_git,
+            )
+        )
+    if len(results) == 1:
+        return results[0]
+    removed = sum(result.get("outcome") == "removed" for result in results)
+    retained = len(results) - removed
+    return {
+        "outcome": "removed" if results and not retained else "retained",
+        "reason": (
+            "all_task_workspaces_removed"
+            if results and not retained
+            else "some_task_workspaces_retained"
+            if results
+            else "no_task_workspaces"
+        ),
+        "removed": removed,
+        "retained": retained,
+        "workspaces": results,
+    }
+
+
 def record_completed_workspace_cleanup(
     task_dir: Path,
     *,
@@ -348,8 +491,16 @@ def record_completed_workspace_cleanup(
             prior_path = prior.get("path")
             if isinstance(prior_path, str) and not Path(prior_path).exists():
                 return prior
+            prior_workspaces = prior.get("workspaces")
+            if isinstance(prior_workspaces, list) and prior_workspaces and all(
+                isinstance(item, dict)
+                and isinstance(item.get("path"), str)
+                and not Path(item["path"]).exists()
+                for item in prior_workspaces
+            ):
+                return prior
 
-        result = cleanup_workspace(task_dir, runner_meta)
+        result = cleanup_task_workspaces(task_dir, runner_meta)
         runner_meta["workspace_cleanup"] = result
         temporary = runner_meta_path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(runner_meta, indent=2) + "\n", encoding="utf-8")
@@ -366,6 +517,13 @@ def record_completed_workspace_cleanup(
                 + (f" for {result['path']}." if result.get("path") else ".")
                 + "\n"
             )
+            for workspace in result.get("workspaces", []):
+                if workspace.get("outcome") != "retained":
+                    continue
+                trace.write(
+                    f"- {timestamp} {label} workspace retained "
+                    f"({workspace.get('reason')}) for {workspace.get('path')}.\n"
+                )
         return result
 
 

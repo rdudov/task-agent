@@ -328,6 +328,45 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(binding["pair"]["author_runner"], "claude")
         self.assertEqual(binding["pair"]["reviewer_runner"], "codex")
 
+    def test_author_targets_cover_every_material_run_in_the_number(self) -> None:
+        """A narrower rework does not orphan an earlier author workspace."""
+        second_grant = {
+            "sandbox_mode": "workspace-write",
+            "granted_directories": ["/srv/second-repo"],
+            "grants_write": True,
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            _launch(
+                task_dir,
+                workflow="standard",
+                author_runner="claude",
+                access_grant=WRITE_GRANT,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+            )
+            _launch(
+                task_dir,
+                workflow="standard",
+                author_runner="claude",
+                access_grant=second_grant,
+                contract=UNGATED,
+                which=_installed("claude", "codex"),
+            )
+            _launch(
+                task_dir,
+                workflow="standard",
+                author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=UNGATED,
+                review_launch=True,
+                which=_installed("claude", "codex"),
+            )
+
+            targets = review_admission.author_target_repositories(task_dir)
+
+        self.assertEqual(targets, ["/srv/target-repo", "/srv/second-repo"])
+
     def test_an_admitted_decision_binds_nothing_until_the_launch_starts(self) -> None:
         """Deciding is not binding, whether or not the launch means to run.
 
