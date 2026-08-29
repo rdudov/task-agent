@@ -394,8 +394,9 @@ def _discover_task_workspace_candidates(
     Direct targets come from the authentic author admission.  Additional
     worktrees are discovered only through each target's Git registry and belong
     to this task only when their registered path is below its durable task
-    directory.  Directory scanning and basename guessing are deliberately not
-    involved.
+    directory.  Directory scanning is deliberately not involved.  Registered
+    descendants need no basename proof; direct targets retain the existing path
+    and Git-disposability guard.
     """
     candidates: dict[Path, bool] = {}
     discovery_failures: list[dict[str, Any]] = []
