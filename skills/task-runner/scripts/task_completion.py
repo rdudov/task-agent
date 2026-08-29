@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 try:
-    from . import review_admission, task_phases
+    from . import git_publication, review_admission, task_phases
     from .application_adapter import (
         ApplicationAdapterError,
         CompletionRequestV1,
@@ -27,6 +27,7 @@ try:
         verification_gate_result,
     )
 except ImportError:
+    import git_publication
     import review_admission
     import task_phases
     from application_adapter import (
@@ -445,6 +446,22 @@ def completion_ready(
                 gate="policy_family_review",
                 owner=ENGINE_OWNED_COMPLETION_GATE,
             )
+    # Reviewed work that never left the disk it was written on is work the next
+    # person finds by walking every repository on the host. The task that made
+    # the change is the one place where it is still known which repositories
+    # those are, so it is asked here rather than by a separate sweep later.
+    publication = git_publication.publication_problems(task_dir)
+    if publication:
+        return False, completion_failure(
+            "the task's Git work is not saved and published: "
+            + "; ".join(publication)
+            + ". Push it, or record in "
+            + str(task_dir / git_publication.PUBLICATION_RECORD_NAME)
+            + " why it stays here and who will send it",
+            gate="git_publication",
+            owner=ENGINE_OWNED_COMPLETION_GATE,
+        )
+
     ready, reason = application_completion_ready(task_dir, workflow, application)
     if ready:
         return True, reason

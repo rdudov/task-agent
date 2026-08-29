@@ -393,28 +393,23 @@ def _is_below(path: Path, parent: Path) -> bool:
     return path != parent
 
 
-def _discover_task_workspace_candidates(
+def task_git_workspaces(
     task_dir: Path, runner_meta: dict[str, Any]
 ) -> tuple[list[tuple[Path, bool]], list[dict[str, Any]]]:
-    """Resolve the task's exact targets and task-contained Git worktrees.
+    """Every Git workspace this task holds, with how its ownership was proven.
 
     Direct targets come from the authentic author admission.  Additional
     worktrees are discovered only through each target's Git registry and belong
     to this task only when their registered path is below its durable task
     directory.  Directory scanning is deliberately not involved.  Registered
-    descendants need no basename proof; direct targets retain the existing path
-    and Git-disposability guard.
+    descendants are proven by that registration; a direct target is proven only
+    by the admission that granted it.
     """
-    candidates: dict[Path, bool] = {}
+    workspaces: dict[Path, bool] = {}
     discovery_failures: list[dict[str, Any]] = []
     task_root = task_dir.resolve()
     for target in _author_targets(task_dir, runner_meta):
-        direct = inspect_workspace(
-            task_dir,
-            {"access_grant": {"granted_directories": [str(target)]}},
-        )
-        if direct.get("reason") != "path_not_task_owned":
-            candidates.setdefault(target, False)
+        workspaces.setdefault(target, False)
         registered = _registered_worktrees(target)
         if registered is None:
             discovery_failures.append(
@@ -427,8 +422,32 @@ def _discover_task_workspace_candidates(
             continue
         for worktree in registered:
             if _is_below(worktree, task_root):
-                candidates[worktree] = True
-    return list(candidates.items()), discovery_failures
+                workspaces[worktree] = True
+    return list(workspaces.items()), discovery_failures
+
+
+def _discover_task_workspace_candidates(
+    task_dir: Path, runner_meta: dict[str, Any]
+) -> tuple[list[tuple[Path, bool]], list[dict[str, Any]]]:
+    """Narrow the task's workspaces to the ones removal may even consider.
+
+    Holding a workspace and being allowed to delete it are different questions.
+    A registered descendant needs no basename proof; a direct target keeps the
+    existing path and Git-disposability guard, which is what protects an
+    ordinary canonical checkout that merely happens to be the task's target.
+    """
+    workspaces, discovery_failures = task_git_workspaces(task_dir, runner_meta)
+    candidates = [
+        (path, ownership_proven_by_git)
+        for path, ownership_proven_by_git in workspaces
+        if ownership_proven_by_git
+        or inspect_workspace(
+            task_dir,
+            {"access_grant": {"granted_directories": [str(path)]}},
+        ).get("reason")
+        != "path_not_task_owned"
+    ]
+    return candidates, discovery_failures
 
 
 def task_workspace_candidates(

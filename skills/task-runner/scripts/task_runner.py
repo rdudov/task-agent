@@ -594,8 +594,9 @@ While working:
   confirm they are running with fresh start timestamps, check recent logs for startup
   errors, and record that evidence. If it is deferred or blocked, say so explicitly.
 - If you change task lifecycle, task artifact structure, skill discovery or execution, agent orchestration, restore behavior, or resume behavior, update the relevant project docs in the same source change.
-- If you change git-tracked source in a repository with a configured remote, commit and push after verification unless the task explicitly requires local-only work or publication is blocked.
-- If verification or publication is blocked, record the reason and current repository state in task artifacts before finishing.
+- Completion refuses a repository you were granted, or a Git worktree you created inside the task directory, whose working tree is dirty or whose commits no remote has. Commit and push after verification.
+- If the task requires local-only work, or publication is genuinely blocked, that refusal is cleared only by an explicit record in `{task_dir}/publication.json`: `{{"schema_version": 1, "deferred": [{{"repository": "...", "reason": "why it stays here", "owner": "who will send it"}}]}}`. Deciding to leave work unsent is the user's call or that of the role that makes it, so do not write that record to get past the gate on your own judgement.
+- If verification is blocked, record the reason and current repository state in task artifacts before finishing.
 
 Before finishing:
 {finishing_steps}

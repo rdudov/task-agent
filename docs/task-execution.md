@@ -546,6 +546,7 @@ Recommended artifacts:
 - `findings.md`
 - `sources.md`
 - `progress.json` — substantive live progress during a long run
+- `publication.json` — why a repository this task holds stays unpushed, and who will send it
 - `deliverables/` and `deliverables/manifest.json` — explicitly requested output files
 
 Reusable local lookup context, such as repositories, important paths, recurring commands, or where prior artifacts live, should be recorded under `data/`. This template includes `data/local-projects.example.md` as a generic starting point.
@@ -581,6 +582,25 @@ Suggested `status.json`:
 ## Source Publication
 
 When a child changes git-tracked source in a repository with a remote, it should commit and push after verification unless the task explicitly requires local-only work or push is blocked. Any unpushed source changes should be recorded with the reason and current repository state.
+
+This is a completion gate, not only advice. Before a task closes, the shared completion decision looks at every repository its author admission granted and every Git worktree registered below the task directory, and refuses the close when one of them has a dirty working tree, has commits no remote has, or has no remote at all. The refusal names the repository and either the uncommitted paths or the branch and the number of commits. Nothing walks the disk looking for such repositories: the task that made the change is the one place where it is still known which repositories those are.
+
+A repository that stays unpublished on purpose is named in the task's own `publication.json`:
+
+```json
+{
+  "schema_version": 1,
+  "deferred": [
+    {
+      "repository": "/absolute/path/to/repository",
+      "reason": "the remote is unreachable from this host",
+      "owner": "product owner"
+    }
+  ]
+}
+```
+
+Every field is required and must be non-empty; a record that cannot be read, or an entry missing one of them, defers nothing and is itself named in the refusal. The decision to leave work unsent belongs to a person or to the role that makes it, so a child does not write this record on its own judgement to get past the gate — and nothing pushes on a person's behalf either.
 
 Before creating a branch from a remote-tracked base, fetch the remote and fast-forward the base branch. Before pushing, fetch again, rebase or merge onto the latest target branch according to the repository policy, run relevant tests, run the pre-push leak check, and review the outgoing diff. Use force push only when the task explicitly requires rewriting a branch and prefer `--force-with-lease`.
 

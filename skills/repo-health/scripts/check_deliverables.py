@@ -28,6 +28,7 @@ INTERNAL_RECORDS = {
     "plan.md",
     "status.json",
     "progress.json",
+    "publication.json",
     "task_contract.json",
 }
 

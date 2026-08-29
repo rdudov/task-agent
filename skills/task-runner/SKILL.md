@@ -360,8 +360,9 @@ A clean subprocess exit is not a completion. Both profiles consume one durable
 completion decision: task YAML frontmatter is `completed`, `plan.md` has no
 unfinished markers, every required evidence gate's latest section records a
 passing result, any required reviewer verdict is unambiguous, the independent
-review the launch was admitted with has approved the work as it now stands, and
-enforced policy families have an approved digest-bound review. A refused completion is
+review the launch was admitted with has approved the work as it now stands,
+enforced policy families have an approved digest-bound review, and the Git work
+the task holds is saved and published. A refused completion is
 `blocked`; when the owner last published an incomplete bound, the record says
 only that the run ended after that published lower bound and does not invent a
 stopping point.
@@ -875,6 +876,55 @@ Whether an outstanding change has been reviewed is not decided here. This module
 reports it and the completion owner decides. Pairing policy — who may review
 whose work — belongs to the installation that defines it.
 
+### Saved And Published
+
+Reviewed work that never left the disk it was written on is found by walking
+every repository on the host, one by one, by a person who happened to think of
+it. `git_publication.py` asks the question once instead, at the moment a task
+tries to close, and `completion_ready` refuses the close on the answer.
+
+The repositories it asks about are the ones the task already names: every
+repository its own author admissions granted, plus every Git worktree registered
+below its task directory — the same set the workspace cleanup owner discovers,
+before cleanup narrows it to what may be deleted. Nothing is scanned, no
+registry of repositories is kept, and a granted directory that is not a Git
+repository is not one of them. Each is refused for exactly one reason:
+
+- a dirty working tree, naming up to eight uncommitted paths and how many more
+  there are — untracked non-ignored files included, because bytes in no Git
+  object are the plainest case of work living in one copy;
+- commits no remote has, naming the branch (or the detached HEAD) and the count,
+  measured against local remote-tracking refs so the check neither fetches nor
+  needs the network;
+- no remote at all, so nothing committed there can leave this disk.
+
+An unborn HEAD above a clean tree holds nothing back and is not refused.
+
+The refusal is engine-owned, which is what lets an approved review still name
+the author as the owner of what is left. Clearing it is the ordinary thing:
+push. The only other way past it is the task's own `publication.json`, naming
+the repository, why it stays here, and who will send it:
+
+```json
+{
+  "schema_version": 1,
+  "deferred": [
+    {
+      "repository": "/absolute/path/to/repository",
+      "reason": "the remote is unreachable from this host",
+      "owner": "product owner"
+    }
+  ]
+}
+```
+
+All three fields are required and non-empty. A record that does not parse, or an
+entry missing one of them, defers nothing and is named in the refusal itself:
+a file nobody can read is not a decision anybody made. That record is the
+accountable exception the rule needs, not a formality — the choice to leave work
+unsent stays with the person or role who makes it, and nothing here pushes on
+their behalf either.
+
 ## Actuality
 
 `task_engine.py actuality` reports how long ago a task was observably touched,
@@ -1004,7 +1054,7 @@ current task status or current refusal text.
 - Do not assume backward compatibility or a legacy fallback path unless the user request or project contract explicitly requires it.
 - Mocked providers, fake models, and test-only harnesses are useful for unit coverage but are not sufficient acceptance evidence for production-reachable runtime branches by themselves.
 - If behavior diverges by threshold, mode, provider, credential, feature flag, model path, transport, or fallback logic, each production-relevant branch touched by the task needs explicit validation evidence or a clearly recorded verification gap.
-- If git-tracked source changes in a repository with a remote, fetch and sync the base branch before branching, commit after verification, run the pre-push leak check, then push unless local-only work was requested or push is blocked.
+- If git-tracked source changes in a repository with a remote, fetch and sync the base branch before branching, commit after verification, run the pre-push leak check, then push. Completion refuses a granted repository or task-owned worktree that is dirty, holds commits no remote has, or has no remote at all; local-only work or a blocked push clears that refusal only through the task's own `publication.json`, which names the repository, the reason, and who will send it. See "Saved And Published".
 - If task lifecycle, skill behavior, orchestration, restore, or resume behavior changes, update project docs in the same source change.
 - If a source change was committed locally and then found to be wrong before it was pushed or shared, prefer removing that local commit with `git reset` or another explicit history rewrite after checking the working tree and commit graph. Use a revert commit only for pushed/shared history, ambiguous ownership, or explicit audit-history requirements.
 - If the task-runner, prompt pipeline, or parent orchestration caused a material mistake, fix the active task and update the relevant skill/docs/rules in the same corrective pass so the failure mode is less likely to recur. If the prevention change is substantial or changes policy tradeoffs, record concrete options and ask the user before implementing the broad change.

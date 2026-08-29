@@ -126,7 +126,9 @@ completion and actuality. Everything an outside consumer needs to know about a
 task is asked through one surface, `skills/task-runner/scripts/task_engine.py`,
 which returns JSON and composes the modules that already own each decision —
 `tasks_index.py` for metadata, `task_contract.py` for the effective contract,
-`task_completion.py` for whether a completion may be accepted, `task_phases.py`
+`task_completion.py` for whether a completion may be accepted,
+`git_publication.py` for whether the Git work that completion would accept is
+saved and published, `task_phases.py`
 for phases, `write_admission.py` for Git write scopes, `task_runner.py` for
 supervision. A product layer, transport adapter or another installation talks to
 that surface instead of importing a helper that can be renamed underneath it.
@@ -296,7 +298,7 @@ itself.
 4. A child CLI agent may perform substantial work and write progress artifacts into the task directory.
 5. A task may instead run through the task-runner dev-pipeline workflow, which drives an evidence-gated owner session and projects its lifecycle events back into the task artifacts.
 6. When present, `task_contract.json` is carried into the work by the orchestrator and used by the shared standard/dev-pipeline completion gate. Required evidence uses last-result-wins semantics; policy prose is established by a digest-bound bounded review rather than owner self-attestation.
-7. If source files change, the finished source change is committed and pushed unless the task explicitly keeps it local or publication is blocked; remote-backed repositories should be synced before branch/push and checked with the pre-push leak check before publication.
+7. If source files change, the finished source change is committed and pushed unless the task explicitly keeps it local or publication is blocked; remote-backed repositories should be synced before branch/push and checked with the pre-push leak check before publication. The completion gate enforces this: a granted repository or task-owned worktree that is dirty, holds commits no remote has, or has no remote at all refuses the close until it is pushed or the task's own `publication.json` records why it stays and who will send it.
 8. If engine behavior changes, project documentation is updated in the same change.
 
 Implementation work should match the semantics of the requested target, not only an approximate effect. When a task names a reference artifact, provider, model, protocol feature, or runtime branch, repository artifacts and verification should show that the named path was used directly or should explicitly record why that was not possible.

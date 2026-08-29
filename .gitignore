@@ -15,6 +15,7 @@ memory_logs/
 # Claude Code: the wiring is committed, local overrides are not.
 CLAUDE.local.md
 .claude/settings.local.json
+.mcp.json
 
 # Track only skeleton files from durable local artifact trees.
 tasks/*
