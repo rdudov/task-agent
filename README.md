@@ -94,11 +94,14 @@ Before pushing a source change from this workspace, run:
 ```
 
 To block deployment-specific project/task/trip names without publishing them,
-put one literal per line in ignored `.state/private-history-markers`, or point
-`TASK_AGENT_PRIVATE_HISTORY_MARKERS` at another local file. Literals are matched
-case-insensitively, so a differently capitalized name cannot bypass the list. The guard also
-refuses foreign remote and unknown ref namespaces while allowing ordinary local
-branches, tags, notes, and stash.
+put one marker per line in ignored `.state/private-history-markers`, or point
+`TASK_AGENT_PRIVATE_HISTORY_MARKERS` at another local file. Ordinary markers are
+literal and case-insensitive, so a differently capitalized name cannot bypass
+the list. Prefix a marker with `re:` only when a bounded, case-sensitive regular
+expression is needed, for example to distinguish a display name from an ordinary
+lowercase word or to cover an identifier format. An invalid expression refuses
+the check. The guard also refuses foreign remote and unknown ref namespaces
+while allowing ordinary local branches, tags, notes, and stash.
 
 An empty marker list is not a pass. A fresh clone has no `.state/`, so the name
 check has nothing to compare against; both `check_pre_push.py` and

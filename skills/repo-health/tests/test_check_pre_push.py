@@ -39,6 +39,32 @@ def test_private_history_marker_matching_is_case_insensitive() -> None:
     ) == "private-example-project"
 
 
+def test_private_history_regular_expression_preserves_authored_case() -> None:
+    marker = r"re:\bAtlas\b"
+
+    assert check_pre_push.private_history_match("The Atlas client", (marker,)) == marker
+    assert check_pre_push.private_history_match("atlas(value)", (marker,)) is None
+
+
+def test_private_history_regular_expression_can_match_an_identifier_format() -> None:
+    marker = r"re:\b[0-9a-f]{16}\b"
+    example_identifier = "1a12" + "34567890abcd"
+
+    assert check_pre_push.private_history_match(f"message {example_identifier}", (marker,)) == marker
+    assert check_pre_push.private_history_match("message msg0000000000001", (marker,)) is None
+
+
+def test_invalid_private_history_regular_expression_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "markers"
+    path.write_text("re:[unterminated\n", encoding="utf-8")
+    monkeypatch.setenv(check_pre_push.PRIVATE_HISTORY_MARKERS_ENV, str(path))
+
+    with pytest.raises(RuntimeError, match="Invalid private-history regular expression"):
+        check_pre_push.private_history_markers(tmp_path)
+
+
 def test_explicit_missing_private_marker_file_fails_closed(
     tmp_path: Path, monkeypatch
 ) -> None:

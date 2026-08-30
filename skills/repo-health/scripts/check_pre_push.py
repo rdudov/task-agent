@@ -147,16 +147,26 @@ def private_history_markers(root: Path) -> tuple[str, ...]:
                 raise RuntimeError(
                     f"Private-history marker is too short in {path}: {marker!r}"
                 )
+            if marker.startswith("re:"):
+                try:
+                    re.compile(marker[3:])
+                except re.error as exc:
+                    raise RuntimeError(
+                        f"Invalid private-history regular expression in {path}: {exc}"
+                    ) from exc
             markers.append(marker)
     return tuple(markers)
 
 
 def private_history_match(text: str, markers: tuple[str, ...]) -> str | None:
     folded_text = text.casefold()
-    return next(
-        (marker for marker in markers if marker.casefold() in folded_text),
-        None,
-    )
+    for marker in markers:
+        if marker.startswith("re:"):
+            if re.search(marker[3:], text):
+                return marker
+        elif marker.casefold() in folded_text:
+            return marker
+    return None
 
 
 def private_history_notice(markers: tuple[str, ...], root: Path) -> str | None:

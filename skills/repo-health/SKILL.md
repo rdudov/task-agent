@@ -59,9 +59,12 @@ Run before pushing source changes to a configured remote:
 The check scans outgoing files for local task/data/state artifacts, environment files, private keys, and common token formats. It is a guardrail, not a complete security scanner; still review the outgoing diff before pushing.
 
 Deployment-specific private project/task/trip names belong in ignored local
-`.state/private-history-markers` (one literal per line), or in the file named by
+`.state/private-history-markers` (one marker per line), or in the file named by
 `TASK_AGENT_PRIVATE_HISTORY_MARKERS`. Repository health and pre-push consume the
-same local list without publishing it and compare literals case-insensitively.
+same local list without publishing it. Ordinary markers are case-insensitive
+literals. A marker prefixed with `re:` is instead a case-sensitive regular
+expression for a bounded name or identifier format; an invalid expression
+refuses the check.
 Pre-push also refuses refs from another
 remote and unknown ref namespaces, while allowing ordinary local heads, tags,
 notes, and stash.
