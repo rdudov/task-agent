@@ -95,7 +95,8 @@ Before pushing a source change from this workspace, run:
 
 To block deployment-specific project/task/trip names without publishing them,
 put one literal per line in ignored `.state/private-history-markers`, or point
-`TASK_AGENT_PRIVATE_HISTORY_MARKERS` at another local file. The guard also
+`TASK_AGENT_PRIVATE_HISTORY_MARKERS` at another local file. Literals are matched
+case-insensitively, so a differently capitalized name cannot bypass the list. The guard also
 refuses foreign remote and unknown ref namespaces while allowing ordinary local
 branches, tags, notes, and stash.
 

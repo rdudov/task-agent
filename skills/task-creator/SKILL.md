@@ -237,7 +237,7 @@ skills/task-creator/scripts/tasks_index.py query --number 497 --format paths
 skills/task-creator/scripts/tasks_index.py query --project example-project --format compact
 
 # search by title or slug
-skills/task-creator/scripts/tasks_index.py query --search deepresearch --limit 20
+skills/task-creator/scripts/tasks_index.py query --search example-research --limit 20
 ```
 
 `--status` accepts a canonical status, `active` (planned + in_progress +
@@ -265,7 +265,7 @@ task artifacts below `tasks/`, across the whole tree.
 (`data/projects/example-project/project.md`) or the durable record's directory
 name (`example-project`). A short name is resolved to the paths that record
 owns and then matched element for element, so neither form is ever a substring
-match: `--project data/projects/moex` names nothing and returns nothing.
+match: `--project data/projects/example` names nothing and returns nothing.
 
 The index holds no task content. To recover knowledge, `grep` over `tasks/`.
 

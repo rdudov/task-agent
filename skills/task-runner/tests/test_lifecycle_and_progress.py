@@ -425,7 +425,7 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("`out_of_scope`", prompt)
         self.assertIn(packet_sha256, prompt)
         self.assertNotIn("1. Read `", prompt)
-        for domain_hint in ("MOEX", "trading", "replay", "121:121"):
+        for domain_hint in ("AcmeMarket", "BrokerCorp", "HouseBot", "121:121"):
             self.assertNotIn(domain_hint, prompt)
 
     def test_statement_review_prompt_never_requests_implementation_evidence(self) -> None:

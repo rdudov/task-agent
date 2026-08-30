@@ -32,6 +32,13 @@ def test_private_history_marker_is_rejected_but_neutral_example_passes(
     assert check_pre_push.scan_file(tmp_path, neutral.name, allow_local_artifacts=False) == []
 
 
+def test_private_history_marker_matching_is_case_insensitive() -> None:
+    assert check_pre_push.private_history_match(
+        "Private-Example-Project",
+        ("private-example-project",),
+    ) == "private-example-project"
+
+
 def test_explicit_missing_private_marker_file_fails_closed(
     tmp_path: Path, monkeypatch
 ) -> None:

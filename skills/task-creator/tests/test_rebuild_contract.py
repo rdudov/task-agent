@@ -268,7 +268,7 @@ def test_12_project_filter_compares_json_elements_exactly(repo: Path) -> None:
 
     fragment = json.loads(run(
         repo, "query", "--status", "all",
-        "--project", "data/projects/moex", "--format", "json",
+        "--project", "data/projects/example", "--format", "json",
     ).stdout)
     assert fragment == [], f"substring matched an element it does not equal: {fragment}"
 

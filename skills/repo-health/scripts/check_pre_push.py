@@ -152,7 +152,11 @@ def private_history_markers(root: Path) -> tuple[str, ...]:
 
 
 def private_history_match(text: str, markers: tuple[str, ...]) -> str | None:
-    return next((marker for marker in markers if marker in text), None)
+    folded_text = text.casefold()
+    return next(
+        (marker for marker in markers if marker.casefold() in folded_text),
+        None,
+    )
 
 
 def private_history_notice(markers: tuple[str, ...], root: Path) -> str | None:

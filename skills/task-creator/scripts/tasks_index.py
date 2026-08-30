@@ -1014,7 +1014,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         for option, column in (("project", "projects_json"), ("trip", "trips_json")):
             value = getattr(args, option)
             if value:
-                # Compare elements, not text. `LIKE '%moex%'` answers a question
+                # Compare elements, not text. `LIKE '%example%'` answers a question
                 # nobody asked and quietly widens the result. A short name is
                 # still an exact question -- it names a durable record, so it is
                 # resolved to the stored paths that record owns and then matched

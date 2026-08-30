@@ -61,7 +61,8 @@ The check scans outgoing files for local task/data/state artifacts, environment 
 Deployment-specific private project/task/trip names belong in ignored local
 `.state/private-history-markers` (one literal per line), or in the file named by
 `TASK_AGENT_PRIVATE_HISTORY_MARKERS`. Repository health and pre-push consume the
-same local list without publishing it. Pre-push also refuses refs from another
+same local list without publishing it and compare literals case-insensitively.
+Pre-push also refuses refs from another
 remote and unknown ref namespaces, while allowing ordinary local heads, tags,
 notes, and stash.
 

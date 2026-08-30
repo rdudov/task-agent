@@ -335,10 +335,10 @@ def test_p2_2_a_durable_record_can_be_looked_up_by_its_short_name(repo: Path) ->
 
     # A short name is a record name, not a fragment to match against.
     assert json.loads(run(
-        repo, "query", "--status", "all", "--project", "moex", "--format", "json",
+        repo, "query", "--status", "all", "--project", "example", "--format", "json",
     ).stdout) == []
     assert json.loads(run(
-        repo, "query", "--status", "all", "--project", "data/projects/moex", "--format", "json",
+        repo, "query", "--status", "all", "--project", "data/projects/example", "--format", "json",
     ).stdout) == []
 
 
