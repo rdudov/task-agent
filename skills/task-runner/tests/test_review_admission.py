@@ -725,7 +725,11 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
         return f"{module.__name__}:adapter"
 
     def _refuse(
-        self, adapter: _RecordingTransport, root: str, workflow: str = "dev-pipeline"
+        self,
+        adapter: _RecordingTransport,
+        root: str,
+        workflow: str = "dev-pipeline",
+        dry_run: bool = False,
     ) -> tuple[Path, str]:
         task_dir = _workspace_task(root)
         args = argparse.Namespace(
@@ -738,7 +742,7 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
             model=None,
             sandbox_mode=None,
             repo=None,
-            dry_run=True,
+            dry_run=dry_run,
             application=self._register(adapter),
             destination=None,
         )
@@ -787,6 +791,22 @@ class RefusalReachesTheCallerTests(unittest.TestCase):
         notification = status["review_admission"]["notification"]
         self.assertFalse(notification["delivered"])
         self.assertIn("transport is down", notification["detail"])
+
+    def test_a_refused_dry_run_tells_its_caller_and_files_nothing(self) -> None:
+        """Nobody asked to start this task, so nobody is told it stopped.
+
+        The refusal is real and reaches whoever ran the command, by the same
+        message and the same exit. What it must not become is the task's own
+        state or a stop message about work that was never going to happen.
+        """
+        adapter = _RecordingTransport()
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir, message = self._refuse(adapter, raw, dry_run=True)
+            left_behind = sorted(item.name for item in task_dir.iterdir())
+
+        self.assertIn("refuses to start the author", message)
+        self.assertEqual(adapter.events, [])
+        self.assertEqual(left_behind, ["plan.md", "task.md"])
 
 
 class ForegroundApplicationLifecycleTests(unittest.TestCase):
@@ -2318,6 +2338,12 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             (task / "task.md").write_text(
                 task_md.replace('status: "completed"', 'status: "blocked"'),
                 encoding="utf-8",
+            )
+            # The watcher runs the prompt its parent stored; a launch without
+            # one never gets as far as this test's subject.
+            task_runner.runner_dir(task).mkdir(parents=True, exist_ok=True)
+            task_runner.runner_prompt_path(task).write_text(
+                "review the work", encoding="utf-8"
             )
             self._admit_author(task)
             _launch(

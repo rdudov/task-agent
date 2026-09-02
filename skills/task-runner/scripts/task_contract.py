@@ -1368,23 +1368,50 @@ def load_task_contract(task_dir: Path) -> dict[str, Any]:
     return merge_task_contract(markdown_contract, file_contract)
 
 
-def require_review_verdict_contract(task_dir: Path) -> Path:
-    """Persist the explicit contract selected by a review launch."""
-    path = ensure_task_contract_file(task_dir)
-    contract = read_json(path)
+def review_verdict_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    """The stored contract a review launch selects, from the one on hand.
+
+    Kept apart from storing it so a launch can be told it conflicts with the
+    task's own contract before deciding whether it is going to store anything.
+    """
     existing = contract.get("review_verdict")
     if existing not in (None, {}, DEFAULT_REVIEW_VERDICT):
         raise ValueError("task contract already declares a different review_verdict")
-    contract["review_verdict"] = dict(DEFAULT_REVIEW_VERDICT)
     policy = contract.get("completion_policy")
-    if not isinstance(policy, dict):
-        policy = {}
-    policy["require_review_verdict"] = True
-    contract["completion_policy"] = policy
-    contract["gate_status"] = "gated"
-    contract.pop("gate_note", None)
-    write_json(path, contract)
+    selected = dict(contract)
+    selected["review_verdict"] = dict(DEFAULT_REVIEW_VERDICT)
+    selected["completion_policy"] = {
+        **(policy if isinstance(policy, dict) else {}),
+        "require_review_verdict": True,
+    }
+    selected["gate_status"] = "gated"
+    selected.pop("gate_note", None)
+    return selected
+
+
+def require_review_verdict_contract(task_dir: Path) -> Path:
+    """Persist the explicit contract selected by a review launch."""
+    path = ensure_task_contract_file(task_dir)
+    write_json(path, review_verdict_contract(read_json(path)))
     return path
+
+
+def planned_task_contract(
+    task_dir: Path, *, review_verdict: bool = False
+) -> dict[str, Any]:
+    """The contract a launch works from, without storing anything for it.
+
+    `load_task_contract` answers from what is already on disk. A launch is
+    asking a step earlier -- before it has generated the task's contract or
+    written the review gate it selects -- and a launch that will never write
+    either still has to be judged against the same contract as one that would.
+    """
+    stored = stored_task_contract(task_dir)
+    if review_verdict:
+        stored = review_verdict_contract(stored)
+    return merge_task_contract(
+        parse_task_markdown_contract(task_dir.resolve() / "task.md"), stored
+    )
 
 
 UNGATED_CONTRACT_NOTE = (
@@ -1397,11 +1424,12 @@ UNGATED_CONTRACT_NOTE = (
 )
 
 
-def ensure_task_contract_file(task_dir: Path) -> Path:
+def stored_task_contract(task_dir: Path) -> dict[str, Any]:
+    """The task's stored contract, or the one a launch would generate for it."""
     task_dir = task_dir.resolve()
     path = task_dir / "task_contract.json"
     if path.exists():
-        return path
+        return read_json(path)
     contract = parse_task_markdown_contract(task_dir / "task.md")
     contract["source"] = "generated_from_task_md"
     contract["gate_status"] = contract_gate_status(contract)
@@ -1413,7 +1441,14 @@ def ensure_task_contract_file(task_dir: Path) -> Path:
         # where it cannot be read as a decision about a real requirement.
         contract["completion_policy"] = {}
         contract["gate_note"] = UNGATED_CONTRACT_NOTE
-    write_json(path, contract)
+    return contract
+
+
+def ensure_task_contract_file(task_dir: Path) -> Path:
+    task_dir = task_dir.resolve()
+    path = task_dir / "task_contract.json"
+    if not path.exists():
+        write_json(path, stored_task_contract(task_dir))
     return path
 
 

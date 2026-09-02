@@ -586,6 +586,22 @@ exactly like a real start — that report is what preparing a launch is for —
 without writing its refusal or allocating a number for a review outage it merely
 predicted.
 
+**A dry run writes nothing into the task directory.** It resolves the runner,
+the access grant, the contract this launch would work from, the admission and
+the child prompt, prints the prepared metadata and that decision on stdout, and
+leaves the task exactly as the last real run left it: its `.runner/prompt.txt`
+and `.runner/runner.json`, its `trace.md`, its `status.json`, its
+`task_contract.json`. It also takes no ownership lock and sends no stop message,
+because both are acts of a run. The refusals are unchanged — an unusable task
+tree, an unbindable reviewer, a contract that already declares a different
+review verdict, an unwritable `--repo`, a live run — because each comes from the
+resolution rather than from having written something first, and a refused dry
+run reports through its own exit code and message. A dry run is a question about
+a launch, so asking it about a closed or foreign task has to cost that task
+nothing: asking it about task 1212 once replaced the stored prompt and runner
+metadata of that task's real fourth review round and moved its card from
+`completed` back to `ready`.
+
 Every one of those paths used to leave a launch that wrote no line of work
 recorded as the latest author, which is enough to lock the bound reviewer out of
 its own number as "the author's own family" and admit the family that wrote the
@@ -843,13 +859,13 @@ that independent review reproduced. A read-only or dry run wrote its own
 review that earlier change vanished. And a run that opened a scope and never
 closed it became an indeterminate result that blocked every task in the
 repository. Here a dry or read-only run opens no scope and appends no result of
-its own, so it has nothing to overwrite; a dry run may only transfer an exact
-previous run's terminal evidence before replacing current-run metadata. An
+its own, so it has nothing to overwrite; a dry run replaces no current-run
+metadata either, so it has nothing to preserve ahead of it. An
 abandoned scope is durably closed as a no-op
 only while the repository still matches its opening fingerprint. A foreign
 claimant with unknown liveness refuses another writer without being settled as
 dead. If that exact run's own `runner.json` records its matching
-`write_scope_run_id` and a terminal outcome, the next dry run or real `start`
+`write_scope_run_id` and a terminal outcome, the next real `start`
 transfers that evidence into the append-only admission ledger before replacing
 current-run metadata. The scope therefore remains settleable across PID namespaces for its
 owner or a successor; a terminal record for any other run does not count. A

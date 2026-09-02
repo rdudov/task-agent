@@ -45,17 +45,14 @@ class SandboxedChildAccessGrantTests(unittest.TestCase):
 
     @staticmethod
     def _codex_command(sandbox_mode: str, notebook: Path | None = None) -> list[str]:
-        with tempfile.TemporaryDirectory() as raw:
-            prompt = Path(raw) / "prompt.txt"
-            prompt.write_text("work", encoding="utf-8")
-            return task_runner.build_command(
-                "codex",
-                prompt,
-                task_runner.repo_root(),
-                None,
-                sandbox_mode,
-                notebook,
-            )
+        return task_runner.build_command(
+            "codex",
+            "work",
+            task_runner.repo_root(),
+            None,
+            sandbox_mode,
+            notebook,
+        )
 
     def test_codex_workspace_write_child_is_launched_with_network_access(self) -> None:
         self.assertIn(
@@ -207,12 +204,9 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
                 self.assertTrue(task_runner.parse_args().foreground)
 
     def test_codex_approval_mode_is_bound_to_the_recorded_constant(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            prompt = Path(raw) / "prompt.txt"
-            prompt.write_text("test", encoding="utf-8")
-            command = task_runner.build_command(
-                "codex", prompt, task_runner.repo_root(), None, "workspace-write"
-            )
+        command = task_runner.build_command(
+            "codex", "test", task_runner.repo_root(), None, "workspace-write"
+        )
         index = command.index("--ask-for-approval")
         self.assertEqual(command[index + 1], task_runner.CODEX_APPROVAL_MODE)
 
@@ -220,10 +214,8 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             notebook = Path(raw) / "tasks" / "001-review"
             notebook.mkdir(parents=True)
-            prompt = Path(raw) / "prompt.txt"
-            prompt.write_text("review", encoding="utf-8")
             command = task_runner.build_command(
-                "codex", prompt, task_runner.repo_root(), None, "read-only", notebook
+                "codex", "review", task_runner.repo_root(), None, "read-only", notebook
             )
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")
         self.assertEqual(command[command.index("-C") + 1], str(notebook))
@@ -253,11 +245,9 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             notebook = Path(raw) / "001-review"
             notebook.mkdir()
-            prompt = Path(raw) / "prompt.txt"
-            prompt.write_text("review", encoding="utf-8")
             command = task_runner.build_command(
                 "claude",
-                prompt,
+                "review",
                 task_runner.repo_root(),
                 None,
                 "read-only",
@@ -603,16 +593,13 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         self.assertEqual(task_runner.dev_pipeline_options(parsed), {})
 
     def test_build_codex_command_uses_current_approval_flag_without_full_auto(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            prompt_path = Path(raw) / "task-runner-prompt.txt"
-            prompt_path.write_text("test prompt", encoding="utf-8")
-            command = task_runner.build_command(
-                runner="codex",
-                prompt_path=prompt_path,
-                root=Path("/tmp/repo"),
-                model=None,
-                sandbox_mode="danger-full-access",
-            )
+        command = task_runner.build_command(
+            runner="codex",
+            prompt="test prompt",
+            root=Path("/tmp/repo"),
+            model=None,
+            sandbox_mode="danger-full-access",
+        )
 
         self.assertEqual(command[0:4], ["codex", "--ask-for-approval", "never", "exec"])
         self.assertNotIn("--full-auto", command)
@@ -623,8 +610,6 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             target = Path(raw).resolve()
             subprocess.run(["git", "init", "-q", str(target)], check=True)
-            prompt = target / "prompt.txt"
-            prompt.write_text("test", encoding="utf-8")
             for runner in ("codex", "claude", "agent"):
                 directories, grant = task_runner.prepare_access_grant(
                     runner, "workspace-write", target, require_git_worktree=True
@@ -641,7 +626,7 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
                 self.assertEqual(command_directories, [target, target / ".git"])
                 command = task_runner.build_command(
                     runner,
-                    prompt,
+                    "test",
                     task_runner.repo_root(),
                     None,
                     "workspace-write",
@@ -659,7 +644,7 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
 
             read_only_codex = task_runner.build_command(
                 "codex",
-                prompt,
+                "test",
                 task_runner.repo_root(),
                 None,
                 "read-only",
@@ -822,6 +807,146 @@ class TaskNumberWidthTests(unittest.TestCase):
         self.assertIsNone(task_runner.task_number_prefix("2026-05-26-openclaw"))
         self.assertEqual(task_runner.task_number_prefix("1000-slug"), "1000")
         self.assertEqual(task_runner.task_number_prefix("123-slug"), "123")
+
+
+class _StartedWatcher:
+    """A watcher that reports a healthy startup and does nothing else."""
+
+    STARTUP = {
+        "ok": True,
+        "watcher_pid": 4242,
+        "pid": 4243,
+        "child_started_at": "2026-09-02T00:00:00+00:00",
+        "process_identity": None,
+        "watcher_process_identity": None,
+    }
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.stdout = io.StringIO(json.dumps(self.STARTUP) + "\n")
+
+
+class DryRunLeavesTheTaskAloneTests(unittest.TestCase):
+    """A dry run reports a decision instead of becoming one of the task's runs.
+
+    A dry run over task 1212 replaced the stored prompt and runner metadata of
+    that task's real review round and moved its card from `completed` back to
+    `ready`, seventeen minutes after a person had closed it. The probe is the
+    one that found it: every byte of the task directory, before and after.
+    """
+
+    def _task(self, root: Path) -> Path:
+        """A task carrying the records of a run that really happened."""
+        task_dir = root / "tasks" / "001-subject"
+        (task_dir / ".runner").mkdir(parents=True)
+        (task_dir / "task.md").write_text(
+            "---\n"
+            'id: 1\nslug: "001-subject"\ntitle: "Subject"\ndate: 2026-09-01\n'
+            'status: "completed"\nprojects: []\ntrips: []\n---\n# Subject\n',
+            encoding="utf-8",
+        )
+        (task_dir / "plan.md").write_text("# Plan\n\n1. [done] Work\n", encoding="utf-8")
+        (task_dir / "trace.md").write_text(
+            "# Trace\n\n- 2026-09-01T00:00:00+00:00 the run that happened\n",
+            encoding="utf-8",
+        )
+        task_runner.write_json(
+            task_runner.status_path(task_dir),
+            {"state": "completed", "current_step": "the run that happened"},
+        )
+        task_runner.runner_prompt_path(task_dir).write_text(
+            "the prompt of the run that happened", encoding="utf-8"
+        )
+        task_runner.write_json(
+            task_runner.runner_meta_path(task_dir),
+            {"runner": "codex", "started_at": "2026-09-01T00:00:00+00:00"},
+        )
+        return task_dir
+
+    @staticmethod
+    def _fingerprint(task_dir: Path) -> dict[str, bytes | None]:
+        return {
+            str(path.relative_to(task_dir)): path.read_bytes() if path.is_file() else None
+            for path in sorted(task_dir.rglob("*"))
+        }
+
+    def _args(self, task_dir: Path, *, dry_run: bool) -> argparse.Namespace:
+        return argparse.Namespace(
+            task_dir=str(task_dir),
+            runner="claude",
+            workflow="standard",
+            model=None,
+            reviewer_runner=None,
+            sandbox_mode=None,
+            repo=None,
+            dry_run=dry_run,
+            foreground=False,
+            application=None,
+            destination=None,
+            memory_limit=None,
+        )
+
+    def _start(self, task_dir: Path, *, dry_run: bool) -> str:
+        stdout = io.StringIO()
+        with mock.patch.object(
+            task_runner.review_admission, "reviewer_available", return_value=True
+        ), mock.patch.object(
+            task_runner.subprocess, "Popen", _StartedWatcher
+        ), contextlib.redirect_stdout(stdout):
+            task_runner.cmd_start(self._args(task_dir, dry_run=dry_run))
+        return stdout.getvalue()
+
+    def test_a_dry_run_changes_no_byte_of_an_existing_task(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = self._task(Path(raw))
+            before = self._fingerprint(task_dir)
+            reported = json.loads(self._start(task_dir, dry_run=True))
+            self.assertEqual(self._fingerprint(task_dir), before)
+
+        # It still reports the prepared launch it was asked about: the admission
+        # decision, and the prompt the child would have been given.
+        self.assertTrue(reported["dry_run"])
+        self.assertEqual(reported["review_admission"]["decision"], "admitted")
+        self.assertIn("You are the child execution agent", reported["command"][-1])
+        self.assertNotIn(
+            "the prompt of the run that happened", reported["command"][-1]
+        )
+
+    def test_a_dry_run_creates_nothing_in_a_task_that_never_ran(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw) / "tasks" / "001-subject"
+            task_dir.mkdir(parents=True)
+            (task_dir / "task.md").write_text(
+                "---\n"
+                'id: 1\nslug: "001-subject"\ntitle: "Subject"\ndate: 2026-09-01\n'
+                'status: "planned"\nprojects: []\ntrips: []\n---\n# Subject\n',
+                encoding="utf-8",
+            )
+            (task_dir / "plan.md").write_text(
+                "# Plan\n\n1. [pending] Work\n", encoding="utf-8"
+            )
+            self._start(task_dir, dry_run=True)
+            left_behind = sorted(item.name for item in task_dir.iterdir())
+
+        # Not the generated contract, not `.runner/`, not the ownership lock.
+        self.assertEqual(left_behind, ["plan.md", "task.md"])
+
+    def test_a_real_start_still_records_the_run_it_started(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = self._task(Path(raw))
+            self._start(task_dir, dry_run=False)
+
+            prompt = task_runner.runner_prompt_path(task_dir).read_text(encoding="utf-8")
+            meta = task_runner.read_json(task_runner.runner_meta_path(task_dir))
+            status = task_runner.read_json(task_runner.status_path(task_dir))
+            trace = (task_dir / "trace.md").read_text(encoding="utf-8")
+
+        self.assertIn("You are the child execution agent", prompt)
+        self.assertEqual(meta["command"][-1], prompt)
+        self.assertEqual(meta["pid"], _StartedWatcher.STARTUP["pid"])
+        self.assertEqual(status["state"], "running")
+        self.assertEqual(status["review_admission"]["decision"], "admitted")
+        self.assertIn("Parent agent prepared child run", trace)
+        self.assertIn("Child process started with pid 4243", trace)
 
 
 if __name__ == "__main__":

@@ -269,16 +269,13 @@ class ClaudeProjectSettingsTests(unittest.TestCase):
 
 
 class ClaudeCommandTests(unittest.TestCase):
-    def _prompt_file(self, root: Path) -> Path:
-        path = root / "prompt.txt"
-        path.write_text("do the work", encoding="utf-8")
-        return path
+    PROMPT = "do the work"
 
     def test_claude_command_keeps_the_prompt_last(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             command = task_runner.build_command(
-                "claude", self._prompt_file(root), root, None, "danger-full-access"
+                "claude", self.PROMPT, root, None, "danger-full-access"
             )
         self.assertEqual(command[0], "claude")
         self.assertIn("--print", command)
@@ -287,7 +284,7 @@ class ClaudeCommandTests(unittest.TestCase):
     def test_model_override_reaches_only_the_resolved_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            prompt = self._prompt_file(root)
+            prompt = self.PROMPT
             claude_command = task_runner.build_command(
                 "claude", prompt, root, "claude-model-slug", "workspace-write"
             )
@@ -304,7 +301,7 @@ class ClaudeCommandTests(unittest.TestCase):
                 os.environ, {"CLAUDE_CHILD_DEFAULT_MODEL": "pinned-model"}, clear=False
             ):
                 command = task_runner.build_command(
-                    "claude", self._prompt_file(root), root, None, "workspace-write"
+                    "claude", self.PROMPT, root, None, "workspace-write"
                 )
         self.assertEqual(command[command.index("--model") + 1], "pinned-model")
 
@@ -313,7 +310,7 @@ class ClaudeCommandTests(unittest.TestCase):
             root = Path(tmp)
             with self.assertRaises(SystemExit):
                 task_runner.build_command(
-                    "gemini", self._prompt_file(root), root, None, "workspace-write"
+                    "gemini", self.PROMPT, root, None, "workspace-write"
                 )
 
 

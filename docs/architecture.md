@@ -235,6 +235,15 @@ append-only ledger and restoring the record it replaced. A `--dry-run`
 preparation never reaches the commit at all, and is additionally evaluated and
 refused identically without writing its refusal or allocating an outage number.
 
+A dry run writes nothing into the task directory at all. It resolves the runner,
+the access grant, the contract this launch would work from, the admission and the
+child prompt, prints them, and leaves every file the last real run left — its
+prompt, its runner metadata, its trace, its status and its contract. That is the
+whole difference between the two: a dry run answers a question about a launch,
+so it must be safe to ask it about a task nobody meant to launch. The refusals
+are unchanged, because they come from the same resolution rather than from
+having written something first.
+
 The ordinary launch detaches its watcher. A typed application-managed worker
 may instead select `--foreground` when its outer service or container supervisor
 must remain the process owner. The launch still performs the same decision,
@@ -276,9 +285,10 @@ answer to it: the owner's gates pass, or the owner is cancelled through the
 canonical status command, which appends a `scope_released` record naming the
 reason and each released obligation — its run, its repository and the state
 digest measured there — rather than letting a withdrawn task hold the repository
-forever. Liveness is checked before cancellation is. Before dry-run or real current-run
+forever. Liveness is checked before cancellation is. Before a real start's
 metadata replaces the old record, the launcher transfers a matching prior
-terminal record into the append-only admission ledger. That exact run-scoped evidence can settle its
+terminal record into the append-only admission ledger; a dry run replaces no
+record and therefore preserves none. That exact run-scoped evidence can settle its
 scope across PID namespaces; another run's record cannot. Terminal pre-child
 launch failure also releases the pending launch claim, so retry remains a real
 product path. The state fingerprint covers HEAD, tracked worktree

@@ -148,10 +148,11 @@ Files the user explicitly requested are a separate, user-facing class of output.
   only provable abandoned no-ops are durably settled before a successor enters,
   unknown liveness refuses a foreign writer, abandoned divergent work remains a
   recomputed obligation for other tasks, and the owner can enter same-number
-  rework without freezing ambiguous attribution. Before a dry run or real start
-  replaces the single-current-run metadata, it transfers a matching prior
+  rework without freezing ambiguous attribution. Before a real start replaces
+  the single-current-run metadata, it transfers a matching prior
   terminal record into the append-only admission ledger; that exact run-scoped
-  evidence recovers its scope across PID namespaces. A terminal launch failure releases
+  evidence recovers its scope across PID namespaces. A dry run replaces nothing
+  and so preserves nothing. A terminal launch failure releases
   its pending launch claim. The fingerprint includes staged and non-ignored
   untracked content. Successful completion appends the exact write-scope run IDs
   whose gates closed, so later repository history cannot retroactively invalidate

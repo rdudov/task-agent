@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -57,6 +58,7 @@ try:  # package install
         ensure_task_contract_file,
         git_repository_identity,
         load_task_contract,
+        planned_task_contract,
         published_review_verdict,
         require_review_verdict_contract,
     )
@@ -101,6 +103,7 @@ except ImportError:  # direct repository script
         ensure_task_contract_file,
         git_repository_identity,
         load_task_contract,
+        planned_task_contract,
         published_review_verdict,
         require_review_verdict_contract,
     )
@@ -300,12 +303,21 @@ def write_status(task_dir: Path, state: str, current_step: str, extra: dict | No
     write_json(status_path(task_dir), payload)
 
 
-def ensure_task_contract(task_dir: Path) -> None:
+def require_task_artifacts(task_dir: Path) -> None:
+    """Refuse a launch the task directory cannot support.
+
+    Separate from materializing the launch's own files, because a launch that
+    will record nothing must still be refused by an unusable task tree.
+    """
     if not task_dir.exists():
         raise SystemExit(f"Task directory does not exist: {task_dir}")
     for name in ("task.md", "plan.md"):
         if not (task_dir / name).exists():
             raise SystemExit(f"Missing required task artifact: {task_dir / name}")
+
+
+def ensure_task_contract(task_dir: Path) -> None:
+    require_task_artifacts(task_dir)
     ensure_task_contract_file(task_dir)
     runner_dir(task_dir).mkdir(parents=True, exist_ok=True)
 
@@ -1172,7 +1184,7 @@ def resolve_sandbox_mode(
 
 def build_command(
     runner: str,
-    prompt_path: Path,
+    prompt: str,
     root: Path,
     model: str | None,
     sandbox_mode: str | None,
@@ -1180,7 +1192,6 @@ def build_command(
     access_directories: tuple[Path, ...] | list[Path] = (),
     application_arguments: tuple[str, ...] | list[str] = (),
 ) -> list[str]:
-    prompt = prompt_path.read_text(encoding="utf-8")
     if runner == "codex":
         resolved_sandbox_mode = sandbox_mode or "workspace-write"
         workdir = codex_workdir(resolved_sandbox_mode, notebook)
@@ -2173,19 +2184,38 @@ def configured_assurance(args: argparse.Namespace) -> dict | None:
 def cmd_start(args: argparse.Namespace) -> None:
     root = repo_root()
     task_dir = resolve_task_dir(args.task_dir)
-    ownership_lock = acquire_run_ownership(task_dir)
+    # A dry run answers a question about a launch; it is not one. It reads the
+    # task, decides everything a real start would decide, prints that, and
+    # leaves the task's own records exactly as the last real run left them --
+    # so a dry run over a task nobody meant to launch costs that task nothing.
+    committing = not args.dry_run
+    # Ownership is for writers. Taking the lock is itself a write -- it creates
+    # `.runner/` and the lock file -- and a run that records nothing has no
+    # writer to serialize against.
+    ownership_lock = (
+        acquire_run_ownership(task_dir) if committing else contextlib.ExitStack()
+    )
     require_no_live_run(task_dir)
-    ensure_task_contract(task_dir)
+    require_task_artifacts(task_dir)
+    if committing:
+        ensure_task_contract(task_dir)
     review_kind = getattr(args, "review_kind", None)
     if review_kind is None and getattr(args, "require_review_verdict", False):
         review_kind = "technical"
         args.review_kind = review_kind
     is_review_launch = bool(review_kind)
-    if getattr(args, "require_review_verdict", False):
-        try:
-            require_review_verdict_contract(task_dir)
-        except ValueError as exc:
-            raise SystemExit(f"Cannot prepare review verdict contract: {exc}") from None
+    # The contract this launch is judged against. A real start stores the review
+    # gate it selects; a dry run computes the same contract and stores nothing,
+    # so it refuses the same conflict without gating a task it never ran.
+    try:
+        contract = planned_task_contract(
+            task_dir,
+            review_verdict=bool(getattr(args, "require_review_verdict", False)),
+        )
+    except ValueError as exc:
+        raise SystemExit(f"Cannot prepare review verdict contract: {exc}") from None
+    if committing and getattr(args, "require_review_verdict", False):
+        require_review_verdict_contract(task_dir)
     # Resolve once, here, while this process is still a direct descendant of the
     # parent CLI. The detached watcher receives the decision and never re-detects.
     args.runner, runner_resolution = resolve_runner(args.runner)
@@ -2213,14 +2243,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     # `committing` is about this launch's own records, not about the binding: a
     # dry run is evaluated and refused identically and writes neither its refusal
     # nor the outage number another number owes.
-    committing = not args.dry_run
     try:
         review_record = review_admission.admit_launch(
             task_dir,
             workflow=args.workflow,
             author_runner=args.runner,
             access_grant=access_grant,
-            contract=load_task_contract(task_dir),
+            contract=contract,
             declared_reviewer=getattr(args, "reviewer_runner", None),
             review_launch=is_review_launch,
             expected_author_runner=(
@@ -2235,19 +2264,26 @@ def cmd_start(args: argparse.Namespace) -> None:
         # A refused preparation still reports: being told before an author runs
         # is what preparing a launch is for, and a refusal binds nobody. Only the
         # binding and the outage number are withheld from a run that never began.
-        notification = report_review_admission_refusal(task_dir, exc.record, args)
-        write_status(
-            task_dir,
-            "blocked",
-            exc.record["message"],
-            {
-                "runner": args.runner,
-                "workflow": args.workflow,
-                "review_admission": {**exc.record, "notification": notification},
-            },
-        )
-        append_trace(task_dir, exc.record["message"])
-        append_trace(task_dir, notification["trace"])
+        #
+        # A dry run is told the same thing, by the same message, through its own
+        # exit. What it does not do is file that refusal as the task's state or
+        # push it to the person: nobody asked to start this task, so a blocked
+        # card and a stop message about it would both be about work that was
+        # never going to happen.
+        if committing:
+            notification = report_review_admission_refusal(task_dir, exc.record, args)
+            write_status(
+                task_dir,
+                "blocked",
+                exc.record["message"],
+                {
+                    "runner": args.runner,
+                    "workflow": args.workflow,
+                    "review_admission": {**exc.record, "notification": notification},
+                },
+            )
+            append_trace(task_dir, exc.record["message"])
+            append_trace(task_dir, notification["trace"])
         ownership_lock.close()
         raise SystemExit(exc.record["message"]) from None
     if is_review_launch:
@@ -2256,15 +2292,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         # unrelated technical or earlier product-review admission cannot be
         # borrowed by a hand-written result.
         review_record["review_kind"] = review_kind
-    append_trace(
-        task_dir,
-        review_record["message"]
-        if committing
-        else (
-            "Dry run evaluated this launch without committing its admission: "
-            + review_record["message"]
-        ),
-    )
+    if committing:
+        append_trace(task_dir, review_record["message"])
     admission_receipt: dict | None = None
 
     try:
@@ -2306,39 +2335,39 @@ def cmd_start(args: argparse.Namespace) -> None:
             statement_author_runner=getattr(args, "statement_author_runner", None),
             review_admission_record=review_record,
         )
-        runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
+        workflow_meta = None
     else:
-        runner_prompt_path(task_dir).write_text(
-            f"Workflow `{args.workflow}` is executed by a dedicated runner script.\n",
-            encoding="utf-8",
-        )
+        prompt = f"Workflow `{args.workflow}` is executed by a dedicated runner script.\n"
         workflow_meta = {
             "workflow": args.workflow,
             "sandbox_mode": resolved_sandbox_mode,
             **dev_pipeline_options(args),
         }
-        write_json(runner_workflow_path(task_dir), workflow_meta)
 
-    append_trace(
-        task_dir,
-        f"Parent agent prepared child run with runner `{args.runner}` "
-        f"(resolved by {runner_resolution}) and workflow `{args.workflow}`.",
-    )
-    write_status(
-        task_dir,
-        "running",
-        f"Starting child agent via {args.runner} ({args.workflow})",
-        {
-            "runner": args.runner,
-            "runner_resolution": runner_resolution,
-            "workflow": args.workflow,
-            "review_admission": review_record,
-        },
-    )
+    if committing:
+        runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
+        if workflow_meta is not None:
+            write_json(runner_workflow_path(task_dir), workflow_meta)
+        append_trace(
+            task_dir,
+            f"Parent agent prepared child run with runner `{args.runner}` "
+            f"(resolved by {runner_resolution}) and workflow `{args.workflow}`.",
+        )
+        write_status(
+            task_dir,
+            "running",
+            f"Starting child agent via {args.runner} ({args.workflow})",
+            {
+                "runner": args.runner,
+                "runner_resolution": runner_resolution,
+                "workflow": args.workflow,
+                "review_admission": review_record,
+            },
+        )
 
     command = workflow_command or build_command(
         args.runner,
-        runner_prompt_path(task_dir),
+        prompt,
         root,
         args.model,
         resolved_sandbox_mode,
@@ -2368,22 +2397,22 @@ def cmd_start(args: argparse.Namespace) -> None:
     if destination:
         meta["destination_binding"] = hashlib.sha256(destination.encode()).hexdigest()[:12]
 
-    # Preserve the exact previous run's terminal write-scope evidence before
-    # either a dry run or a real start replaces the single-current-run metadata
-    # file. The admission ledger is append-only, so a later real watcher can
-    # consume this evidence instead of the owner destroying its own recovery.
-    write_admission.preserve_terminal_scope_evidence(
-        task_dir, read_json(runner_meta_path(task_dir))
-    )
-
     if args.dry_run:
+        # Everything a start would decide, decided, and handed to the caller
+        # that asked. The task keeps the records of the run that actually
+        # happened, so nothing here has to be preserved from this one.
         meta["dry_run"] = True
-        write_json(runner_meta_path(task_dir), meta)
-        append_trace(task_dir, "Dry run prepared prompt and runner metadata without launching a child process.")
-        write_status(task_dir, "ready", f"Prepared child run via {args.runner}", {"runner": args.runner})
         ownership_lock.close()
         print(json.dumps(meta, indent=2))
         return
+
+    # Preserve the exact previous run's terminal write-scope evidence before
+    # this start replaces the single-current-run metadata file. The admission
+    # ledger is append-only, so a later real watcher can consume this evidence
+    # instead of the owner destroying its own recovery.
+    write_admission.preserve_terminal_scope_evidence(
+        task_dir, read_json(runner_meta_path(task_dir))
+    )
 
     if getattr(args, "foreground", False):
         # Application-managed workers already have a durable outer supervisor.
@@ -3251,7 +3280,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
         )
         command = workflow_command or build_command(
             args.runner,
-            runner_prompt_path(task_dir),
+            runner_prompt_path(task_dir).read_text(encoding="utf-8"),
             root,
             args.model,
             resolved_sandbox_mode,
@@ -3918,7 +3947,14 @@ def parse_args() -> argparse.Namespace:
         "--review-packet",
         help="Digest-bound review packet for automatic assurance handoff.",
     )
-    start_parser.add_argument("--dry-run", action="store_true", help="Prepare artifacts without launching the child process.")
+    start_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Report the launch this would start -- admission decision, command "
+            "and prompt -- without launching it or writing in the task directory."
+        ),
+    )
     start_parser.add_argument(
         "--foreground",
         action="store_true",
