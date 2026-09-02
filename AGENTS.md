@@ -101,10 +101,12 @@ Files the user explicitly requested are a separate, user-facing class of output.
   relaunched through the current runner rather than reconstructing targets from
   historical metadata.
   Repeatable `--repo` still names one exact
-  multi-repository candidate; dev-pipeline passes the same set to the core
-  owner. New supervision records also
-  bind liveness to the observer's PID namespace, so a nested observer cannot
-  declare an invisible host process dead or replace it.
+  multi-repository candidate on the standard path. The dev-pipeline core drives
+  one owner workspace, so that workflow resolves the repeatable value to that
+  single path before it reaches the watcher and the adapter, and names the
+  repositories it was given when there is more than one. New supervision
+  records also bind liveness to the observer's PID namespace, so a nested
+  observer cannot declare an invisible host process dead or replace it.
 - Review admission decides, before the author starts, which installation
   assurance strategy governs a material launch and whether it can be bound.
   Material work is recognized
