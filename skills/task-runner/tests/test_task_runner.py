@@ -527,6 +527,81 @@ class TaskRunnerSandboxModeTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._dev_pipeline_command(repo=None)
 
+    @staticmethod
+    def _parsed_start(*arguments: str) -> argparse.Namespace:
+        with mock.patch.object(
+            sys, "argv", ["task_runner.py", "start", "/tmp/001-task", *arguments]
+        ):
+            return task_runner.parse_args()
+
+    def test_dev_pipeline_hands_one_repository_path_across_both_boundaries(self) -> None:
+        """`--repo` is repeatable, but both dev-pipeline consumers take one path.
+
+        The watcher is reached as text and the adapter as a command list, so a
+        list that survives to either boundary becomes `['/opt/...']`: a path the
+        watcher cannot resolve, and a run record no reader can use.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw) / "owner-workspace"
+            repo.mkdir()
+            parsed = self._parsed_start(
+                "--workflow", "dev-pipeline", "--runner", "codex", "--repo", str(repo)
+            )
+
+            watcher_arguments: list[str] = []
+            for name, value in task_runner.watcher_options(parsed).items():
+                watcher_arguments.extend([f"--{name.replace('_', '-')}", str(value)])
+            with mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "task_runner.py",
+                    "_run-child",
+                    "/tmp/001-task",
+                    "--runner",
+                    "codex",
+                    "--workflow",
+                    "dev-pipeline",
+                    *watcher_arguments,
+                ],
+            ):
+                watcher_args = task_runner.parse_args()
+            self.assertEqual(
+                task_runner.resolve_access_directories("codex", watcher_args.repo),
+                [repo.resolve()],
+            )
+
+            adapter_command = task_runner.build_workflow_command(
+                "dev-pipeline",
+                "codex",
+                Path("/tmp/001-task"),
+                "workspace-write",
+                None,
+                **task_runner.dev_pipeline_options(parsed),
+            )
+            self.assertEqual(
+                adapter_command[adapter_command.index("--repo") + 1], str(repo)
+            )
+
+    def test_dev_pipeline_names_the_repositories_it_cannot_run_in_at_once(self) -> None:
+        parsed = self._parsed_start(
+            "--workflow",
+            "dev-pipeline",
+            "--repo",
+            "/tmp/first-workspace",
+            "--repo",
+            "/tmp/second-workspace",
+        )
+        with self.assertRaisesRegex(SystemExit, "second-workspace"):
+            task_runner.dev_pipeline_options(parsed)
+
+    def test_standard_workflow_keeps_every_repeated_repository(self) -> None:
+        parsed = self._parsed_start(
+            "--repo", "/tmp/first-repo", "--repo", "/tmp/second-repo"
+        )
+        self.assertEqual(parsed.repo, ["/tmp/first-repo", "/tmp/second-repo"])
+        self.assertEqual(task_runner.dev_pipeline_options(parsed), {})
+
     def test_build_codex_command_uses_current_approval_flag_without_full_auto(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             prompt_path = Path(raw) / "task-runner-prompt.txt"

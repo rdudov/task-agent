@@ -1388,6 +1388,19 @@ def dev_pipeline_options(args: argparse.Namespace) -> dict:
     if getattr(args, "workflow", None) != "dev-pipeline":
         return {}
     options = {name: getattr(args, name, None) for name in DEV_PIPELINE_OPTIONS}
+    repo = options["repo"]
+    if isinstance(repo, (list, tuple)):
+        # `--repo` is repeatable, so argparse always hands over a list, while
+        # both consumers of these options take one path: the watcher renders
+        # each option as `str(value)`, and the adapter command carries it
+        # verbatim. Resolving the shape here keeps that single answer, instead
+        # of a list stringified into a path with a bracket in it.
+        if len(repo) > 1:
+            raise SystemExit(
+                "The dev-pipeline workflow runs in one owner workspace, but "
+                "--repo names " + ", ".join(str(value) for value in repo) + "."
+            )
+        options["repo"] = str(repo[0]) if repo else None
     return {name: value for name, value in options.items() if value is not None}
 
 

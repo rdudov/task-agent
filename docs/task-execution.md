@@ -387,6 +387,14 @@ are both gone is answered correctly with nobody left to act.
   --workflow dev-pipeline --repo /path/to/target-repo
 ```
 
+`--repo` is repeatable for the standard candidate set, and the dev-pipeline core
+drives one owner workspace, so this workflow resolves that repeatable value to a
+single path in `dev_pipeline_options()` — the one place both consumers read it
+from. The watcher receives each option as text and the adapter receives it as a
+command element, so a list surviving to either boundary becomes `['/path']`: a
+path the watcher cannot resolve and a run record no reader can use. More than one
+repository is refused there by name, and no `--repo` at all is refused as before.
+
 The runner decides nothing about the pipeline itself. `skills/task-runner/scripts/dev_pipeline_adapter.py` owns the integration: it renders the owner instruction from `task.md`, calls the public CLI, validates the neutral lifecycle events the core emits, and projects them into the task's `status.json`, `trace.md`, and `progress.json`. The core interprets owner-runtime behavior; the adapter only projects what the core reports.
 
 The workflow states its own outcome through those events, so a subprocess exiting cleanly is not a completion. A dev-pipeline child that ends without a terminal event is recorded as failed; a validated quota-wait event is a durable pause and is not rewritten as that failure. Standard and dev-pipeline finalizers share the durable status, plan, live-evidence, explicit-verdict, and admitted-independent-review checks, even when the child wrote `completed` itself. Enforced policy families additionally need an approved digest-bound review for dev-pipeline; standard tasks do not manufacture that profile-specific review surface. That reviewer decides only the two prose policy families against the exact candidate. Live-evidence gates remain owned by the completion predicate, so a pre-terminal policy reviewer neither requires a future delivery/completion receipt nor converts its honest pending state into a policy-family failure.

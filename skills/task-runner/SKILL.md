@@ -188,6 +188,11 @@ Run a task through the dev-pipeline workflow:
   --workflow dev-pipeline --repo /path/to/target-repo
 ```
 
+`--repo` is repeatable everywhere, but the dev-pipeline core drives one owner
+workspace, so this workflow resolves the repeatable value to that single path
+before it reaches the watcher and the adapter, and names the repositories it was
+given when there is more than one. A launch with no `--repo` is still refused.
+
 Name the reviewing family explicitly when the launch should not take the first
 independent one installed:
 
