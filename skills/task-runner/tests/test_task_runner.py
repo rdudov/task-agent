@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -28,6 +29,7 @@ task_runner = _load_task_runner_module()
 # Loading the module above put the scripts directory on `sys.path`; the gate
 # owner vocabulary belongs to the completion owner, not to this launcher.
 from task_completion import USER_OR_EXTERNAL_COMPLETION_GATE  # noqa: E402
+import application_adapter  # noqa: E402
 
 
 class SandboxedChildAccessGrantTests(unittest.TestCase):
@@ -825,6 +827,45 @@ class _StartedWatcher:
         self.stdout = io.StringIO(json.dumps(self.STARTUP) + "\n")
 
 
+class _RecordingApplication:
+    """An installation that keeps durable per-task state, as the real one does.
+
+    It writes only when the launch says it is recording, so a test that asserts
+    the file is absent is asserting the answer got here, not that applications
+    happen to be inert.
+    """
+
+    api_version = 1
+
+    def __init__(self) -> None:
+        self.launch_requests: list[object] = []
+        self.session_requests: list[object] = []
+
+    def launch_policy(self, request):
+        self.launch_requests.append(request)
+        if request.committing:
+            path = request.task_dir / ".runner" / "installation-policy.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"recorded": true}\n', encoding="utf-8")
+        return application_adapter.LaunchPolicyV1(request.requested_memory_limit_bytes)
+
+    def standard_session(self, request):
+        self.session_requests.append(request)
+        return application_adapter.StandardSessionV1()
+
+    def standard_run_finished(self, result):
+        return None
+
+    def deliver_event(self, event):
+        return application_adapter.DeliveryResultV1(True, "recorded")
+
+    def recover_transport(self, request):
+        return None
+
+    def completion_problems(self, request):
+        return []
+
+
 class DryRunLeavesTheTaskAloneTests(unittest.TestCase):
     """A dry run reports a decision instead of becoming one of the task's runs.
 
@@ -869,7 +910,9 @@ class DryRunLeavesTheTaskAloneTests(unittest.TestCase):
             for path in sorted(task_dir.rglob("*"))
         }
 
-    def _args(self, task_dir: Path, *, dry_run: bool) -> argparse.Namespace:
+    def _args(
+        self, task_dir: Path, *, dry_run: bool, application: str | None = None
+    ) -> argparse.Namespace:
         return argparse.Namespace(
             task_dir=str(task_dir),
             runner="claude",
@@ -880,19 +923,23 @@ class DryRunLeavesTheTaskAloneTests(unittest.TestCase):
             repo=None,
             dry_run=dry_run,
             foreground=False,
-            application=None,
+            application=application,
             destination=None,
             memory_limit=None,
         )
 
-    def _start(self, task_dir: Path, *, dry_run: bool) -> str:
+    def _start(
+        self, task_dir: Path, *, dry_run: bool, application: str | None = None
+    ) -> str:
         stdout = io.StringIO()
         with mock.patch.object(
             task_runner.review_admission, "reviewer_available", return_value=True
         ), mock.patch.object(
             task_runner.subprocess, "Popen", _StartedWatcher
         ), contextlib.redirect_stdout(stdout):
-            task_runner.cmd_start(self._args(task_dir, dry_run=dry_run))
+            task_runner.cmd_start(
+                self._args(task_dir, dry_run=dry_run, application=application)
+            )
         return stdout.getvalue()
 
     def test_a_dry_run_changes_no_byte_of_an_existing_task(self) -> None:
@@ -929,6 +976,42 @@ class DryRunLeavesTheTaskAloneTests(unittest.TestCase):
 
         # Not the generated contract, not `.runner/`, not the ownership lock.
         self.assertEqual(left_behind, ["plan.md", "task.md"])
+
+    def _registered_application(self) -> tuple[str, _RecordingApplication]:
+        module = types.ModuleType("dry_run_probe_application")
+        module.adapter = _RecordingApplication()
+        sys.modules[module.__name__] = module
+        self.addCleanup(sys.modules.pop, module.__name__, None)
+        return f"{module.__name__}:adapter", module.adapter
+
+    def test_a_dry_run_tells_the_installation_it_is_not_recording(self) -> None:
+        # The engine cannot stop an application from writing into the task, and
+        # should not try: only the application knows which of its facts are
+        # durable. What it owes the application is the answer it already has.
+        # Without it, Companion's adapter rewrote a policy file in every task a
+        # dry run was ever pointed at, and the engine's own silence was worth
+        # nothing on the path this installation actually launches from.
+        spec, adapter = self._registered_application()
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = self._task(Path(raw))
+            before = self._fingerprint(task_dir)
+            self._start(task_dir, dry_run=True, application=spec)
+            after = self._fingerprint(task_dir)
+
+        self.assertEqual(after, before)
+        self.assertIs(adapter.launch_requests[-1].committing, False)
+        self.assertIs(adapter.session_requests[-1].committing, False)
+
+    def test_a_real_start_tells_the_installation_to_record(self) -> None:
+        spec, adapter = self._registered_application()
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = self._task(Path(raw))
+            self._start(task_dir, dry_run=False, application=spec)
+            recorded = (task_dir / ".runner" / "installation-policy.json").is_file()
+
+        self.assertTrue(recorded)
+        self.assertIs(adapter.launch_requests[-1].committing, True)
+        self.assertIs(adapter.session_requests[-1].committing, True)
 
     def test_a_real_start_still_records_the_run_it_started(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -602,6 +602,18 @@ nothing: asking it about task 1212 once replaced the stored prompt and runner
 metadata of that task's real fourth review round and moved its card from
 `completed` back to `ready`.
 
+The registered application is the other half of that same launch, and it is
+consulted before the dry run returns, so silence in the engine alone is not the
+guarantee. `LaunchRequestV1.committing` and `StandardSessionRequestV1.committing`
+carry the launcher's own answer across the boundary: false when the caller only
+asked what this launch would decide. The engine cannot police what an
+installation writes and does not try — only the application knows which of its
+facts are durable — but an application that keeps per-task state is expected to
+decide normally and record nothing when `committing` is false. Companion's
+adapter wrote a policy record into the `.runner/` of every task a dry run was
+ever pointed at, and moved that task's remembered address, because nothing told
+it otherwise.
+
 Every one of those paths used to leave a launch that wrote no line of work
 recorded as the latest author, which is enough to lock the bound reviewer out of
 its own number as "the author's own family" and admit the family that wrote the
@@ -1038,6 +1050,12 @@ invalid sequence or identity still refuses continuation.
 
 - `--destination` is opaque. Only its digest may be persisted; never put the
   raw recipient into runner metadata, task artifacts, source, or docs.
+- `launch_policy` and `standard_session` receive `committing`. It is false only
+  for `--dry-run`, where the engine itself records nothing about the launch. An
+  application that keeps durable per-task state — a policy record, a remembered
+  address — makes the same decisions and keeps none of them, so that asking
+  about a task stays as free as the engine already makes it. The field defaults
+  to true, so an adapter written before it behaves exactly as it did.
 - `standard_session` can return native `--session-id`/`--resume` arguments and
   non-secret JSON state. This is the supported standard-workflow continuation
   seam after an application observes an exact quota reset. Secret-bearing state

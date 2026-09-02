@@ -30,6 +30,15 @@ class ApplicationAdapterError(ValueError):
 
 @dataclass(frozen=True)
 class LaunchRequestV1:
+    """One launch the engine is deciding.
+
+    ``committing`` is false when the caller only asked what this launch would
+    decide (``start --dry-run``). The engine answers that question without
+    recording anything about the launch in the task, and an application that
+    keeps durable per-task state must do the same: the task being asked about is
+    usually not the task anyone meant to run.
+    """
+
     task_dir: Path
     runner: str
     workflow: str
@@ -37,6 +46,7 @@ class LaunchRequestV1:
     destination: str | None
     requested_memory_limit_bytes: int | None
     role: str = "author"
+    committing: bool = True
 
 
 @dataclass(frozen=True)
@@ -46,11 +56,19 @@ class LaunchPolicyV1:
 
 @dataclass(frozen=True)
 class StandardSessionRequestV1:
+    """The native session a standard launch would use.
+
+    ``committing`` carries the same fact as on :class:`LaunchRequestV1`: a dry
+    run still needs the session arguments in order to report the command it
+    would have run, but nothing about that session may outlive the answer.
+    """
+
     task_dir: Path
     runner: str
     operation: str
     destination: str | None
     previous_state: Mapping[str, Any] = field(default_factory=dict)
+    committing: bool = True
 
 
 @dataclass(frozen=True)

@@ -1513,8 +1513,16 @@ def prepared_application_launch(
     task_dir: Path,
     *,
     access_profile: dict[str, object] | None = None,
+    committing: bool = True,
 ) -> dict:
-    """Resolve v1 policy once and reuse its exact standard-session arguments."""
+    """Resolve v1 policy once and reuse its exact standard-session arguments.
+
+    `committing` is the launcher's own answer to "does this launch leave records
+    behind?", carried across the boundary. The engine cannot police what an
+    installation writes, and it should not try: the application knows which of
+    its own facts are durable. What it can do is stop leaving the application to
+    guess, so a dry run is answered by both halves of the same launch.
+    """
     spec = getattr(args, "application", None)
     operation = getattr(args, "operation", "start")
     destination = getattr(args, "destination", None)
@@ -1562,6 +1570,7 @@ def prepared_application_launch(
             destination=destination,
             requested_memory_limit_bytes=requested,
             role=("reviewer" if read_only_review else "author"),
+            committing=committing,
         )
     )
     if not hasattr(policy, "memory_limit_bytes"):
@@ -1588,6 +1597,7 @@ def prepared_application_launch(
                 operation=record["operation"],
                 destination=destination,
                 previous_state=previous if isinstance(previous, dict) else {},
+                committing=committing,
             )
         )
         if not hasattr(session, "command_arguments") or not hasattr(session, "state"):
@@ -2298,7 +2308,10 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     try:
         application_launch = prepared_application_launch(
-            args, task_dir, access_profile=review_record.get("access_profile")
+            args,
+            task_dir,
+            access_profile=review_record.get("access_profile"),
+            committing=committing,
         )
     except ApplicationAdapterError as exc:
         raise SystemExit(f"Application launch policy refused the run: {exc}") from None

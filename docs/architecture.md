@@ -145,7 +145,10 @@ the CLI registers one implementation with `--application module:attribute`.
 Its six decisions are deliberately narrower than lifecycle ownership:
 
 - `launch_policy` resolves the actual child address-space limit from
-  `--memory-limit` and installation policy;
+  `--memory-limit` and installation policy. Its request, and the standard
+  session request beside it, carry `committing`: false on a `--dry-run`, where
+  the application is expected to answer without recording anything about a
+  launch that is not happening;
 - `standard_session` returns native CLI arguments plus non-secret JSON state,
   allowing the same Claude session to be resumed after an application observes
   an exact quota reset;
@@ -242,7 +245,11 @@ prompt, its runner metadata, its trace, its status and its contract. That is the
 whole difference between the two: a dry run answers a question about a launch,
 so it must be safe to ask it about a task nobody meant to launch. The refusals
 are unchanged, because they come from the same resolution rather than from
-having written something first.
+having written something first. The registered application is consulted before
+that answer is printed, so the same fact crosses the boundary as
+`LaunchRequestV1.committing` and `StandardSessionRequestV1.committing`: an
+installation that keeps durable per-task state decides normally and records
+nothing when it is false.
 
 The ordinary launch detaches its watcher. A typed application-managed worker
 may instead select `--foreground` when its outer service or container supervisor
