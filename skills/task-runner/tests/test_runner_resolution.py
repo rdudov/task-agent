@@ -115,6 +115,30 @@ class ChildEnvironmentTests(unittest.TestCase):
 
 
 class WorkspaceRootTests(unittest.TestCase):
+    def test_notification_paths_delegate_to_the_runner_root_owner(self) -> None:
+        expected = Path("/tmp/notification-root-owner")
+        notify_repo_root = task_runner.try_send_pipeline_stop_message.__globals__["repo_root"]
+        owner = mock.Mock(return_value=expected)
+        owner_module = mock.Mock(repo_root=owner)
+        with mock.patch.dict(sys.modules, {"task_runner": owner_module}):
+            self.assertEqual(notify_repo_root(), expected)
+        owner.assert_called_once_with()
+
+    def test_installed_script_uses_the_current_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            installed_file = Path(raw) / "lib/task_agent/task_runner.py"
+            current = Path(raw) / "workspace"
+            current.mkdir()
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch.object(task_runner, "__file__", str(installed_file)):
+                    with mock.patch.object(Path, "cwd", return_value=current):
+                        self.assertEqual(task_runner.repo_root(), current.resolve())
+
+    def test_source_script_keeps_the_checkout_root(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            source_file = Path(task_runner.__file__).resolve()
+            self.assertEqual(task_runner.repo_root(), source_file.parents[3])
+
     def test_defaults_to_the_parent_of_the_checkout(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(task_runner.workspace_root(), task_runner.repo_root().parent)

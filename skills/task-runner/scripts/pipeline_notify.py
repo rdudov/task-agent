@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import os
 import json
 import re
 from pathlib import Path
@@ -29,12 +28,12 @@ def is_interrupted_completion_kind(kind: object) -> bool:
 
 
 def repo_root() -> Path:
-    configured = os.environ.get("TASK_AGENT_ROOT")
-    if configured:
-        return Path(configured).expanduser().resolve()
     if __package__:
-        return Path.cwd().resolve()
-    return Path(__file__).resolve().parents[3]
+        from .task_runner import repo_root as runner_repo_root
+    else:
+        from task_runner import repo_root as runner_repo_root
+
+    return runner_repo_root()
 
 
 def _task_title(task_dir: Path) -> str:

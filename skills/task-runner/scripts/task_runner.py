@@ -124,9 +124,11 @@ def repo_root() -> Path:
     configured = os.environ.get(TASK_AGENT_ROOT_ENV)
     if configured:
         return Path(configured).expanduser().resolve()
-    if __package__:
-        return Path.cwd().resolve()
-    return Path(__file__).resolve().parents[3]
+    source_file = Path(__file__).resolve()
+    source_root = source_file.parents[3]
+    if source_file == source_root / "skills/task-runner/scripts/task_runner.py":
+        return source_root
+    return Path.cwd().resolve()
 
 
 WORKSPACE_ROOT_ENV = "TASK_AGENT_WORKSPACE_ROOT"

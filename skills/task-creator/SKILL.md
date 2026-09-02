@@ -382,11 +382,13 @@ Each `plan.md` should follow this structure:
   this costs nothing today. `query --no-discover` is the named read-only mode
   and says its listing may be stale. The database is deliberately not in WAL
   mode: a WAL database is three files where the backup expects one.
-- The installed `task-agent-tasks-index` resolves its task tree through the
-  runner's `repo_root()`, exactly like the other installed entry points:
-  `TASK_AGENT_ROOT` wins when set, otherwise the current directory is the
-  workspace. Direct source-script execution keeps its checkout-relative root;
-  `TASKS_INDEX_ROOT` is only the index-specific test override.
+- The installed `task-agent-tasks-index`, including its package file executed
+  by absolute path, resolves its task tree through the runner's `repo_root()`,
+  exactly like the other installed paths: `TASK_AGENT_ROOT` wins when set,
+  otherwise the current directory is the workspace. Direct source-checkout
+  execution preserves the same `TASK_AGENT_ROOT` override and otherwise keeps
+  its checkout-relative root; `TASKS_INDEX_ROOT` is only the index-specific test
+  override.
 - The `projects:` / `trips:` arrays may be written in either block or flow style
   (`projects: [a/b.md]`); both read back as lists. A scalar there is malformed —
   `check` names it, and `set-projects --add` refuses rather than overwriting it.

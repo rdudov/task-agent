@@ -62,12 +62,14 @@ task-agent-engine @ git+https://github.com/rdudov/task-agent.git@<40-character-c
 ```
 
 That install exposes `task-agent`, `task-agent-engine`, and
-`task-agent-tasks-index`. All three installed entry points share the runner's
-workspace resolver: `TASK_AGENT_ROOT` selects the workspace when set, otherwise
-the current directory does. The task index no longer derives a workspace from
-the installed package's file depth. Direct execution of the source
-`tasks_index.py` still derives the checkout root from that source path, and
-`TASKS_INDEX_ROOT` is its isolated-test override. Installed completion finds
+`task-agent-tasks-index`. All installed entry points and installed package files
+executed by absolute path share the runner's workspace resolver:
+`TASK_AGENT_ROOT` selects the workspace when set, otherwise the current
+directory does. The task index no longer derives a workspace from the installed
+package's file depth. Direct execution of a source-checkout script still derives
+the checkout root from that source path when `TASK_AGENT_ROOT` is unset, and
+`TASKS_INDEX_ROOT` is the task index's isolated-test override. Installed
+completion finds
 the metadata entrypoint beside its active Python interpreter even when an
 application adapter loads the engine as top-level modules. A post-preparation
 metadata-owner failure is projected as a durable refusal instead of aborting

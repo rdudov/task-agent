@@ -44,11 +44,16 @@ def repo_root() -> Path:
     configured = os.environ.get("TASKS_INDEX_ROOT")
     if configured:
         return Path(configured).expanduser().resolve()
-    if __package__:
-        from task_agent.task_runner import repo_root as runner_repo_root
+    source_file = Path(__file__).resolve()
+    source_root = source_file.parents[3]
+    if source_file == source_root / "skills/task-creator/scripts/tasks_index.py":
+        configured = os.environ.get("TASK_AGENT_ROOT")
+        if configured:
+            return Path(configured).expanduser().resolve()
+        return source_root
+    from task_agent.task_runner import repo_root as runner_repo_root
 
-        return runner_repo_root()
-    return Path(__file__).resolve().parents[3]
+    return runner_repo_root()
 
 
 REPO_ROOT = repo_root()
