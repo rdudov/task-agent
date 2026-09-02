@@ -62,13 +62,17 @@ task-agent-engine @ git+https://github.com/rdudov/task-agent.git@<40-character-c
 ```
 
 That install exposes `task-agent`, `task-agent-engine`, and
-`task-agent-tasks-index`. Installed completion finds that metadata entrypoint
-beside its active Python interpreter even when an application adapter loads the
-engine as top-level modules. A post-preparation metadata-owner failure is
-projected as a durable refusal instead of aborting projection, allowing an
-installation to correct any terminal statement already sent. `TASK_AGENT_ROOT`
-selects the installation workspace
-for relative task paths; absolute task paths need no workspace convention.
+`task-agent-tasks-index`. All three installed entry points share the runner's
+workspace resolver: `TASK_AGENT_ROOT` selects the workspace when set, otherwise
+the current directory does. The task index no longer derives a workspace from
+the installed package's file depth. Direct execution of the source
+`tasks_index.py` still derives the checkout root from that source path, and
+`TASKS_INDEX_ROOT` is its isolated-test override. Installed completion finds
+the metadata entrypoint beside its active Python interpreter even when an
+application adapter loads the engine as top-level modules. A post-preparation
+metadata-owner failure is projected as a durable refusal instead of aborting
+projection, allowing an installation to correct any terminal statement already
+sent. Absolute task paths need no workspace convention.
 Consumer runtimes and services should use this exact reviewed revision and a
 lock file. Editable installs are reserved for isolated contributor virtual
 environments where source edits are intentionally live; they must not back a

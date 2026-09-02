@@ -51,6 +51,11 @@ A request is substantial when any of these apply:
 Before broad codebase search, live checks, or describing an existing decision, invoke `context-discovery` and follow `skills/context-discovery/SKILL.md`. That skill owns the lookup order, its fallbacks, and the promotion of reusable lookup knowledge; this file states the trigger, not the procedure.
 
 Task YAML frontmatter is the source of truth for task metadata, and `skills/task-creator/scripts/tasks_index.py` is the only interface that writes it. That script also owns the queryable catalog it rebuilds from the frontmatter; ask it, rather than any file, what tasks exist.
+Installed console entry points resolve that task tree through
+`task_agent.task_runner.repo_root()`. The task index must reuse that owner rather
+than deriving a different root from its installed file depth;
+`TASKS_INDEX_ROOT` remains an index-test override, and direct source-script use
+retains its checkout-relative root.
 - Each task directory must contain `task.md` and `plan.md`.
 - Delegated or review-sensitive tasks may also include `task_contract.json` for structured non-negotiable constraints, forbidden substitutions, required live evidence, and completion policy.
 - `task.md` should preserve original inputs that matter for execution, such as constraints, assumptions, acceptance criteria, and explicitly requested options.

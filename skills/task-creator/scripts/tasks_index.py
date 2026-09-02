@@ -37,14 +37,21 @@ from pathlib import Path
 import yaml
 
 # TASKS_INDEX_ROOT lets tests point the real script at a throwaway tree instead
-# of forcing them to burn task numbers in tasks/. An installed engine shares
-# TASK_AGENT_ROOT with its runner entry points, while direct repository use
-# retains the source-tree default.
-REPO_ROOT = Path(
-    os.environ.get("TASKS_INDEX_ROOT")
-    or os.environ.get("TASK_AGENT_ROOT")
-    or Path(__file__).resolve().parents[3]
-).resolve()
+# of forcing them to burn task numbers in tasks/. An installed engine delegates
+# workspace resolution to the runner's existing owner, while direct repository
+# use retains the source-tree default.
+def repo_root() -> Path:
+    configured = os.environ.get("TASKS_INDEX_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if __package__:
+        from task_agent.task_runner import repo_root as runner_repo_root
+
+        return runner_repo_root()
+    return Path(__file__).resolve().parents[3]
+
+
+REPO_ROOT = repo_root()
 TASKS_DIR = REPO_ROOT / "tasks"
 DB_PATH = REPO_ROOT / ".state" / "tasks-index.db"
 

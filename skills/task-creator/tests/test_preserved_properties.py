@@ -14,6 +14,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,45 @@ from test_rebuild_contract import DB, make_task, repo, rows, run  # noqa: F401
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+
+
+def test_installed_index_reuses_the_runner_workspace_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import tasks_index
+
+    package = types.ModuleType("task_agent")
+    runner = types.ModuleType("task_agent.task_runner")
+    runner.repo_root = lambda: tmp_path  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "task_agent", package)
+    monkeypatch.setitem(sys.modules, "task_agent.task_runner", runner)
+    monkeypatch.delenv("TASKS_INDEX_ROOT", raising=False)
+    monkeypatch.setattr(tasks_index, "__package__", "task_agent_task_creator")
+
+    assert tasks_index.repo_root() == tmp_path
+
+
+def test_index_specific_root_override_precedes_the_shared_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import tasks_index
+
+    override = tmp_path / "override"
+    monkeypatch.setenv("TASKS_INDEX_ROOT", str(override))
+    monkeypatch.setattr(tasks_index, "__package__", "task_agent_task_creator")
+
+    assert tasks_index.repo_root() == override
+
+
+def test_direct_script_keeps_its_source_tree_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tasks_index
+
+    monkeypatch.delenv("TASKS_INDEX_ROOT", raising=False)
+    monkeypatch.setattr(tasks_index, "__package__", "")
+
+    assert tasks_index.repo_root() == Path(tasks_index.__file__).resolve().parents[3]
 
 
 def git(repository: Path, *arguments: str) -> str:
