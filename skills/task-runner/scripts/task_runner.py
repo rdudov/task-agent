@@ -2183,7 +2183,17 @@ def configured_assurance(args: argparse.Namespace) -> dict | None:
     is reported as no assurance at all: a material launch is then refused for the
     same reason a missing one is, which is the honest reading of "the review this
     was admitted with will not happen".
+
+    An installation that builds this launch's assurance itself hands the document
+    over instead of a path to read back. That is the same answer, one step
+    earlier: a launch that records nothing must not have to write the
+    installation's assurance file just to be evaluated against it, and a launch
+    that does record still writes it, because the core that runs the review reads
+    that path from its own command line.
     """
+    prepared = getattr(args, "prepared_assurance", None)
+    if prepared is not None:
+        return prepared or None
     configured = getattr(args, "assurance_config", None)
     if not configured:
         return None
@@ -4145,8 +4155,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main(*, prepared_assurance: dict | None = None) -> None:
+    """Run one task-runner command.
+
+    An installation front end that drives this launcher in-process may hand over
+    the assurance document it built for this launch. It is the same document the
+    `--assurance-config` path would hold; passing it directly lets a launch that
+    leaves no records be evaluated against the assurance it would use without
+    writing that record first.
+    """
     args = parse_args()
+    if prepared_assurance is not None:
+        args.prepared_assurance = prepared_assurance
     args.func(args)
 
 

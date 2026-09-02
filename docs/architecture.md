@@ -251,6 +251,16 @@ that answer is printed, so the same fact crosses the boundary as
 installation that keeps durable per-task state decides normally and records
 nothing when it is false.
 
+An installation that prepares this launch's assurance before calling the
+launcher hands the document over instead of a path to read back:
+`main(prepared_assurance=...)`. The launcher would otherwise learn the
+installation's assurance only by reading `--assurance-config` off disk, which
+forces the front end to file that document into the task directory before
+anything has been decided — and a dev-pipeline launch whose assurance is missing
+is refused, so the file could not simply be skipped. The document is the same
+one the file holds; a real launch still writes it, because the core that runs
+the review reads that path from its own command line.
+
 The ordinary launch detaches its watcher. A typed application-managed worker
 may instead select `--foreground` when its outer service or container supervisor
 must remain the process owner. The launch still performs the same decision,

@@ -614,6 +614,17 @@ adapter wrote a policy record into the `.runner/` of every task a dry run was
 ever pointed at, and moved that task's remembered address, because nothing told
 it otherwise.
 
+An installation front end that prepares this launch's assurance itself may hand
+the document to the launcher — `main(prepared_assurance=...)` — instead of
+pointing at a file for it to read back. Without that, the only way to tell the
+launcher which assurance a launch would use is to write `--assurance-config`
+into the task first, and a material dev-pipeline launch carrying no assurance is
+refused, so the write could not simply be dropped: Companion's entrypoint
+rewrote the assurance config and review packet of every gated task a dry run was
+pointed at. The handed document is the same one the file holds and takes
+precedence over it; a real launch still writes the file, because the
+dev-pipeline core reads that path from its own command line.
+
 Every one of those paths used to leave a launch that wrote no line of work
 recorded as the latest author, which is enough to lock the bound reviewer out of
 its own number as "the author's own family" and admit the family that wrote the
@@ -1056,6 +1067,12 @@ invalid sequence or identity still refuses continuation.
   address — makes the same decisions and keeps none of them, so that asking
   about a task stays as free as the engine already makes it. The field defaults
   to true, so an adapter written before it behaves exactly as it did.
+- `main(prepared_assurance=...)` accepts the installation assurance document an
+  in-process front end already built for this launch, in place of reading
+  `--assurance-config` back off disk. It takes precedence over the file and
+  keeps the same launch decision, so a front end whose own preparation would
+  otherwise have to file that document into the task can prepare it and record
+  nothing.
 - `standard_session` can return native `--session-id`/`--resume` arguments and
   non-secret JSON state. This is the supported standard-workflow continuation
   seam after an application observes an exact quota reset. Secret-bearing state

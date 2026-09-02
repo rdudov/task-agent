@@ -1032,5 +1032,113 @@ class DryRunLeavesTheTaskAloneTests(unittest.TestCase):
         self.assertIn("Child process started with pid 4243", trace)
 
 
+class PreparedAssuranceTests(unittest.TestCase):
+    """An installation that builds this launch's assurance is not made to file it.
+
+    A dev-pipeline launch is refused unless the assurance the core will run
+    names the reviewer bound before the author starts, and the launcher used to
+    be able to learn that assurance only by reading the file back. So the
+    installation front end had to write the document into the task directory
+    before the launcher had decided anything at all -- and a dry run over a task
+    nobody meant to launch overwrote that task's real assurance records to be
+    told what its own caller had just decided.
+    """
+
+    ASSURANCE = {
+        "schema_version": "1.0",
+        "strategy": "cross_provider",
+        "owner_provider": "claude",
+        "review_provider": "codex",
+        "providers": {
+            "claude": {"executable": "/usr/bin/env"},
+            "codex": {"executable": "/usr/bin/env"},
+        },
+    }
+
+    def _gated_task(self, root: Path) -> Path:
+        task_dir = root / "tasks" / "001-subject"
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.md").write_text(
+            "---\n"
+            'id: 1\nslug: "001-subject"\ntitle: "Subject"\ndate: 2026-09-01\n'
+            'status: "planned"\nprojects: []\ntrips: []\n---\n# Subject\n',
+            encoding="utf-8",
+        )
+        (task_dir / "plan.md").write_text("# Plan\n\n1. [pending] Work\n", encoding="utf-8")
+        task_runner.write_json(
+            task_dir / "task_contract.json",
+            {
+                "version": 1,
+                "review_gates": ["An independent reviewer approves the candidate."],
+            },
+        )
+        return task_dir
+
+    def _dry_run(self, task_dir: Path, *, prepared: dict | None) -> dict:
+        """The launch a gated dev-pipeline dry run would make, as reported."""
+        repository = task_dir.parent.parent / "repository"
+        repository.mkdir(exist_ok=True)
+        argv = [
+            "task_runner.py",
+            "start",
+            str(task_dir),
+            "--workflow",
+            "dev-pipeline",
+            "--runner",
+            "claude",
+            "--repo",
+            str(repository),
+            "--assurance-config",
+            str(task_dir / "dev-pipeline" / "assurance.json"),
+            "--dry-run",
+        ]
+        stdout = io.StringIO()
+        keywords = {} if prepared is None else {"prepared_assurance": prepared}
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            task_runner.review_admission, "reviewer_available", return_value=True
+        ), contextlib.redirect_stdout(stdout):
+            task_runner.main(**keywords)
+        return json.loads(stdout.getvalue())
+
+    def test_a_launch_is_evaluated_against_the_assurance_it_was_handed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = self._gated_task(Path(raw))
+            reported = self._dry_run(task_dir, prepared=self.ASSURANCE)
+            named_file = task_dir / "dev-pipeline" / "assurance.json"
+            wrote_the_file = named_file.exists()
+
+        admission = reported["review_admission"]
+        self.assertEqual(admission["decision"], "admitted")
+        self.assertEqual(admission["assurance_source"], "installation_config")
+        self.assertEqual(admission["assurance_binding"]["assurance_review_provider"], "codex")
+        self.assertTrue(admission["assurance_binding"]["bound"])
+        # The launcher was told, not shown: nothing had to be written for it.
+        self.assertFalse(wrote_the_file)
+        self.assertEqual(
+            reported["command"][reported["command"].index("--assurance-config") + 1],
+            str(named_file),
+        )
+
+    def test_the_same_launch_without_it_is_refused_as_unassured(self) -> None:
+        # The control for the test above: the admission really comes from the
+        # handed-over document, not from a default that would have bound the
+        # same reviewer anyway.
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = self._gated_task(Path(raw))
+            with self.assertRaises(SystemExit) as refusal:
+                self._dry_run(task_dir, prepared=None)
+
+        self.assertIn("carries no assurance configuration", str(refusal.exception))
+
+    def test_a_configured_file_still_answers_for_a_launcher_nobody_handed(self) -> None:
+        # The CLI contract is unchanged: a launch that names a readable file is
+        # evaluated against it exactly as before.
+        with tempfile.TemporaryDirectory() as raw:
+            configured = Path(raw) / "assurance.json"
+            task_runner.write_json(configured, self.ASSURANCE)
+            args = argparse.Namespace(assurance_config=str(configured))
+            self.assertEqual(task_runner.configured_assurance(args), self.ASSURANCE)
+
+
 if __name__ == "__main__":
     unittest.main()
