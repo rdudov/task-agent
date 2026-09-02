@@ -323,6 +323,12 @@ def build_child_prompt(
     review_admission_record: dict | None = None,
 ) -> str:
     task_dir = task_dir.resolve()
+    if isinstance(repository, list):
+        repository_text = ", ".join(str(path) for path in repository)
+    elif repository is not None:
+        repository_text = str(repository)
+    else:
+        repository_text = "none configured"
     task_md = task_dir / 'task.md'
     plan_md = task_dir / 'plan.md'
     task_contract_json = task_dir / 'task_contract.json'
@@ -434,7 +440,7 @@ Role: fresh independent statement product reviewer.
 Role: fresh independent product and technical reviewer.
 - Review the exact candidate for subject `{review_subject or task_dir}` written by
   `{review_subject_author or 'the recorded author'}`; do not repair it.
-- The configured target repository is `{repository}` and is read-only.
+- The configured target repository is `{repository_text}` and is read-only.
 - `{verbatim_user_words}` is the complete named source of the user's original words
   and every continuation. Read it in full before the packet. Its SHA-256 is
   `{verbatim_digest}`. `{product_review_packet}` is the immutable product-review packet. It must contain
@@ -502,7 +508,7 @@ Role: fresh independent product and technical reviewer.
 Role: independent reviewer.
 - Review the existing work for subject `{review_subject or task_dir}` written by
   `{review_subject_author or 'the recorded author'}`; do not re-execute or repair it.
-- The configured target repository is `{repository}`.
+- The configured target repository is `{repository_text}`.
 - Review against what the user asked for, not against the derived statement. Read
   the user's own substantive words as preserved in `{task_md}` and, in
   `{task_dir / 'findings.md'}`, map each substantive requirement to the path that
@@ -531,7 +537,7 @@ Role: independent reviewer.
   review task's own artifacts.
 """
     elif repository is not None:
-        role = f"\nConfigured target repository: `{repository}`.\n"
+        role = f"\nConfigured target repository: `{repository_text}`.\n"
     return f"""You are the child execution agent for task directory: {task_dir}
 {role}
 

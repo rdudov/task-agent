@@ -526,7 +526,9 @@ notebook, task index, `/tmp`, and Claude-owned runtime storage are rebound
 writable. Network and host-process visibility are unchanged. Tests that write
 runtime state must redirect it to the notebook or `/tmp`; live host state stays
 read-only. The admitted-review prompt explicitly names the reviewer role,
-subject, author, target repository, and required single-line verdict. It also
+subject, author, target repository, and required single-line verdict. The saved
+prompt renders repository targets as plain paths, comma-separated when there
+are several, rather than exposing Python `Path` or list representations. It also
 directs the review at what the user asked for rather than at the derived task
 statement: map each substantive requirement to the path that actually produced
 the claimed result and to the observation that shows it, name the strongest

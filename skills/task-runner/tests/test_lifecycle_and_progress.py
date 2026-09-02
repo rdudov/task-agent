@@ -374,6 +374,40 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("Verdict: approved", prompt)
         self.assertIn("do not re-execute or repair", prompt)
 
+    def test_prompt_formats_repository_paths_for_people_in_every_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "001-task"
+            task_dir.mkdir()
+            first = Path(tmp) / "first"
+            second = Path(tmp) / "second"
+
+            author_prompt = task_runner.build_child_prompt(
+                task_dir, repository=[first]
+            )
+            multi_repo_prompt = task_runner.build_child_prompt(
+                task_dir, repository=[first, second]
+            )
+            reviewer_prompt = task_runner.build_child_prompt(
+                task_dir,
+                repository=[first, second],
+                require_review_verdict=True,
+            )
+            repository_less_prompt = task_runner.build_child_prompt(task_dir)
+
+        self.assertIn(f"Configured target repository: `{first}`.", author_prompt)
+        expected_list = f"{first}, {second}"
+        self.assertIn(
+            f"Configured target repository: `{expected_list}`.", multi_repo_prompt
+        )
+        self.assertIn(
+            f"The configured target repository is `{expected_list}`.",
+            reviewer_prompt,
+        )
+        for prompt in (author_prompt, multi_repo_prompt, reviewer_prompt):
+            self.assertNotIn("PosixPath", prompt)
+            self.assertNotIn("[PosixPath", prompt)
+        self.assertNotIn("Configured target repository", repository_less_prompt)
+
     def test_review_prompt_identity_reads_author_from_admitted_pair(self) -> None:
         task_dir = Path("/tmp/009-subject")
         subject, author = task_runner.review_prompt_identity(
@@ -420,6 +454,11 @@ class ChildPromptContractTests(unittest.TestCase):
         self.assertIn("Product verdict: not established", prompt)
         self.assertIn("Neither verdict substitutes for the other", prompt)
         self.assertIn("a concrete next-step", prompt)
+        self.assertIn(
+            f"The configured target repository is `{subject}` and is read-only.",
+            prompt,
+        )
+        self.assertNotIn("PosixPath", prompt)
         self.assertIn("Cover every source_id from both `messages` and `excluded_messages`", prompt)
         self.assertIn("`not_a_requirement`", prompt)
         self.assertIn("`out_of_scope`", prompt)

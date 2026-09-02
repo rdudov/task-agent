@@ -171,7 +171,7 @@ Files the user explicitly requested are a separate, user-facing class of output.
 
 When a parent agent delegates a task to a child agent, the task directory is the source of truth.
 
-The ordered procedure that child follows is generated, not read from a document: `build_child_prompt` in `skills/task-runner/scripts/task_runner.py` assembles it from the task's own paths, access profile, and review role, and the exact text a child received stays in that task's `.runner/prompt.txt`. It is the only executor instruction this repository has. A rule a child must follow therefore belongs either in that generated prompt or in the project rules and skills the child reads from the repository it works in — not in a separate executor document, which nothing would load.
+The ordered procedure that child follows is generated, not read from a document: `build_child_prompt` in `skills/task-runner/scripts/task_runner.py` assembles it from the task's own paths, access profile, and review role, and the exact text a child received stays in that task's `.runner/prompt.txt`. Repository targets in that readable text are paths (comma-separated when there are several), never Python container representations. It is the only executor instruction this repository has. A rule a child must follow therefore belongs either in that generated prompt or in the project rules and skills the child reads from the repository it works in — not in a separate executor document, which nothing would load.
 
 Before delegation, the parent agent should ensure `task.md` and `plan.md` contain enough context for independent execution. If the task has non-negotiable constraints, forbidden substitutions, or mandatory live verification gates, record them in `task_contract.json`.
 

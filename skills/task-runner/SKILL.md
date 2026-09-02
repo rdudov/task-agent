@@ -37,6 +37,11 @@ It creates or updates:
 
 The child is asked to publish `progress.json` for long runs, and to place explicitly requested output files in `deliverables/` with `deliverables/manifest.json`.
 
+`.runner/prompt.txt` is also the readable record of what the child or reviewer
+was told. It names one target repository as its path and multiple repositories
+as a comma-separated path list, never as a Python `Path` or list
+representation; a repository-less author prompt omits that line.
+
 The dev-pipeline workflow also creates `dev-pipeline/`.
 
 An application that already supervises the entire worker service or container
