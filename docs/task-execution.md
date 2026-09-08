@@ -417,7 +417,10 @@ The owner instruction states these conditions explicitly. Generate the bounded
 policy review over a final committed candidate with `task_runner.py
 review-candidate TASK --repo REPOSITORY`; the subject binds the effective
 contract and candidate digest, so a stale or readability-only approval cannot
-close the task.
+close the task. The generated question asks the reviewer to name a digest-bound
+observation for every repository candidate and, when source artifacts are
+delivered, at least one exact absolute or repository-relative source path it
+inspected. Repository-only evidence cannot pass the completion validator.
 
 The adapter itself carries no transport policy. A caller registers application
 API v1 with `--application module:attribute` and supplies an opaque

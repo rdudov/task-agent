@@ -79,6 +79,8 @@ def test_completion_subject_binds_every_requested_repository(tmp_path: Path, mon
 
 def test_completion_review_does_not_predeclare_future_live_evidence() -> None:
     assert "Judge the two prose policy families only" in COMPLETION_REVIEW_QUESTION
+    assert "at least one exact source path" in COMPLETION_REVIEW_QUESTION
+    assert "repository-only evidence is insufficient" in COMPLETION_REVIEW_QUESTION
     assert "do not require a future terminal delivery receipt" in COMPLETION_REVIEW_QUESTION
 
 

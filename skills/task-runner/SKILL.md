@@ -456,6 +456,10 @@ The bounded reviewer decides only the two prose policy families against the
 exact candidate. Required live evidence remains a separate completion gate: a
 pre-terminal policy review must not require a future delivery/completion receipt
 or turn that honest pending state into a policy-family refusal.
+Its generated question requires both a digest-bound observation for every
+repository candidate and, when delivered source files are bound as artifacts,
+an observation naming at least one exact absolute or repository-relative source
+path. A repository-level summary alone does not satisfy the completion validator.
 
 Create the bounded policy review over the final committed candidate with:
 
