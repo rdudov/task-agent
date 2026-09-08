@@ -2469,13 +2469,17 @@ def cmd_start(args: argparse.Namespace) -> None:
             "Running the admitted child in the foreground under the caller-owned "
             "application supervision boundary.",
         )
+        # `launch_pending` now serializes this admitted launch. Keeping the
+        # launch-preparation flock while synchronously supervising the child is
+        # redundant and makes this process deadlock when terminal cleanup takes
+        # the same lock. Detached starts release it at the equivalent boundary.
+        ownership_lock.close()
         try:
             cmd_run_child(foreground_args)
         finally:
             current_meta = read_json(runner_meta_path(task_dir))
             current_meta.pop("launch_pending", None)
             write_json(runner_meta_path(task_dir), current_meta)
-            ownership_lock.close()
         return
 
     launch_token = uuid.uuid4().hex

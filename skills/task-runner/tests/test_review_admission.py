@@ -1,6 +1,7 @@
 """Material work gets an independent reviewer before its author starts."""
 
 import argparse
+import fcntl
 import importlib.util
 import io
 import json
@@ -848,6 +849,21 @@ class ForegroundApplicationLifecycleTests(unittest.TestCase):
             def foreground_child(child_args):
                 observed["token"] = child_args.launch_token
                 observed["commitment"] = review_admission.admission_commitment(task_dir)
+                with (task_dir / ".runner" / "ownership.lock").open("a+") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        observed["launch_lock_released"] = False
+                    else:
+                        observed["launch_lock_released"] = True
+                        try:
+                            task_runner.require_no_live_run(task_dir)
+                        except SystemExit as exc:
+                            observed["pending_claim_refused_peer"] = (
+                                "launch is still pending" in str(exc)
+                            )
+                        else:
+                            observed["pending_claim_refused_peer"] = False
                 review_admission.confirm_admission(
                     task_dir, launch_token=child_args.launch_token
                 )
@@ -860,6 +876,8 @@ class ForegroundApplicationLifecycleTests(unittest.TestCase):
 
         self.assertIsNotNone(observed["commitment"])
         self.assertEqual(observed["token"], observed["commitment"]["launch_token"])
+        self.assertTrue(observed["launch_lock_released"])
+        self.assertTrue(observed["pending_claim_refused_peer"])
         self.assertEqual(binding["admission_id"], observed["commitment"]["admission_id"])
         self.assertEqual(binding["assurance_strategy"], "isolated_same_provider")
         self.assertEqual(metadata["supervision_boundary"]["mode"], "foreground_process")

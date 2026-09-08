@@ -507,6 +507,16 @@ def record_completed_workspace_cleanup(
     if not runner_meta_path.is_file():
         return None
 
+    if require_finished_run:
+        # A live child owns its eventual cleanup through the watcher. Read that
+        # stable negative before taking ownership so a completion subprocess
+        # cannot wait on the lock its supervising parent deliberately holds.
+        # A transition to finished immediately after this read is harmless: the
+        # watcher that records it is the same cleanup owner and will run below.
+        observed = json.loads(runner_meta_path.read_text(encoding="utf-8"))
+        if not observed.get("finished_at"):
+            return None
+
     with (runner_dir / "ownership.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         runner_meta = json.loads(runner_meta_path.read_text(encoding="utf-8"))

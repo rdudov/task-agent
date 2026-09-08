@@ -16,7 +16,7 @@ This document describes the parent-child execution model for non-trivial tasks.
 
 ## Supervision
 
-A launched run is detached by default. `start` prepares the artifacts, spawns a watcher in a separate session, waits only for the watcher's startup record, and returns; the watcher spawns the child in a session of its own. Nothing in the chain stays in the caller's process group, so the run survives the terminal that began it. When the host systemd manager is reachable, the watcher also runs in its own transient scope; otherwise `.runner/runner.json` records that durability is limited to the caller's cgroup. An application whose own service or container lifecycle already supervises the complete process may pass `--foreground`: the same admission, prompt, child supervisor, review-round recorder, and completion predicate then run synchronously inside that caller-owned boundary, recorded as `foreground_process`. This changes only the process boundary; it never substitutes for a required assurance strategy or review.
+A launched run is detached by default. `start` prepares the artifacts, spawns a watcher in a separate session, waits only for the watcher's startup record, and returns; the watcher spawns the child in a session of its own. Nothing in the chain stays in the caller's process group, so the run survives the terminal that began it. When the host systemd manager is reachable, the watcher also runs in its own transient scope; otherwise `.runner/runner.json` records that durability is limited to the caller's cgroup. An application whose own service or container lifecycle already supervises the complete process may pass `--foreground`: the same admission, prompt, child supervisor, review-round recorder, and completion predicate then run synchronously inside that caller-owned boundary, recorded as `foreground_process`. After the durable pending-launch claim is written, the preparation ownership lock is released at the same boundary as a detached launch; the claim and recorded live process identity still refuse concurrent starts. This changes only the process boundary; it never substitutes for a required assurance strategy or review.
 
 Because the run outlives its initiator, a pid alone is not enough to identify it later. The runner records a kernel start-time identity for both the child and the watcher in `.runner/runner.json`, and treats a pid whose identity no longer matches as a different process: `status` reports how each liveness verdict was reached, `stop` refuses to signal an unproven pid, and `reattach` refuses to supervise one. Where the host cannot produce identities, pid-only checks are marked as such and `reattach` fails closed rather than guessing. See `skills/task-runner/SKILL.md` for the per-command behavior.
 
@@ -39,8 +39,10 @@ remains a candidate only when the existing path and Git-disposability check
 accepts it, which covers task-named standalone clones while protecting a target
 whose name carries another task number. The canonical `set-status` transition to
 `completed` or `cancelled` retries that same owner when an already-finished task
-is closed later by an installation, publication, or cancellation step; it
-leaves a still-running child to its watcher. Removal of each candidate requires
+is closed later by an installation, publication, or cancellation step. It reads
+an unfinished run before attempting the ownership lock and leaves cleanup to its
+watcher; an already-finished run takes that lock and rechecks the record before
+cleanup. Removal of each candidate requires
 all of the following: the path is a Git root, the tree is clean, it contains
 no ignored durable state below `tasks/`, `data/`, or `.state/`, no live process
 references it, and HEAD is reachable

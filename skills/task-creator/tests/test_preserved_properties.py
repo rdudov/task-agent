@@ -10,10 +10,13 @@ ambiguity are exercised by the section 14 contract tests in
 """
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import sqlite3
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -302,6 +305,65 @@ def test_completed_status_leaves_a_running_child_workspace_to_its_watcher(
 
     assert workspace.exists()
     assert not (task / "trace.md").exists()
+
+
+def test_parent_owned_completion_skips_live_cleanup_but_finished_cleanup_locks(
+    repo: Path,
+) -> None:
+    task = make_task(repo, 129, "parent-owned", status="in_progress")
+    canonical = repo / "canonical"
+    seed_repository(canonical)
+    workspace = repo / "portfolio-workspace"
+    git(repo, "clone", str(canonical), str(workspace))
+    runner_dir = task / ".runner"
+    runner_dir.mkdir()
+    runner_meta_path = runner_dir / "runner.json"
+    runner_meta = {"access_grant": {"granted_directories": [str(workspace)]}}
+    runner_meta_path.write_text(json.dumps(runner_meta), encoding="utf-8")
+    environment = {**os.environ, "TASKS_INDEX_ROOT": str(repo)}
+    command = [
+        sys.executable,
+        str(SCRIPTS / "tasks_index.py"),
+        "set-status",
+        "129",
+        "completed",
+    ]
+
+    with (runner_dir / "ownership.lock").open("a+") as ownership:
+        fcntl.flock(ownership, fcntl.LOCK_EX)
+        live_completion = subprocess.Popen(
+            command,
+            cwd=repo,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = live_completion.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            live_completion.kill()
+            live_completion.communicate()
+            pytest.fail("live completion waited on its parent's ownership lock")
+        assert live_completion.returncode == 0, (stdout, stderr)
+        assert workspace.exists()
+
+        runner_meta["finished_at"] = "2026-09-08T00:00:00+00:00"
+        runner_meta_path.write_text(json.dumps(runner_meta), encoding="utf-8")
+        finished_cleanup = subprocess.Popen(
+            command,
+            cwd=repo,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(0.2)
+        assert finished_cleanup.poll() is None, "finished cleanup bypassed ownership lock"
+
+    stdout, stderr = finished_cleanup.communicate(timeout=10)
+    assert finished_cleanup.returncode == 0, (stdout, stderr)
+    assert not workspace.exists()
 
 
 def test_cleanup_record_failure_does_not_undo_completed_metadata(repo: Path) -> None:

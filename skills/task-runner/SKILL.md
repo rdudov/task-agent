@@ -50,7 +50,9 @@ same admission, binding, phases, review rounds and completion decision, but wait
 for the child in the caller process instead of detaching a watcher that the
 outer container would terminate. The recorded supervision durability is
 `caller_owned`; foreground never supplies a missing assurance strategy or
-reviewer.
+reviewer. Once the durable pending launch claim exists, foreground supervision
+releases the preparation ownership lock just as a detached launch does; live
+process identity and the pending claim continue to refuse concurrent starts.
 
 ## Runner Selection
 
@@ -253,8 +255,11 @@ the exact task directory proves a worktree's ownership without basename
 guessing; an admitted target is only a discovery root and still passes the
 existing path and Git-disposability check. The canonical `set-status` transition to
 `completed` or `cancelled` retries the same owner when a finished task closes
-later after installation, publication, or cancellation, but defers a live child
-to its watcher. Only an admitted target or Git-registered task worktree that is
+later after installation, publication, or cancellation. It detects an unfinished
+run before acquiring the ownership lock, so a completion subprocess cannot
+re-enter a lock held by its supervising parent; the live run still leaves cleanup
+to its watcher. A finished run acquires the lock and rechecks the record before
+cleanup. Only an admitted target or Git-registered task worktree that is
 clean, has no ignored
 durable state below `tasks/`, `data/`, or `.state/`, is unoccupied, and whose
 HEAD is reachable outside a standalone clone is removed. A Git-registered
