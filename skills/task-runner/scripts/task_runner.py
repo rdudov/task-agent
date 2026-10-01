@@ -2759,7 +2759,9 @@ def cmd_statement_review(args: argparse.Namespace) -> None:
             f"Statement review cannot start: {exc}. Record the original user message "
             "and every continuation in this task's user-verbatim.json first."
         ) from None
-    pair = review_admission.resolve_pair(author_runner=args.author_runner)
+    pair = review_admission.resolve_pair(
+        author_runner=args.author_runner, assurance=configured_assurance(args)
+    )
     reviewer = pair.get("reviewer_runner")
     if pair.get("outcome") != "bound" or reviewer not in review_admission.REVIEW_RUNNERS:
         raise SystemExit(f"No independent statement reviewer is available: {pair.get('detail')}")

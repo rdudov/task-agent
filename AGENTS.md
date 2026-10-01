@@ -1,3 +1,5 @@
+> Current review policy: Pre-author statement review accepts an explicitly configured `isolated_same_provider` assurance through the existing prepared-assurance seam. Such a reviewer must have read-only access and no repository write grant. Product statement validation accepts that admitted strategy. Unconfigured Codex↔Claude pairing remains unchanged.
+
 # Task Agent Project Rules
 
 This repository contains a generic assistant workspace built around autonomous agent workflows.

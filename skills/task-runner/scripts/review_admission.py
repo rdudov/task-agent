@@ -669,6 +669,7 @@ def resolve_review_launch_pair(
     reviewer_runner: str,
     access_grant: dict[str, Any] | None = None,
     expected_author_runner: str | None = None,
+    assurance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Check that this review is the one the number was promised.
 
@@ -701,7 +702,9 @@ def resolve_review_launch_pair(
     binding = bound_author_admission(task_dir)
     if binding is None:
         if expected_author_runner:
-            expected = resolve_pair(author_runner=expected_author_runner)
+            expected = resolve_pair(
+                author_runner=expected_author_runner, assurance=assurance
+            )
             if (
                 expected.get("outcome") != "bound"
                 or expected.get("reviewer_runner") != reviewer_runner
@@ -716,6 +719,14 @@ def resolve_review_launch_pair(
                         ),
                     }
                 )
+                return pair
+            grant = access_grant if isinstance(access_grant, dict) else {}
+            if (expected.get("assurance_strategy") == ISOLATED_SAME_PROVIDER
+                    and (grant.get("sandbox_mode") != "read-only" or grant.get("grants_write"))):
+                pair.update({
+                    "outcome": "same_provider_review_not_read_only",
+                    "detail": "isolated pre-author statement review requires read-only access",
+                })
                 return pair
             pair.update(expected)
             pair.update(
@@ -917,6 +928,7 @@ def evaluate(
             reviewer_runner=author_runner,
             access_grant=access_grant,
             expected_author_runner=expected_author_runner,
+            assurance=assurance,
         )
     else:
         pair = resolve_pair(

@@ -972,3 +972,15 @@ def test_completion_result_requires_the_admitted_reviewer_family(tmp_path: Path)
     passed, detail, _result = product_review.validate_result(task, "completion")
     assert not passed
     assert "admitted reviewer family" in detail
+
+
+def test_statement_admission_accepts_only_explicit_same_provider_isolation(tmp_path):
+    import pytest
+    value = admitted_review(tmp_path, reviewer="codex", author="codex")
+    ledger = tmp_path / "reviews" / "admissions.jsonl"
+    entry = json.loads(ledger.read_text())
+    with pytest.raises(ValueError, match="independent author pair"):
+        product_review._admitted_review(tmp_path, value, "statement")
+    entry["pair"]["assurance_strategy"] = "isolated_same_provider"
+    ledger.write_text(json.dumps(entry) + "\n")
+    assert product_review._admitted_review(tmp_path, value, "statement") == entry

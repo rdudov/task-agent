@@ -3,6 +3,11 @@ name: task-runner
 description: Use this skill when a substantial task should be delegated to a child CLI agent. It launches Codex, Claude Code, or Cursor Agent against a task directory, resolving the child runner from the parent CLI agent, writes progress scaffolding, supervises the detached run, provides status polling, and can run a task through the dev-pipeline workflow.
 ---
 
+## Current review policy
+
+Pre-author statement review accepts an explicitly configured `isolated_same_provider` assurance through the existing prepared-assurance seam. Such a reviewer must have read-only access and no repository write grant. Product statement validation accepts that admitted strategy. Unconfigured Codex↔Claude pairing remains unchanged.
+
+
 # Task Runner
 
 This skill launches a child CLI agent to execute a task from its task directory.

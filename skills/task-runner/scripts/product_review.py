@@ -423,7 +423,8 @@ def _admitted_review(task_dir: Path, value: dict, stage: str) -> dict:
         author_family = pair.get("author_family")
         if (
             author_family not in {"Codex", "Claude"}
-            or author_family == pair.get("reviewer_family")
+            or (author_family == pair.get("reviewer_family")
+                and pair.get("assurance_strategy") != review_admission.ISOLATED_SAME_PROVIDER)
         ):
             raise ValueError("statement review admission has no independent author pair")
     return admission

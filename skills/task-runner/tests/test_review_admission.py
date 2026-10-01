@@ -2701,3 +2701,27 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IsolatedStatementAssuranceTests(unittest.TestCase):
+    def test_pre_author_statement_uses_configured_isolated_codex(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(review_admission, "configured_provider_available", return_value=True):
+                pair = review_admission.resolve_review_launch_pair(
+                    Path(raw), reviewer_runner="codex", expected_author_runner="codex",
+                    access_grant={"sandbox_mode": "read-only", "grants_write": False},
+                    assurance=SAME_PROVIDER_ASSURANCE | {"owner_provider": "codex", "review_provider": "codex", "providers": {"codex": {"executable": "codex"}}},
+                )
+        self.assertTrue(pair["bound"])
+        self.assertEqual(pair["assurance_strategy"], "isolated_same_provider")
+
+    def test_pre_author_same_provider_statement_refuses_write_access(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.object(review_admission, "configured_provider_available", return_value=True):
+                pair = review_admission.resolve_review_launch_pair(
+                    Path(raw), reviewer_runner="codex", expected_author_runner="codex",
+                    access_grant={"sandbox_mode": "workspace-write", "grants_write": True},
+                    assurance=SAME_PROVIDER_ASSURANCE | {"owner_provider": "codex", "review_provider": "codex", "providers": {"codex": {"executable": "codex"}}},
+                )
+        self.assertFalse(pair["bound"])
+        self.assertEqual(pair["outcome"], "same_provider_review_not_read_only")
