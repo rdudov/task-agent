@@ -568,6 +568,60 @@ class FalseBlockerTests(unittest.TestCase):
 
 
 class ConcurrentWriteTests(unittest.TestCase):
+    def test_red_close_releases_finished_work_but_never_a_live_writer(self) -> None:
+        # Exercise the real completion owner, not a mocked "ready" answer.
+        import review_admission
+        from test_review_admission import IndependentReviewStatusTests
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = make_repository(root)
+            tasks_root = root / "tasks"
+            tasks_root.mkdir()
+            writer = make_task(tasks_root, "0001-writer", completed=True)
+            successor = make_task(tasks_root, "0002-next")
+            helpers = IndependentReviewStatusTests()
+            helpers._admitted(writer)
+            for _ in range(3):
+                helpers._round(writer, "rework")
+            helpers._close_at_limit(writer)
+            write_admission.open_write_scope(writer, repository, "run-red")
+            (repository / "source.txt").write_text("combined source\n")
+            subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "combined"], check=True)
+            write_admission.close_write_scope(writer, "run-red")
+
+            def blockers(live=False):
+                return write_admission.admission_blockers(
+                    tasks_root=tasks_root, repository=repository,
+                    requesting_task=successor, is_live=lambda _task: live,
+                )
+
+            self.assertEqual([item["reason"] for item in blockers()],
+                             ["unreviewed_overlapping_write"])
+            helpers._round(writer, "rework")
+            helpers._close_at_limit(writer)
+            contract = json.loads((writer / "task_contract.json").read_text())
+            contract["required_live_evidence"] = [{"id": "installed", "required": True}]
+            (writer / "task_contract.json").write_text(json.dumps(contract))
+            self.assertEqual([item["reason"] for item in blockers()],
+                             ["unreviewed_overlapping_write"])
+            (writer / "verification.md").write_text("## installed\n\n- Result: **PASS**\n")
+            # A fresh open scope models a claimant still working after the close.
+            write_admission.open_write_scope(writer, repository, "still-live")
+            self.assertEqual([item["reason"] for item in blockers(True)],
+                             ["live_overlapping_write"])
+            write_admission.close_write_scope(writer, "still-live")
+            self.assertEqual(blockers(), [])
+            status = review_admission.independent_review_status(writer)
+            self.assertFalse(status["satisfied"])
+            self.assertEqual(status["round_limit_closure"]["unresolved_findings"],
+                             ["Combined source lacks current independent approval"])
+            self.assertEqual(review_admission.review_rounds(writer)[-1]["decision"], "rework")
+            receipt = write_admission.read_ledger(writer)[-1]
+            self.assertEqual(receipt["record"], "completion_accepted")
+            self.assertIn("run-red", receipt["accepted_run_ids"])
+
     def test_weak_legacy_backfill_receipt_is_revalidated(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task = make_task(Path(raw), "0001-legacy", completed=True)

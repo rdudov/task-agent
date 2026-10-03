@@ -130,18 +130,21 @@ Files the user explicitly requested are a separate, user-facing class of output.
   its acceptance: a dev-pipeline launch must hand the same reviewer to the
   assurance its core will run, a launch asked for a verdict must be that bound
   provider in a fresh read-only session, and no model-reviewed launch is accepted
-  as complete until that reviewer has approved the work as it now stands.
+  as independently approved until that reviewer has approved the work as it
+  now stands.
   `live_acceptance_only` accepts no model round and requires every configured
   scenario instead. Cursor is never a reviewer, including when a
   provider-neutral installation configuration names it, and a same-provider
   review launch is refused unless its observed sandbox mode is explicitly
-  read-only and its grant allows no write. There is no limit on
-  rework rounds: review and rework stay
-  phases of one task number until the work is accepted, an unapproved round
-  refuses acceptance and authorizes the next round rather than ending the loop,
-  a repeated demonstrated
-  finding is reported to the user as an execution-quality problem without
-  stopping the fixes, and a defect in the review infrastructure is filed under
+  read-only and its grant allows no write. Review and rework stay phases of
+  one task number. Without an explicit task contract limit, an unapproved round refuses acceptance and authorizes the next
+  round. With `review_policy.max_rounds`, the product owner may record
+  `round_limit_closure` with its timestamp and unresolved findings after the
+  limit. This closes only the review obligation; current-source independent
+  approval, installed user evidence and other completion gates remain distinct.
+  A live writer still excludes another writer.
+  A repeated demonstrated finding is reported to the user as an execution-quality
+  problem without stopping the fixes, and a defect in the review infrastructure is filed under
   its own number through the task-number owner rather than becoming the subject
   of the task that hit it or a reason to accept unreviewed work. Dependencies
   are pinned to revisions that impose no round budget of their own. Only a

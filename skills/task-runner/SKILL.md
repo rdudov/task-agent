@@ -805,17 +805,30 @@ finished work.
 Finding-level repeat detection needs the structured findings only a dev-pipeline
 decision artifact carries.
 
-There is no cap on rework rounds. Review and rework are phases of one task
-number, and the runner has nothing that counts down: `rework_rounds` is recorded
-as `unlimited` for exactly that reason. An unapproved round refuses this
-acceptance and authorizes the next round; it never says "no more". A technical
-limit inside one provider attempt may end a *process*; continuing the same goal
-after it needs no user permission. For the same reason the pinned dev-pipeline
-revision is one with no review-round limit of its own — a dependency that stops
-at a count and asks the user whether to continue would reintroduce the budget
-this project does not have.
+Without an explicit task contract limit, review and rework continue under one
+task number until accepted. The default admission still records
+`rework_rounds: unlimited`; it is not an acceptance override. The pinned
+dev-pipeline core remains unlimited.
 
-What the round ledger at `reviews/rounds.jsonl` is for is quality, not budget.
+For a task with an explicit technical limit, set `review_policy.max_rounds`
+in its existing contract. After the counted rounds, another technical reviewer
+launch is refused without creating an infrastructure-defect task. The product
+owner may close that review obligation by recording
+`review_policy.round_limit_closure` with `closed_at` and a nonempty
+`unresolved_findings` list. See `docs/task-execution.md` for the contract shape.
+The close must cover every recorded author phase and round; later author work
+invalidates it. Bound-review pairing and readable round evidence still apply.
+
+The public task state exposes the retained close separately from
+`review.satisfied`, which still means current-source independent approval.
+The completion owner releases only this review obligation: installed user
+evidence, verdict-file requirements, publication and application gates remain
+mandatory. A live or uncertain writer still blocks a successor. Preserve the
+red findings in the user report; never invent approval or installed evidence.
+An installation must use this existing completion/write-admission path, not a
+second queue, launcher, admission table or ledger.
+
+The round ledger at `reviews/rounds.jsonl` also records quality.
 Each reviewer decision the dev-pipeline adapter projects is appended with the
 finding identities it carried. When a finding this task already demonstrated
 comes back, the projection adds an execution-quality warning to `status.json`,

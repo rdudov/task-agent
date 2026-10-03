@@ -626,3 +626,44 @@ When the wrong change exists only in local, unpushed git history, prefer removin
 If the child changes task lifecycle, task artifact structure, skill discovery or execution, agent orchestration, restore behavior, or resume behavior, it should update relevant project docs in the same source change.
 
 If the child or parent caused a material mistake during the task, the final artifacts should include the corrective action and the prevention change, or a user-facing choice when prevention requires a larger design decision.
+
+
+## Closing technical review with unresolved findings
+
+An explicit task contract can set `review_policy.max_rounds`. The technical
+review ledger counts all earlier rounds of the same task, including rounds
+under a prior admission. At the limit, another technical review launch is
+refused without filing an infrastructure defect. Statement review keeps its
+own procedure and is not subject to this technical counter.
+
+After product acceptance, the product owner records the close in the existing
+`task_contract.json`, for example:
+
+```json
+{
+  "review_policy": {
+    "max_rounds": 4,
+    "round_limit_closure": {
+      "closed_at": "2026-10-03T10:00:00+00:00",
+      "unresolved_findings": ["Combined source has no current independent approval"]
+    }
+  }
+}
+```
+
+The timestamp must be a real, timezone-qualified close time covering every
+recorded round and author phase. Empty findings, invalid or future timestamps,
+new author work after the close, too few rounds, and an unreadable or incorrectly
+paired last round cannot authorize this close. A round count alone never
+changes readiness. `task-agent-engine state TASK` exposes `review.round_limit_closure`
+and keeps `review.satisfied` tied to actual current independent approval. A
+close does not append or rewrite a reviewer verdict.
+
+The canonical completion owner still requires completed task metadata, a
+finished plan, required live evidence, explicit verdict-file requirements,
+publication and installation application gates. In particular, missing observed
+installed user behavior cannot be replaced by a commit or the review count.
+Concurrent-write admission checks a live or uncertain claimant first. Only
+finished work whose remaining gates passed is released to a successor through
+the existing completion acceptance ledger. Record unresolved findings in the
+user report; do not label the source independently approved unless it is.

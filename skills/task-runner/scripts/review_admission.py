@@ -53,13 +53,11 @@ refused, a watcher that never spawned, a parent that died before it spawned one
 -- would otherwise be found as the latest author, which reverses which family may
 review the work and lets the author's own family in as its reviewer.
 
-What this module deliberately does not have is a limit. Review and rework are
-phases of one task (`task_phases`), and `record_review_round` counts rounds
-without ever capping them: the round number is for telling the user that the
-same demonstrated finding came back, not for deciding when to stop fixing it.
-An unapproved round therefore blocks acceptance and nothing else -- the next
-round is always allowed, and it is the approval, never the count, that ends the
-loop.
+Review and rework remain phases of one task. A task contract may explicitly
+limit technical review rounds and record a product-owned close with unresolved
+findings. That closes the review obligation, not the findings or the other
+completion gates, and never represents independent approval of current work.
+Without that declaration the existing approval requirement remains unchanged.
 """
 
 from __future__ import annotations
@@ -76,6 +74,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from dev_pipeline.assurance import resolve_executable, validate_assurance_config
+
+try:
+    from .task_contract import load_task_contract
+except ImportError:
+    from task_contract import load_task_contract
 
 
 SCHEMA_VERSION = 1
@@ -938,6 +941,9 @@ def evaluate(
             which=which,
             configured_resolver=configured_resolver,
         )
+    limit = contract.get("review_policy", {}).get("max_rounds")
+    bounded = type(limit) is int and limit > 0
+    round_rule = (f"at most {limit} technical review rounds" if bounded else "no limit on rounds")
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         # Names this evaluation for as long as the ledger keeps it. Two launches
@@ -951,7 +957,7 @@ def evaluate(
         "pair": pair,
         "assurance_strategy": pair.get("assurance_strategy", CROSS_PROVIDER),
         "assurance_source": pair.get("assurance_source", "bound_author_admission"),
-        "rework_rounds": "unlimited",
+        "rework_rounds": limit if bounded else "unlimited",
     }
     grant = access_grant if isinstance(access_grant, dict) else {}
     record["access_profile"] = {
@@ -963,13 +969,26 @@ def evaluate(
         "grants_write": bool(grant.get("grants_write")),
     }
     if classification["work_class"] == REVIEW:
+        if (expected_author_runner is None and bounded
+                and len(_rounds(task_dir)) >= limit):
+            record.update(
+                decision="refused",
+                refusal_reason=f"task contract technical review limit of {limit} rounds reached",
+                refusal_action=(
+                    "The product owner must record unresolved findings in the existing "
+                    "contract's round_limit_closure; other completion gates still apply."
+                ),
+                infrastructure_defect=False,
+            )
+            record["message"] = f"{record['refusal_reason']}. {record['refusal_action']}"
+            return record
         if pair["bound"]:
             record["decision"] = "admitted_review"
             record["message"] = (
                 f"task-runner admitted this launch as the review of task "
                 f"{task_dir.name}: {pair['detail']}. Its verdict decides whether the "
                 "task is accepted, and a verdict of rework returns the same number to "
-                "its author with no limit on further rounds."
+                f"its author under the task contract: {round_rule}."
             )
             return record
         record["decision"] = "refused"
@@ -1005,7 +1024,7 @@ def evaluate(
                 f"task-runner bound {pair['reviewer_family']} as the {independence} "
                 f"for this {pair['author_family']} author under assurance strategy "
                 f"`{pair.get('assurance_strategy')}` before starting it: {pair['detail']}. "
-                "Review and rework stay phases of this task number, with no limit on rounds."
+                f"Review and rework stay phases of this task number, with {round_rule}."
             )
         if workflow != "standard":
             # A dev-pipeline run is reviewed by the core, using the assurance the
@@ -1475,8 +1494,45 @@ def _rounds(task_dir: Path) -> list[dict[str, Any]]:
 
 
 def review_rounds(task_dir: Path) -> list[dict[str, Any]]:
-    """Every review round this task number has already had. Never a budget."""
+    """Every technical review round this task number has already had."""
     return _rounds(task_dir)
+
+
+def round_limit_closure(
+    task_dir: Path, *, author_phases: Iterable[dict[str, Any]], rounds: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Read an explicit close from the effective contract; count alone closes nothing.
+
+    The timestamp binds the close to the author's work then on hand. New author
+    work invalidates it, while prior reviews remain historical, including reviews
+    under an earlier admission. Required live evidence stays with completion.
+    """
+    policy = load_task_contract(task_dir).get("review_policy", {})
+    limit = policy.get("max_rounds")
+    closure = policy.get("round_limit_closure")
+    if type(limit) is not int or limit < 1 or len(rounds) < limit:
+        return None
+    if not isinstance(closure, dict):
+        return None
+    findings = closure.get("unresolved_findings")
+    if not isinstance(findings, list) or not findings or any(
+        not isinstance(finding, str) or not finding.strip() for finding in findings
+    ):
+        return None
+    try:
+        closed_at = datetime.fromisoformat(closure["closed_at"])
+        observed_at = [
+            datetime.fromisoformat(str(entry["recorded_at"])) for entry in rounds
+        ] + [
+            datetime.fromisoformat(str(entry["entered_at"])) for entry in author_phases
+        ]
+        if closed_at.tzinfo is None or closed_at > datetime.now(timezone.utc):
+            return None
+        if any(moment > closed_at for moment in observed_at):
+            return None
+    except (KeyError, ValueError, TypeError):
+        return None
+    return {**closure, "max_rounds": limit}
 
 
 def repeat_warning(repeated: Iterable[str], round_number: int) -> str:
@@ -1580,8 +1636,9 @@ def independent_review_status(
 
     `author_phases` are the phase-history entries that mean the author was
     working -- the caller passes them because `task_phases` owns that vocabulary.
-    Nothing here counts rounds: an unapproved round says "not yet", never "no
-    more".
+    An explicit round-limit close is reported separately from satisfaction:
+    current work still lacks independent approval, even when its review
+    obligation has been closed with retained findings.
     """
     binding = bound_author_admission(task_dir)
     status: dict[str, Any] = {
@@ -1643,9 +1700,10 @@ def independent_review_status(
         "reviewer_family": last.get("reviewer_family") or family_of(last.get("review_provider")),
         "recorded_at": last.get("recorded_at"),
     }
+    author_phases = list(author_phases)
     outcome = round_decision(last)
     last_family = status["last_round"]["reviewer_family"]
-    if outcome != "approved":
+    if outcome == "unreadable":
         status["satisfied"] = False
         status["reason"] = (
             f"review round {last.get('round')} by {last_family} did not approve "
@@ -1684,10 +1742,29 @@ def independent_review_status(
         return status
     approved_at = str(last.get("recorded_at", ""))
     later = [
-        entry
-        for entry in author_phases
+        entry for entry in author_phases
         if str(entry.get("entered_at", "")) > approved_at
     ]
+    closure = round_limit_closure(task_dir, author_phases=author_phases, rounds=rounds)
+    if closure is not None:
+        status["satisfied"] = outcome == "approved" and not later
+        status["round_limit_closure"] = closure
+        status["reason"] = (
+            f"technical review closed after {len(rounds)} rounds with unresolved "
+            "findings; current work is "
+            + ("independently approved: " if status["satisfied"] else "not independently approved: ")
+            + "; ".join(closure["unresolved_findings"])
+        )
+        status.pop("action", None)
+        return status
+    if outcome != "approved":
+        status["satisfied"] = False
+        status["reason"] = (
+            f"review round {last.get('round')} by {last_family} did not approve "
+            f"(decision {last.get('decision')!r}); the task returns to its author "
+            "for rework and another round, of which there is no limit"
+        )
+        return status
     if later:
         status["satisfied"] = False
         status["author_work_after_approval"] = later[-1]

@@ -285,12 +285,20 @@ provider; same-family review is valid only for explicit session isolation, and
 live-only assurance admits no model verdict. The shared completion decision
 requires the bound model review or the configured live evidence, which stops a
 material launch from finishing with a stronger assurance claim than it earned
-and stops an approval from surviving later rework. There is no round budget: rework and
-review repeat under one number until the work is accepted, an unapproved round
-refuses acceptance and authorizes another round, and a demonstrated
-finding that comes back is reported as an execution-quality signal without
-stopping anything. The dev-pipeline revision this project pins is one with no
-review-round limit, so the dependency cannot reintroduce the budget either.
+and stops an approval from surviving later rework. Without a task contract
+limit, rework and review repeat under one number until the work is accepted. An explicit `review_policy.max_rounds` stops another
+technical reviewer launch after the limit; it does not create an infrastructure
+outage or authorize acceptance on its own. The existing effective contract may
+carry a product-owned `round_limit_closure` with a close timestamp and retained
+unresolved findings. The review owner validates the recorded bound-family round,
+the count and that the close covers all recorded author work. It reports the
+close separately from current-source independent approval. Shared completion
+releases only that review obligation; required installed evidence, publication
+and application gates remain enforced. Existing write admission still checks
+writer liveness before admitting a successor and records acceptance through its
+existing ledger. Later author work invalidates the close. The pinned dev-pipeline
+core itself remains unlimited; its orchestration is not changed by this standard
+completion repair.
 
 **One writer per repository.** A write-mode child is admitted to a Git repository
 through one repository-locked check-and-claim operation. Unknown PID visibility

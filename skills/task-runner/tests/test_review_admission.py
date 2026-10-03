@@ -1941,12 +1941,13 @@ class IndependentReviewStatusTests(unittest.TestCase):
             which=_installed("claude", "codex"),
         )
 
-    def _round(self, task_dir: Path, decision: str, provider: str = "codex") -> dict:
+    def _round(self, task_dir: Path, decision: str, provider: str = "codex", **kwargs) -> dict:
         return review_admission.record_review_round(
             task_dir,
             event_id=f"event-{decision}-{provider}-{len(review_admission.review_rounds(task_dir))}",
             decision={"decision": decision},
             review_provider=provider,
+            **kwargs,
         )
 
     def _admitted_same_provider(self, task_dir: Path) -> None:
@@ -1960,6 +1961,110 @@ class IndependentReviewStatusTests(unittest.TestCase):
             which=_installed("claude"),
             configured_resolver=_installed("claude"),
         )
+
+    def _close_at_limit(self, task_dir: Path, **changes) -> None:
+        closure = {
+            "closed_at": review_admission.utc_now(),
+            "unresolved_findings": ["Combined source lacks current independent approval"],
+            **changes,
+        }
+        (task_dir / "task_contract.json").write_text(json.dumps({
+            "version": 1,
+            "review_policy": {"max_rounds": 4, "round_limit_closure": closure},
+        }))
+
+    def test_explicit_red_close_needs_four_rounds_and_keeps_review_unsatisfied(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(3):
+                self._round(task, "rework")
+            self._close_at_limit(task)
+            before = review_admission.independent_review_status(task)
+            self._round(task, "rework")
+            self._close_at_limit(task)
+            after = review_admission.independent_review_status(task)
+        self.assertFalse(before["satisfied"])
+        self.assertNotIn("round_limit_closure", before)
+        self.assertFalse(after["satisfied"])
+        self.assertIn("round_limit_closure", after)
+        self.assertNotIn("action", after)
+        self.assertEqual(after["last_round"]["decision"], "rework")
+
+    def test_red_close_covers_later_author_without_extending_old_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(4):
+                self._round(task, "approved", recorded_at="1999-01-01T00:00:00+00:00")
+            author = [{"entered_at": review_admission.utc_now()}]
+            self._close_at_limit(task)
+            status = review_admission.independent_review_status(task, author_phases=author)
+            new_author = [{"entered_at": "2999-01-01T00:00:00+00:00"}]
+            reopened = review_admission.independent_review_status(task, author_phases=new_author)
+        self.assertFalse(status["satisfied"])
+        self.assertIn("not independently approved", status["reason"])
+        self.assertIn("round_limit_closure", status)
+        self.assertNotIn("round_limit_closure", reopened)
+        self.assertFalse(reopened["satisfied"])
+
+    def test_round_count_and_invalid_closures_never_replace_bound_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(4):
+                self._round(task, "rework")
+            for changes in ({"unresolved_findings": []}, {"closed_at": "invalid"},
+                            {"closed_at": "1999-01-01T00:00:00+00:00"},
+                            {"closed_at": "2999-01-01T00:00:00+00:00"}):
+                with self.subTest(changes=changes):
+                    self._close_at_limit(task, **changes)
+                    status = review_admission.independent_review_status(task)
+                    self.assertFalse(status["satisfied"])
+                    self.assertNotIn("round_limit_closure", status)
+            self._round(task, "approved", provider="claude")
+            self._close_at_limit(task)
+            self.assertNotIn("round_limit_closure", review_admission.independent_review_status(task))
+
+    def test_same_provider_red_close_uses_the_admitted_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted_same_provider(task)
+            for _ in range(4):
+                self._round(task, "rework", provider="claude")
+            self._close_at_limit(task)
+            status = review_admission.independent_review_status(task)
+        self.assertFalse(status["satisfied"])
+        self.assertEqual(status["assurance_strategy"], "isolated_same_provider")
+        self.assertIn("round_limit_closure", status)
+
+    def test_explicit_technical_limit_refuses_fifth_review_without_an_outage(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(4):
+                self._round(task, "rework")
+            self._close_at_limit(task)
+            record = review_admission.evaluate(
+                task, workflow="standard", author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=json.loads((task / "task_contract.json").read_text()),
+                review_launch=True, which=_installed("claude", "codex"),
+            )
+        self.assertEqual(record["decision"], "refused")
+        self.assertFalse(record["infrastructure_defect"])
+        self.assertIn("limit of 4", record["refusal_reason"])
+
+    def test_a_current_approval_is_not_denied_by_a_red_close(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(4):
+                self._round(task, "approved")
+            self._close_at_limit(task)
+            status = review_admission.independent_review_status(task)
+        self.assertTrue(status["satisfied"])
+        self.assertIn("round_limit_closure", status)
 
     def test_an_unadmitted_task_is_not_gated_on_a_review_it_never_bound(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -2095,6 +2200,30 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             which=_installed("claude", "codex"),
         )
         task_phases.record_phase(task, "implementation")
+
+    def test_red_close_releases_only_review_and_requires_installed_live_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = self._task(Path(raw))
+            self._admit_author(task)
+            for i in range(4):
+                review_admission.record_review_round(
+                    task, event_id=f"round-{i}", decision={"decision": "rework"},
+                    review_provider="codex",
+                )
+            task_phases.record_phase(task, "rework")
+            IndependentReviewStatusTests()._close_at_limit(task)
+            contract = json.loads((task / "task_contract.json").read_text())
+            contract["required_live_evidence"] = [{"id": "installed_scenario", "required": True}]
+            (task / "task_contract.json").write_text(json.dumps(contract))
+            self.assertIsNone(task_completion.independent_review_blocker(task))
+            ready, reason = task_completion.completion_ready(task, workflow="standard")
+            self.assertFalse(ready)
+            self.assertIn("installed_scenario", reason)
+            (task / "verification.md").write_text(
+                "## installed_scenario\n\n- Result: **PASS**\n- Evidence: observed installed path.\n"
+            )
+            self.assertTrue(task_completion.completion_ready(task, workflow="standard")[0])
+            self.assertEqual(review_admission.review_rounds(task)[-1]["decision"], "rework")
 
     def test_an_admitted_author_cannot_close_without_the_review(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

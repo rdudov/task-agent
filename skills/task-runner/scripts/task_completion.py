@@ -151,7 +151,7 @@ def independent_review_blocker(task_dir: Path) -> dict | None:
     status = review_admission.independent_review_status(
         task_dir, author_phases=author_phases
     )
-    if status["satisfied"]:
+    if status["satisfied"] or status.get("round_limit_closure"):
         return None
     reason = (
         "the independent review this task was admitted with is not established: "
@@ -393,8 +393,8 @@ def completion_ready(
     # here now. Without this, review admission would be a record of an intention:
     # the launcher would name an independent reviewer and the author could finish
     # and be accepted without that reviewer ever seeing the work. There is no
-    # round budget in it -- an unapproved round refuses this acceptance and
-    # authorizes the next round, which is the loop the task is supposed to have.
+    # automatic count-based approval: an explicit contract close at the round
+    # limit releases only this obligation and retains unresolved findings.
     review_blocker = independent_review_blocker(task_dir)
     if review_blocker is not None:
         return False, completion_failure(
