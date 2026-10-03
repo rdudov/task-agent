@@ -817,7 +817,12 @@ owner may close that review obligation by recording
 `review_policy.round_limit_closure` with `closed_at` and a nonempty
 `unresolved_findings` list. See `docs/task-execution.md` for the contract shape.
 The close must cover every recorded author phase and round; later author work
-invalidates it. Bound-review pairing and readable round evidence still apply.
+invalidates it. Bound-review pairing and readable round evidence still apply. Historical
+unlabelled entries are classified only by the existing launch/phase records or
+validated core event identity. Unknown provenance consumes no technical budget
+and cannot provide source approval or hide a possible later technical rework.
+The read path does not migrate or rewrite the journal; see the mechanics in
+`docs/task-execution.md`.
 
 The public task state exposes the retained close separately from
 `review.satisfied`, which still means current-source independent approval.

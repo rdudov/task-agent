@@ -83,6 +83,29 @@ def status_of(task_dir: Path) -> dict:
     return json.loads((task_dir / "status.json").read_text(encoding="utf-8"))
 
 
+def test_old_projected_rounds_retain_confirmed_technical_provenance(tmp_path: Path):
+    task = make_task(tmp_path)
+    projector = dev_pipeline_adapter.TaskArtifactProjector(task)
+    decision = event("review_approved", 1, {
+        "decision": "approved", "review_provider": "codex",
+        "strategy": "cross_provider", "artifact_digest": "sha256:abc",
+        "reviewer_session_id": "session-reviewer",
+    })
+    projector.consume(decision)
+    ledger = task / "reviews/rounds.jsonl"
+    entry = json.loads(ledger.read_text())
+    entry.pop("review_kind")
+    ledger.write_text(json.dumps(entry) + "\n")
+    original = ledger.read_bytes()
+    rounds = dev_pipeline_adapter.review_admission.review_rounds(task, review_kind="technical")
+    assert len(rounds) == 1
+    assert ledger.read_bytes() == original
+    projector.event_path.write_text(json.dumps({**decision, "task_ref": "002-other"}) + "\n")
+    assert dev_pipeline_adapter.review_admission.review_rounds(task, review_kind="technical") == []
+    projector.event_path.write_text("invalid JSON\n")
+    assert dev_pipeline_adapter.review_admission.review_rounds(task)[0]["review_kind"] == "unknown"
+
+
 def progress_of(task_dir: Path) -> dict:
     return json.loads((task_dir / "progress.json").read_text(encoding="utf-8"))
 

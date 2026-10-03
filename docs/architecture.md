@@ -290,9 +290,9 @@ limit, rework and review repeat under one number until the work is accepted. An 
 technical reviewer launch after the limit; admission receives the explicit review
 kind, and the counter and source approval select only technical rounds from the
 existing journal. Completion/product rounds keep their kind and cannot consume
-that budget or approve source. Historical unlabelled rounds retain their technical
-meaning. The limit does not create an infrastructure
-outage or authorize acceptance on its own. The existing effective contract may
+that budget or approve source. Historical unlabelled rounds use recorded launch
+or core-event provenance; missing provenance never establishes source approval.
+The limit does not create an infrastructure outage or authorize acceptance on its own. The existing effective contract may
 carry a product-owned `round_limit_closure` with a close timestamp and retained
 unresolved findings. The review owner validates the recorded bound-family round,
 the count and that the close covers all recorded author work. It reports the

@@ -77,8 +77,10 @@ from dev_pipeline.assurance import resolve_executable, validate_assurance_config
 
 try:
     from .task_contract import load_task_contract
+    from . import task_phases
 except ImportError:
     from task_contract import load_task_contract
+    import task_phases
 
 
 SCHEMA_VERSION = 1
@@ -1497,18 +1499,93 @@ def _rounds(task_dir: Path) -> list[dict[str, Any]]:
     return _read_jsonl(task_dir / ROUNDS_LEDGER)
 
 
+def _legacy_standard_kind(
+    entry: dict[str, Any], launches: list[dict[str, Any]],
+    phases: list[dict[str, Any]], meta: dict[str, Any],
+) -> str | None:
+    """Recover the old writer's omitted kind from the same recorded launch.
+
+    The current runner has an exact run key. Older timestamp keys must lie
+    inside one admission's lifetime and a standard review phase. A later
+    admission or an unlabelled admission cannot be borrowed as provenance.
+    """
+    run_key = str(entry.get("event_id", "")).removeprefix("standard-review:")
+    current_key = meta.get("write_scope_run_id") or meta.get("child_started_at")
+    if current_key == run_key:
+        admission = meta.get("review_admission")
+        if (isinstance(admission, dict) and admission.get("decision") == "admitted_review"
+                and admission.get("workflow") == "standard"
+                and admission.get("review_kind") == meta.get("review_kind")):
+            return admission.get("review_kind")
+    try:
+        started = datetime.fromisoformat(run_key)
+        finished = datetime.fromisoformat(entry["recorded_at"])
+        if started.tzinfo is None or finished.tzinfo is None or finished < started:
+            return None
+        preceding = []
+        for launch in launches:
+            if "evaluated_at" not in launch:
+                continue
+            admitted = datetime.fromisoformat(launch["evaluated_at"])
+            if started < admitted <= finished:
+                return None
+            if admitted <= started:
+                preceding.append((admitted, launch))
+        if not preceding:
+            return None
+        admitted, admission = max(preceding, key=lambda item: item[0])
+        if sum(moment == admitted for moment, _ in preceding) != 1:
+            return None
+        if admission.get("decision") != "admitted_review" or admission.get("workflow") != "standard":
+            return None
+        prior_phases = [(datetime.fromisoformat(phase["entered_at"]), phase) for phase in phases]
+        prior_phases = [item for item in prior_phases if item[0] <= started]
+        if not prior_phases:
+            return None
+        # Phase append order resolves events recorded in the same second.
+        entered, phase = max(reversed(prior_phases), key=lambda item: item[0])
+        if (entered < admitted or phase.get("phase") != task_phases.REVIEW
+                or phase.get("cause", {}).get("workflow") != "standard"):
+            return None
+        return admission.get("review_kind")
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+
+
 def review_rounds(
     task_dir: Path, *, review_kind: str | None = None
 ) -> list[dict[str, Any]]:
     """Read the existing journal, optionally selecting one kind of review.
 
-    Historical entries without a kind retain their original technical meaning.
-    Journal sequence numbers and event identities are never rewritten.
+    Old writers omitted both technical and completion kinds. Recover a kind
+    only from recorded provenance; otherwise expose it as unknown. No journal
+    bytes, sequence numbers or event identities are rewritten.
     """
-    return [
-        entry for entry in _rounds(task_dir)
-        if review_kind is None or entry.get("review_kind", "technical") == review_kind
-    ]
+    entries = _rounds(task_dir)
+    legacy = [entry for entry in entries if "review_kind" not in entry]
+    launches = admissions(task_dir) if legacy else []
+    phases = task_phases.phase_history(task_dir) if legacy else []
+    meta = _read_json(task_dir / ".runner/runner.json") if legacy else {}
+    core_kinds = {}
+    if any(not str(entry.get("event_id", "")).startswith("standard-review:") for entry in legacy):
+        # The adapter owns core event vocabulary and projection paths.
+        try:
+            from . import dev_pipeline_adapter
+        except ImportError:
+            import dev_pipeline_adapter
+        core_kinds = dev_pipeline_adapter.historical_review_kinds(task_dir)
+    result = []
+    for entry in entries:
+        if "review_kind" not in entry:
+            event_id = str(entry.get("event_id", ""))
+            kind = (
+                _legacy_standard_kind(entry, launches, phases, meta)
+                if event_id.startswith("standard-review:") else core_kinds.get(event_id)
+            )
+            entry = {**entry, "review_kind": kind or "unknown"}
+        if review_kind is None or entry.get("review_kind") == review_kind:
+            result.append(entry)
+    return result
 
 
 def round_limit_closure(
@@ -1656,11 +1733,13 @@ def independent_review_status(
     obligation has been closed with retained findings.
     """
     binding = bound_author_admission(task_dir)
+    all_rounds = review_rounds(task_dir)
+    rounds = [entry for entry in all_rounds if entry.get("review_kind") == "technical"]
     status: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "required": binding is not None,
         "satisfied": True,
-        "rounds": len(review_rounds(task_dir, review_kind="technical")),
+        "rounds": len(rounds),
     }
     if binding is None:
         status["reason"] = (
@@ -1700,7 +1779,17 @@ def independent_review_status(
         status.pop("action", None)
         return status
     status["action"] = review_launch_hint(task_dir, pair.get("reviewer_runner"))
-    rounds = review_rounds(task_dir, review_kind="technical")
+    last_technical = all_rounds.index(rounds[-1]) if rounds else -1
+    unknown = [entry for entry in all_rounds[last_technical + 1:]
+               if entry.get("review_kind") not in {"technical", "completion", "statement"}]
+    if unknown:
+        status["satisfied"] = False
+        status["unknown_review_rounds"] = [entry.get("round") for entry in unknown]
+        status["reason"] = (
+            "review kind provenance is missing or ambiguous after the last technical "
+            "review; these rounds cannot establish source approval or a technical close"
+        )
+        return status
     if not rounds:
         status["satisfied"] = False
         status["reason"] = (

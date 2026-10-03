@@ -141,7 +141,9 @@ Files the user explicitly requested are a separate, user-facing class of output.
   round. Technical review admission, counting and source approval use the explicit
   `technical` kind; completion/product review keeps its separate procedure and
   never consumes that budget or approves source. Historical unlabelled rounds
-  retain their technical meaning. With `review_policy.max_rounds`, the product owner may record
+  count only when their recorded launch or core event confirms the kind; missing
+  provenance never establishes source approval. With `review_policy.max_rounds`,
+  the product owner may record
   `round_limit_closure` with its timestamp and unresolved findings after the
   limit. This closes only the review obligation; current-source independent
   approval, installed user evidence and other completion gates remain distinct.

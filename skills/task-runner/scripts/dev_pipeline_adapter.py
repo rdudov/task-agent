@@ -178,6 +178,24 @@ def state_dir(task_dir: Path) -> Path:
     return task_dir / STATE_DIR_NAME
 
 
+def historical_review_kinds(task_dir: Path) -> dict[str, str]:
+    """Provenance for rounds the old projector wrote without a review kind."""
+    path = state_dir(task_dir) / "projected-events.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return {}
+    kinds = {}
+    for line in lines:
+        try:
+            event = validate_event(json.loads(line), allow_legacy_unclassified_resume=True)
+        except (ValueError, TypeError):
+            continue
+        if event["task_ref"] == task_dir.name and event["kind"] in REVIEW_DECISION_KINDS:
+            kinds[event["event_id"]] = "technical"
+    return kinds
+
+
 def core_state_dir(task_dir: Path, value: Path | None, default: str = "core") -> Path:
     """Keep the core's own lifecycle state inside the task that owns the run."""
     resolved = (value or state_dir(task_dir) / default).resolve()

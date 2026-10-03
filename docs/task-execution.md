@@ -632,8 +632,16 @@ If the child or parent caused a material mistake during the task, the final arti
 
 An explicit task contract can set `review_policy.max_rounds`. The technical
 counter selects `review_kind="technical"` from the existing `reviews/rounds.jsonl`,
-including technical rounds under a prior admission. Historical entries without
-`review_kind` retain their original technical meaning and sequence numbers.
+including technical rounds under a prior admission. Old standard writers omitted
+`review_kind` for completion reviews too. The reader recovers it from the exact current runner's embedded admission, or from
+one historical admission interval corroborated by the standard review phase.
+Timestamp keys use the recorded timezone-aware launch and completion times;
+classification does not depend on the current clock. The core adapter confirms
+old technical events by their exact identity in its validated projection.
+Missing, conflicting or unlabelled provenance remains `unknown`: it consumes
+no technical budget and a later unknown round refuses source approval and a
+technical close until provenance or a later confirmed technical review resolves
+it. The reader never rewrites journal bytes or sequence numbers.
 New standard completion reviews record `review_kind="completion"`; dev-pipeline
 core reviews record `technical`. Product completion approval cannot establish
 independent approval of the source. At the limit, another technical review launch

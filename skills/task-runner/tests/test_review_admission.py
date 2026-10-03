@@ -2137,17 +2137,39 @@ class IndependentReviewStatusTests(unittest.TestCase):
             self.assertTrue(status["satisfied"])
             self.assertEqual(status["last_round"]["decision"], "approved")
 
+    def _legacy_round(self, task: Path, kind: str, decision: str, index: int) -> dict:
+        # The pre-upgrade finalizer stored a timestamp event key but no kind.
+        admitted = f"2026-01-01T00:{index:02d}:00+00:00"
+        started = f"2026-01-01T00:{index:02d}:01+00:00"
+        finished = f"2026-01-01T00:{index:02d}:10+00:00"
+        admission = review_admission.evaluate(
+            task, workflow="standard", author_runner="codex",
+            access_grant=READ_ONLY_GRANT, contract={}, review_launch=True,
+            review_kind=kind, which=_installed("claude", "codex"),
+        )
+        admission["evaluated_at"] = admitted
+        with (task / review_admission.ADMISSIONS_LEDGER).open("a") as handle:
+            handle.write(json.dumps(admission) + "\n")
+        task_phases.record_phase(task, "review", entered_at=started,
+                                 cause={"workflow": "standard", "source": "task-runner"})
+        task_phases.record_phase(task, "blocked", entered_at=finished)
+        entry = review_admission.record_review_round(
+            task, event_id=f"standard-review:{started}", decision={"decision": decision},
+            review_provider="codex", recorded_at=finished, review_kind=kind,
+        )
+        path = task / review_admission.ROUNDS_LEDGER
+        entries = [json.loads(line) for line in path.read_text().splitlines()]
+        entries[-1].pop("review_kind")
+        path.write_text("".join(json.dumps(item) + "\n" for item in entries))
+        return entry
+
     def test_historical_technical_rounds_remain_unchanged_and_counted(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task = Path(raw)
             self._admitted(task)
-            for _ in range(4):
-                self._round(task, "rework")
+            for index in range(1, 5):
+                self._legacy_round(task, "technical", "rework", index)
             path = task / review_admission.ROUNDS_LEDGER
-            entries = [json.loads(line) for line in path.read_text().splitlines()]
-            for entry in entries:
-                entry.pop("review_kind")
-            path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
             original = path.read_bytes()
             self._close_at_limit(task)
             status = review_admission.independent_review_status(task)
@@ -2155,6 +2177,89 @@ class IndependentReviewStatusTests(unittest.TestCase):
             self.assertIn("round_limit_closure", status)
             self.assertFalse(status["satisfied"])
             self.assertEqual(path.read_bytes(), original)
+
+    def test_legacy_product_approval_does_not_count_close_or_approve_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for index in range(1, 4):
+                self._legacy_round(task, "technical", "rework", index)
+            self._legacy_round(task, "completion", "approved", 4)
+            original = (task / review_admission.ROUNDS_LEDGER).read_bytes()
+            self._close_at_limit(task)
+            status = review_admission.independent_review_status(task)
+            self.assertEqual(status["rounds"], 3)
+            self.assertFalse(status["satisfied"])
+            self.assertNotIn("round_limit_closure", status)
+            self.assertEqual(len(review_admission.review_rounds(task, review_kind="completion")), 1)
+            admission = review_admission.evaluate(
+                task, workflow="standard", author_runner="codex",
+                access_grant=READ_ONLY_GRANT, review_launch=True,
+                contract=json.loads((task / "task_contract.json").read_text()),
+                which=_installed("claude", "codex"),
+            )
+            self.assertEqual(admission["decision"], "admitted_review")
+            self.assertEqual((task / review_admission.ROUNDS_LEDGER).read_bytes(), original)
+
+    def test_unknown_legacy_round_cannot_reuse_an_earlier_source_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            self._round(task, "approved")
+            for index, kind in enumerate(("approved", "rework"), 1):
+                with self.subTest(decision=kind):
+                    self._legacy_round(task, "technical", kind, index)
+                    # Lose the launch provenance: never default it to technical.
+                    (task / review_admission.ADMISSIONS_LEDGER).write_text(
+                        (task / review_admission.ADMISSIONS_LEDGER).read_text().splitlines()[0] + "\n"
+                    )
+                    status = review_admission.independent_review_status(task)
+                    self.assertFalse(status["satisfied"])
+                    self.assertEqual(status["rounds"], 1)
+                    self.assertIn("provenance", status["reason"])
+
+    def test_legacy_current_runner_uses_its_embedded_admission_not_a_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            self._legacy_round(task, "completion", "approved", 1)
+            admission = review_admission.admissions(task)[-1]
+            (task / review_admission.ADMISSIONS_LEDGER).write_text("")
+            task_runner.runner_dir(task).mkdir(exist_ok=True)
+            task_runner.write_json(task_runner.runner_meta_path(task), {
+                "review_kind": "completion", "child_started_at": "2026-01-01T00:01:01+00:00",
+                "review_admission": admission,
+            })
+            (task / review_admission.ADMISSION_RECORD).write_text(json.dumps({
+                **admission, "review_kind": "technical",
+            }))
+            self.assertEqual(len(review_admission.review_rounds(task, review_kind="technical")), 0)
+            self.assertEqual(len(review_admission.review_rounds(task, review_kind="completion")), 1)
+
+    def test_legacy_ambiguous_or_missing_launch_provenance_never_approves(self) -> None:
+        for defect in ("unlabelled_admission", "missing_phase", "later_author_phase",
+                       "conflicting_admission", "invalid_timestamp"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as raw:
+                task = Path(raw)
+                self._admitted(task)
+                self._legacy_round(task, "technical", "approved", 1)
+                path = task / review_admission.ADMISSIONS_LEDGER
+                entries = [json.loads(line) for line in path.read_text().splitlines()]
+                if defect == "unlabelled_admission":
+                    entries[-1].pop("review_kind")
+                elif defect == "conflicting_admission":
+                    entries.append({**entries[-1], "review_kind": "completion"})
+                elif defect == "missing_phase":
+                    (task / "phases.json").write_text("{}")
+                elif defect == "later_author_phase":
+                    task_phases.record_phase(task, "rework", entered_at="2026-01-01T00:01:01+00:00")
+                else:
+                    entries[-1]["evaluated_at"] = "invalid"
+                path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+                status = review_admission.independent_review_status(task)
+                self.assertFalse(status["satisfied"])
+                self.assertEqual(status["rounds"], 0)
+                self.assertEqual(status["unknown_review_rounds"], [1])
 
     def test_a_current_approval_is_not_denied_by_a_red_close(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
