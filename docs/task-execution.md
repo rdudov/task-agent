@@ -631,10 +631,15 @@ If the child or parent caused a material mistake during the task, the final arti
 ## Closing technical review with unresolved findings
 
 An explicit task contract can set `review_policy.max_rounds`. The technical
-review ledger counts all earlier rounds of the same task, including rounds
-under a prior admission. At the limit, another technical review launch is
-refused without filing an infrastructure defect. Statement review keeps its
-own procedure and is not subject to this technical counter.
+counter selects `review_kind="technical"` from the existing `reviews/rounds.jsonl`,
+including technical rounds under a prior admission. Historical entries without
+`review_kind` retain their original technical meaning and sequence numbers.
+New standard completion reviews record `review_kind="completion"`; dev-pipeline
+core reviews record `technical`. Product completion approval cannot establish
+independent approval of the source. At the limit, another technical review launch
+is refused without filing an infrastructure defect. Statement and product
+completion review keep their own product-review procedure and are not subject to
+this technical counter.
 
 After product acceptance, the product owner records the close in the existing
 `task_contract.json`, for example:
@@ -652,7 +657,8 @@ After product acceptance, the product owner records the close in the existing
 ```
 
 The timestamp must be a real, timezone-qualified close time covering every
-recorded round and author phase. Empty findings, invalid or future timestamps,
+recorded technical round and author phase. Empty findings, invalid or future
+timestamps,
 new author work after the close, too few rounds, and an unreadable or incorrectly
 paired last round cannot authorize this close. A round count alone never
 changes readiness. `task-agent-engine state TASK` exposes `review.round_limit_closure`

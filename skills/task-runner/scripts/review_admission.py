@@ -911,6 +911,7 @@ def evaluate(
     contract: dict[str, Any],
     declared_reviewer: str | None = None,
     review_launch: bool = False,
+    review_kind: str = "technical",
     expected_author_runner: str | None = None,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
@@ -969,8 +970,9 @@ def evaluate(
         "grants_write": bool(grant.get("grants_write")),
     }
     if classification["work_class"] == REVIEW:
-        if (expected_author_runner is None and bounded
-                and len(_rounds(task_dir)) >= limit):
+        record["review_kind"] = review_kind
+        if (review_kind == "technical" and bounded
+                and len(review_rounds(task_dir, review_kind="technical")) >= limit):
             record.update(
                 decision="refused",
                 refusal_reason=f"task contract technical review limit of {limit} rounds reached",
@@ -1239,6 +1241,7 @@ def admit_launch(
     contract: dict[str, Any],
     declared_reviewer: str | None = None,
     review_launch: bool = False,
+    review_kind: str = "technical",
     expected_author_runner: str | None = None,
     assurance: dict[str, Any] | None = None,
     which: Callable[[str], str | None] = shutil.which,
@@ -1271,6 +1274,7 @@ def admit_launch(
         contract=contract,
         declared_reviewer=declared_reviewer,
         review_launch=review_launch,
+        review_kind=review_kind,
         expected_author_runner=expected_author_runner,
         assurance=assurance,
         which=which,
@@ -1493,9 +1497,18 @@ def _rounds(task_dir: Path) -> list[dict[str, Any]]:
     return _read_jsonl(task_dir / ROUNDS_LEDGER)
 
 
-def review_rounds(task_dir: Path) -> list[dict[str, Any]]:
-    """Every technical review round this task number has already had."""
-    return _rounds(task_dir)
+def review_rounds(
+    task_dir: Path, *, review_kind: str | None = None
+) -> list[dict[str, Any]]:
+    """Read the existing journal, optionally selecting one kind of review.
+
+    Historical entries without a kind retain their original technical meaning.
+    Journal sequence numbers and event identities are never rewritten.
+    """
+    return [
+        entry for entry in _rounds(task_dir)
+        if review_kind is None or entry.get("review_kind", "technical") == review_kind
+    ]
 
 
 def round_limit_closure(
@@ -1551,6 +1564,7 @@ def record_review_round(
     decision: dict[str, Any] | None,
     review_provider: str | None = None,
     recorded_at: str | None = None,
+    review_kind: str = "technical",
 ) -> dict[str, Any]:
     """Append one review round and report findings this task has already seen.
 
@@ -1581,6 +1595,7 @@ def record_review_round(
     entry = {
         "schema_version": SCHEMA_VERSION,
         "round": len(existing) + 1,
+        "review_kind": review_kind,
         "recorded_at": recorded_at or utc_now(),
         "event_id": event_id,
         "review_provider": review_provider,
@@ -1645,7 +1660,7 @@ def independent_review_status(
         "schema_version": SCHEMA_VERSION,
         "required": binding is not None,
         "satisfied": True,
-        "rounds": len(_rounds(task_dir)),
+        "rounds": len(review_rounds(task_dir, review_kind="technical")),
     }
     if binding is None:
         status["reason"] = (
@@ -1685,7 +1700,7 @@ def independent_review_status(
         status.pop("action", None)
         return status
     status["action"] = review_launch_hint(task_dir, pair.get("reviewer_runner"))
-    rounds = _rounds(task_dir)
+    rounds = review_rounds(task_dir, review_kind="technical")
     if not rounds:
         status["satisfied"] = False
         status["reason"] = (

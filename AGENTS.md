@@ -138,7 +138,10 @@ Files the user explicitly requested are a separate, user-facing class of output.
   review launch is refused unless its observed sandbox mode is explicitly
   read-only and its grant allows no write. Review and rework stay phases of
   one task number. Without an explicit task contract limit, an unapproved round refuses acceptance and authorizes the next
-  round. With `review_policy.max_rounds`, the product owner may record
+  round. Technical review admission, counting and source approval use the explicit
+  `technical` kind; completion/product review keeps its separate procedure and
+  never consumes that budget or approves source. Historical unlabelled rounds
+  retain their technical meaning. With `review_policy.max_rounds`, the product owner may record
   `round_limit_closure` with its timestamp and unresolved findings after the
   limit. This closes only the review obligation; current-source independent
   approval, installed user evidence and other completion gates remain distinct.

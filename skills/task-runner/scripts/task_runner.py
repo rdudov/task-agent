@@ -2274,6 +2274,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             contract=contract,
             declared_reviewer=getattr(args, "reviewer_runner", None),
             review_launch=is_review_launch,
+            review_kind=review_kind or "technical",
             expected_author_runner=(
                 getattr(args, "statement_author_runner", None)
                 if review_kind == "statement"
@@ -2890,6 +2891,7 @@ def record_standard_review_round(task_dir: Path, runner: str) -> dict | None:
         event_id=f"standard-review:{run_key}",
         decision={"decision": verdict},
         review_provider=runner,
+        review_kind=admission.get("review_kind", "technical"),
     )
     append_trace(
         task_dir,

@@ -2055,6 +2055,107 @@ class IndependentReviewStatusTests(unittest.TestCase):
         self.assertFalse(record["infrastructure_defect"])
         self.assertIn("limit of 4", record["refusal_reason"])
 
+    def test_product_review_remains_admitted_after_four_technical_rounds(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(4):
+                self._round(task, "rework")
+            self._close_at_limit(task)
+            for kind in ("completion", "statement", "technical"):
+                with self.subTest(kind=kind):
+                    record = review_admission.evaluate(
+                        task, workflow="standard", author_runner="codex",
+                        access_grant=READ_ONLY_GRANT,
+                        contract=json.loads((task / "task_contract.json").read_text()),
+                        review_launch=True, review_kind=kind,
+                        which=_installed("claude", "codex"),
+                    )
+                    self.assertEqual(record["review_kind"], kind)
+                    self.assertEqual(record["decision"],
+                                     "refused" if kind == "technical" else "admitted_review")
+            admitted = review_admission.admit_launch(
+                task, workflow="standard", author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=json.loads((task / "task_contract.json").read_text()),
+                review_launch=True, review_kind="completion", persist=False,
+                which=_installed("claude", "codex"),
+            )
+            self.assertEqual(admitted["decision"], "admitted_review")
+
+    def test_standard_product_round_cannot_close_or_approve_technical_work(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(3):
+                self._round(task, "rework")
+            admission = review_admission.evaluate(
+                task, workflow="standard", author_runner="codex",
+                access_grant=READ_ONLY_GRANT, contract={"review_policy": {"max_rounds": 4}},
+                review_launch=True, review_kind="completion",
+                which=_installed("claude", "codex"),
+            )
+            (task / review_admission.ADMISSION_RECORD).write_text(json.dumps(admission))
+            task_runner.runner_dir(task).mkdir(exist_ok=True)
+            task_runner.write_json(task_runner.runner_meta_path(task), {
+                "review_kind": "completion", "child_started_at": "2026-01-01T00:00:00+00:00",
+            })
+            (task / "findings.md").write_text("Verdict: approved\n")
+            product = task_runner.record_standard_review_round(task, "codex")
+            self.assertEqual(product["review_kind"], "completion")
+            self.assertEqual(product["round"], 4)
+            self.assertEqual(task_runner.record_standard_review_round(task, "codex"), product)
+            self._close_at_limit(task)
+            status = review_admission.independent_review_status(task)
+            self.assertEqual(status["rounds"], 3)
+            self.assertFalse(status["satisfied"])
+            self.assertNotIn("round_limit_closure", status)
+            self.assertEqual(status["last_round"]["decision"], "rework")
+            technical = review_admission.evaluate(
+                task, workflow="standard", author_runner="codex",
+                access_grant=READ_ONLY_GRANT,
+                contract=json.loads((task / "task_contract.json").read_text()),
+                review_launch=True, which=_installed("claude", "codex"),
+            )
+            self.assertEqual(technical["decision"], "admitted_review")
+            fourth = self._round(task, "rework")
+            self.assertEqual(fourth["round"], 5)
+            self._close_at_limit(task)
+            closed = review_admission.independent_review_status(task)
+            self.assertEqual(closed["rounds"], 4)
+            self.assertIn("round_limit_closure", closed)
+            self.assertFalse(closed["satisfied"])
+
+    def test_product_rework_does_not_erase_current_technical_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            self._round(task, "approved")
+            self._round(task, "rework", review_kind="completion")
+            status = review_admission.independent_review_status(task)
+            self.assertEqual(status["rounds"], 1)
+            self.assertTrue(status["satisfied"])
+            self.assertEqual(status["last_round"]["decision"], "approved")
+
+    def test_historical_technical_rounds_remain_unchanged_and_counted(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            task = Path(raw)
+            self._admitted(task)
+            for _ in range(4):
+                self._round(task, "rework")
+            path = task / review_admission.ROUNDS_LEDGER
+            entries = [json.loads(line) for line in path.read_text().splitlines()]
+            for entry in entries:
+                entry.pop("review_kind")
+            path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+            original = path.read_bytes()
+            self._close_at_limit(task)
+            status = review_admission.independent_review_status(task)
+            self.assertEqual(status["rounds"], 4)
+            self.assertIn("round_limit_closure", status)
+            self.assertFalse(status["satisfied"])
+            self.assertEqual(path.read_bytes(), original)
+
     def test_a_current_approval_is_not_denied_by_a_red_close(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             task = Path(raw)
