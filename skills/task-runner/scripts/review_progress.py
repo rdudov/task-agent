@@ -97,6 +97,15 @@ def snapshot(task_dir: Path, repositories: list[str], *, include_evidence: bool 
             relative = path.relative_to(task_dir.resolve()).as_posix()
             if Path(relative).parts[0] in {"evidence", "live-evidence"}:
                 evidence[relative] = evidence_hash(task_dir, relative)
+        # Preserve selected non-structured proofs too, before the launch owner
+        # retires the publication. A failed attempt must not reuse its own basis.
+        try:
+            findings = read_object(task_dir / "review-findings.json").get("findings", [])
+            if isinstance(findings, list):
+                for paths in finding_evidence(task_dir, findings).values():
+                    evidence.update(paths)
+        except (OSError, ValueError):
+            pass  # Publication protocol validation owns malformed output.
     return {
         "evidence": evidence,
         "files": files,
@@ -140,7 +149,12 @@ def changes(task_dir: Path, before: dict, current: dict, last_round: dict) -> li
             # types need the baseline captured when the reviewer named them.
             if Path(path).suffix not in {".json", ".xml"} and path not in prior_paths:
                 continue
-            prior_hash = prior_paths.get(path, before.get("evidence", {}).get(path))
+            if last_round.get("review_attempt") == before.get("attempt"):
+                prior_hash = prior_paths.get(path, before.get("evidence", {}).get(path))
+            else:
+                # This attempt already consumed the change that admitted it;
+                # stale findings from an older round cannot spend it twice.
+                prior_hash = before.get("evidence", {}).get(path)
             if digest is not None and digest != prior_hash:
                 changed.append(f"finding:{identifier}:{path}")
     return changed

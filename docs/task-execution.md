@@ -655,6 +655,15 @@ Delivery keeps current files and the author's completion-answer.txt and explicit
 warns when independent review did not finish. The ordinary continuation remains
 under the same task number. See the task-runner skill for exact schemas/actions.
 
+Preparation reads the prior finding/evidence links without deleting the current
+publication. After admission and candidate capture, the real engine spawn clears
+both the old canonical verdict and `review-findings.json`; dry runs clear neither.
+If process creation fails, the existing publication rollback restores both. Once
+the reviewer exists, missing/partial/stale output cannot borrow the old JSON.
+The current candidate snapshot also captures explicitly selected proof paths.
+Comparison uses that attempt's hashes after a failed review, so a stale link
+cannot reuse the proof change that already admitted that attempt.
+
 The failure this prevents was an unconditional transition from an unsatisfied
 round to author work, combined with a standard round that discarded findings
 and transport validation conditional on a numeric budget. Validation now belongs

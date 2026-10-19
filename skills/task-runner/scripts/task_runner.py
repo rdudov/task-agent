@@ -3453,7 +3453,7 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             )
             raise SystemExit(1)
 
-    review_findings_snapshot = None
+    review_publication_snapshots = []
     removed_verdicts = 0
     try:
         log_handle = runner_log_path(task_dir).open("ab")
@@ -3465,10 +3465,17 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             requirement = enforced_review_verdict(load_task_contract(task_dir)) or {}
             findings_path = task_dir / requirement.get("path", "findings.md")
             if findings_path.is_file():
-                review_findings_snapshot = (findings_path, findings_path.read_bytes())
+                review_publication_snapshots.append((findings_path, findings_path.read_bytes()))
+            publication_path = task_dir / "review-findings.json"
+            if publication_path.exists():
+                review_publication_snapshots.append((publication_path, publication_path.read_bytes()))
             removed_verdicts = clear_published_review_verdicts(
                 task_dir, requirement.get("path", "findings.md")
             )
+            # Admission and the candidate snapshot have consumed the previous
+            # finding/proof links. Retire the publication only at actual spawn:
+            # dry preparation preserves progress; a failed review borrows no JSON.
+            publication_path.unlink(missing_ok=True)
         process = subprocess.Popen(
             command,
             cwd=root,
@@ -3480,13 +3487,12 @@ def cmd_run_child(args: argparse.Namespace) -> None:
             preexec_fn=child_resource_limiter(application_launch.get("memory_limit_bytes")),
         )
     except Exception as exc:
-        if review_findings_snapshot is not None:
-            findings_path, prior_bytes = review_findings_snapshot
+        for publication_path, prior_bytes in review_publication_snapshots:
             try:
-                findings_path.write_bytes(prior_bytes)
+                publication_path.write_bytes(prior_bytes)
             except OSError as restore_exc:
                 exc = RuntimeError(
-                    f"{exc}; could not restore prior canonical review verdict: {restore_exc}"
+                    f"{exc}; could not restore prior review publication: {restore_exc}"
                 )
         report_launch_failure(task_dir, args, exc)
         raise SystemExit(1)

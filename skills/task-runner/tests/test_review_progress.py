@@ -292,6 +292,23 @@ def test_new_proof_must_name_a_real_previous_finding(tmp_path):
     assert review.standard_review_action(task)["action"] == "review"
 
 
+def test_failed_review_cannot_reuse_already_admitted_nonstructured_proof(tmp_path):
+    task = setup_task(tmp_path)
+    put(task, "live-evidence/proof.png", "old image")
+    begin_review(task)
+    publication(task, [{"id": "F1", "summary": "Proof", "evidence": ["live-evidence/proof.png"]}])
+    task_runner.record_standard_review_round(task, "codex")
+    task_phases.record_phase(task, "rework")
+    put(task, "live-evidence/proof.png", "changed image")
+    assert review.standard_review_action(task)["action"] == "review"
+    begin_review(task, "attempt-2")
+    # Old round JSON remains/reappears; it is refused and its proof change has
+    # already been consumed by attempt-2, even though that review failed.
+    assert task_runner.record_standard_review_round(task, "codex") is None
+    assert len(review.review_rounds(task)) == 1
+    assert review.standard_review_action(task)["action"] == "stop_review_infrastructure"
+
+
 def test_nonwaiting_approved_review_retains_normal_completion(tmp_path):
     import task_completion
     task = setup_task(tmp_path)
@@ -312,3 +329,66 @@ def test_candidate_comparison_does_not_inherit_checker_cli_delivery_caps(tmp_pat
     put(task, "deliverables/manifest.json", {"deliverables": names})
     assert check_deliverables(task)["ok"] is False  # CLI policy stays unchanged
     assert len(review_progress.snapshot(task, [])["files"]) == 21
+
+
+@pytest.mark.parametrize("author_selected", [False, True])
+@pytest.mark.parametrize("output", ["approved", "missing", "partial", "stale", "crashed"])
+def test_evidence_only_review_through_real_launcher(tmp_path, author_selected, output):
+    """Preparation retains proof links; spawn retires both old publications."""
+    import subprocess
+
+    task = setup_task(tmp_path)
+    put(task, "live-evidence/proof.json", {"result": "before"})
+    begin_review(task)
+    finding = {"id": "F1", "summary": "Proof required", "evidence": ["live-evidence/proof.json"]}
+    prior_publication = publication(task, None if author_selected else [finding])
+    task_runner.record_standard_review_round(task, "codex")
+    task_phases.record_phase(task, "rework")
+    if author_selected:
+        put(task, "review-findings.json", {**prior_publication, "findings": [finding]})
+    publication_path = task / "review-findings.json"
+    prior_bytes = publication_path.read_bytes()
+    binary = tmp_path / "bin" / "codex"
+    binary.parent.mkdir()
+    binary.write_text("#!" + sys.executable + "\n" + '''
+import os
+from pathlib import Path
+task = Path(os.environ["REVIEW_TEST_TASK"])
+assert not (task / "review-findings.json").exists(), "old JSON reached new reviewer"
+assert "Verdict:" not in (task / "findings.md").read_text(), "old verdict reached new reviewer"
+(task / "reviewer-started").write_text("yes")
+mode = os.environ["REVIEW_TEST_OUTPUT"]
+if mode == "crashed":
+    raise SystemExit(7)
+(task / "findings.md").write_text("Verdict: " + ("approved" if mode == "approved" else "rework") + "\\n")
+if mode == "partial":
+    (task / "review-findings.json").write_text('{"schema_version":1,')
+elif mode == "stale":
+    (task / "review-findings.json").write_bytes((task / "prior-publication").read_bytes())
+(task / "status.json").write_text('{"state":"completed","current_step":"Reviewer done"}')
+''')
+    binary.chmod(0o755)
+    env = {**os.environ, "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
+           "TASK_AGENT_ROOT": str(tmp_path), "TASKS_INDEX_ROOT": str(tmp_path),
+           "REVIEW_TEST_TASK": str(task), "REVIEW_TEST_OUTPUT": output}
+    command = [sys.executable, str(Path(task_runner.__file__)), "review", str(task),
+               "--foreground", "--memory-limit", "none"]
+    # A new reference to unchanged bytes is still not progress at real preparation.
+    refused = subprocess.run(command + ["--dry-run"], env=env, capture_output=True, text=True)
+    assert refused.returncode != 0
+    assert "stop_no_progress" in refused.stdout + refused.stderr
+    assert publication_path.read_bytes() == prior_bytes
+    put(task, "live-evidence/proof.json", {"result": "changed proof"})
+    prepared = subprocess.run(command + ["--dry-run"], env=env, capture_output=True, text=True)
+    assert prepared.returncode == 0, prepared.stdout + prepared.stderr
+    assert publication_path.read_bytes() == prior_bytes
+    assert not (task / "reviewer-started").exists()
+    put(task, "prior-publication", prior_bytes.decode())
+    launched = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert (task / "reviewer-started").exists(), launched.stdout + launched.stderr
+    if output == "approved":
+        assert len(review.review_rounds(task)) == 2
+        assert review.review_rounds(task)[-1]["decision"] == "approved"
+    else:
+        assert review.standard_review_action(task)["action"] == "stop_review_infrastructure"
+    assert len(review.review_rounds(task)) == (2 if output == "approved" else 1)

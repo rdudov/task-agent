@@ -172,6 +172,10 @@ Files the user explicitly requested are a separate, user-facing class of output.
   naming the reason and run IDs, after liveness has been checked, so a withdrawn
   task never holds a repository against every later task.
 - Use `skills/task-runner/scripts/task_engine.py` to ask what a task is and where it stands: `state`, `phases`, `actuality`, `admission`. It is the public surface for anything downstream — a product layer, a transport adapter, another installation — and it composes the modules that already own each decision. Do not import internals out of `task_runner.py` to answer a question this surface answers.
+- The engine owns review publication freshness as well as admission. Adapters
+  preserve finding/evidence inputs through preparation; an admitted attempt
+  cannot reuse the same proof change after its review fails. See
+  `docs/task-execution.md` for the publication boundary.
 - Use `skills/context-discovery/` before broad search, live checks, or describing an existing decision. It is the only owner of the lookup order and its fallbacks.
 - Use `skills/task-artifacts/` during task execution to update `verification.md`, `findings.md`, and related files at checkpoints (not only in chat).
 - Use `skills/project-organizer/` for multi-task durable project records.
