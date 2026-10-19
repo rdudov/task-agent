@@ -197,9 +197,19 @@ def record_phase(
         if cause:
             entry["cause"] = cause
         history.append(entry)
+    # Current pointers are updated with their history entry, never rebuilt by
+    # each state observer. Older histories have no standard-review snapshots.
+    review_index = record.get("review_candidate_index")
+    author_index = record.get("author_phase_index")
+    if history and history[-1].get("cause", {}).get("review_candidate"):
+        review_index = len(history) - 1
+    if history and history[-1].get("phase") in AUTHOR_WORK_PHASES:
+        author_index = len(history) - 1
     payload = {
         "schema_version": 1,
         "task_ref": task_dir.name,
+        "review_candidate_index": review_index,
+        "author_phase_index": author_index,
         "phase": phase,
         "entered_at": history[-1]["entered_at"] if history else timestamp,
         "history": history,

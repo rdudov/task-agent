@@ -802,13 +802,14 @@ completed. A
 refused, failed, blocked, or paused run reconciles frontmatter to `blocked`, so
 an observer that reads the canonical metadata cannot mistake unfinished work for
 finished work.
-Finding-level repeat detection needs the structured findings only a dev-pipeline
-decision artifact carries.
+Both standard publications and dev-pipeline decision artifacts retain actual
+finding identities; a verdict alone cannot authorize rework.
 
 There is no cap on rework rounds. Review and rework are phases of one task
 number, and the runner has nothing that counts down: `rework_rounds` is recorded
-as `unlimited` for exactly that reason. An unapproved round refuses this
-acceptance and authorizes the next round; it never says "no more". A technical
+as `unlimited` for exactly that reason. A validated rework refuses acceptance
+and authorizes a correction. Waiting for user input and unchanged work without
+new observable grounds stop automatic cycling; neither is a numeric budget. A technical
 limit inside one provider attempt may end a *process*; continuing the same goal
 after it needs no user permission. For the same reason the pinned dev-pipeline
 revision is one with no review-round limit of its own — a dependency that stops
@@ -1179,3 +1180,59 @@ current task status or current refusal text.
 - If the task-runner, prompt pipeline, or parent orchestration caused a material mistake, fix the active task and update the relevant skill/docs/rules in the same corrective pass so the failure mode is less likely to recur. If the prevention change is substantial or changes policy tradeoffs, record concrete options and ask the user before implementing the broad change.
 - For services and runtimes, include a smoke check against the real entrypoint in the target launch mode.
 - A child that exits non-zero before writing a terminal state does not leave `running` behind: the runner records terminal `failed` with the child exit code in `status.json` and `trace.md`. Treat that as a real failure, not as an unfinished run.
+
+## Standard review progress and user waits
+
+`task_engine.py state TASK` returns `review.next_action`: an object with `action`,
+`waiting_for_user`, `changed_basis`, and retained `unresolved_findings`. Consumers
+use that answer rather than infer another author run from `satisfied: false`.
+Actions are `review`, `rework`, `wait_user`, `none`, `stop_no_progress`,
+`stop_invalid_candidate`, and `stop_review_infrastructure`.
+
+Before a technical standard review overwrites runtime status, the runner keeps
+`review_candidate` in the existing review phase's `cause` in `phases.json`. The phase writer updates
+current review/author indices in the same record, so observers do not search
+all prior candidates for the next action.
+The snapshot binds the author's canonical status/status_detail and structured
+blocker, registered file names and actual SHA-256 bytes, existing Git write-state
+fingerprints, requirements.md/task_contract.json hashes, and the existing input
+lifecycle's current `run_generation`. No new journal or scheduler is involved.
+A continuation is accepted by that input owner and runs under the same task number;
+its newly observed generation removes the prior input's wait. Missing or unsafe
+registered files refuse comparison, never count as equal candidates. Candidate
+comparison uses structural validation only; file-count and byte caps remain the
+transport/explicit checker caller's policy.
+
+Standard rework requires `review-findings.json`: schema_version 1, integer round
+for the next accepted round, matching decision `rework`, and 1–20 findings with
+unique non-empty id (up to 32 characters) and summary (up to 240). Approval uses
+no findings. The runner validates before any append to reviews/rounds.jsonl,
+independent of transport settings. Generic dev-pipeline decision artifacts keep
+their own envelope/finding schema; only the common non-empty rework invariant
+is shared. A malformed decision creates no valid round and never returns work
+to the author. Its infrastructure obligation uses the existing task-number and
+idempotence owner; the task preserves its files and answer.
+
+For a finding requiring proof, `evidence` contains task-relative paths inside
+evidence/ or live-evidence/. A reviewer can name expected paths and the accepted
+round binds their hashes, including absent expected files. At the review boundary
+the engine also hashes the canonical current structured proof set selected by
+completion_review_evidence, once. During rework the author may add proof paths to
+an existing finding's evidence array without changing verdict/round/id/summary.
+The file must be changed/new and its id must belong to the last accepted round;
+adding a mapping to unchanged old proof does not count. New author-selected proof
+uses JSON/XML records, as required by the existing executable-evidence workflow;
+other file types require the reviewer's recorded baseline. An
+unchanged file, unrelated evidence, author prose, answer paraphrase, JSON manifest
+formatting, mtime or notebook timestamps cannot authorize repeated review.
+Changes to delivered file hashes/names, Git candidate, requirements/contract,
+or the authoritative user input can. Real useful corrections have no round cap.
+
+A reviewer checks the available result. A question awaiting the user is not an
+author defect or a new verdict. After the first review, unchanged work whose
+saved author outcome is blocked/missing_user_input waits for the user; a reviewer
+runtime status cannot erase it. Approval of the available part does not complete
+a task that still needs a user decision. Delivery-enabled adapters hand over the
+current registered files and completion-answer.txt, preserving receipt-based
+idempotence. If independent review failed, the handover explicitly says that it
+did not finish, including when the author is waiting for the user.

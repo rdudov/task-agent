@@ -137,8 +137,10 @@ Files the user explicitly requested are a separate, user-facing class of output.
   review launch is refused unless its observed sandbox mode is explicitly
   read-only and its grant allows no write. There is no limit on
   rework rounds: review and rework stay
-  phases of one task number until the work is accepted, an unapproved round
-  refuses acceptance and authorizes the next round rather than ending the loop,
+  phases of one task number until the work is accepted. A validated rework
+  authorizes a correction; a saved author outcome `blocked/missing_user_input`
+  waits for the user, and an unchanged candidate without new observable input
+  stops automatic review. These are semantic outcomes, never round budgets.
   a repeated demonstrated
   finding is reported to the user as an execution-quality problem without
   stopping the fixes, and a defect in the review infrastructure is filed under

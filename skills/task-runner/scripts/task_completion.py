@@ -160,6 +160,15 @@ def independent_review_blocker(task_dir: Path) -> dict | None:
     if not status.get("required"):
         return {"reason": reason + ". " + str(status.get("action", ""))}
 
+    try:
+        from .review_progress import latest_snapshot
+    except ImportError:
+        from review_progress import latest_snapshot
+    if latest_snapshot(task_dir) is not None:
+        action = review_admission.standard_review_action(task_dir, status)
+        if action["action"] not in {"review", "rework"}:
+            return {"reason": reason, "next_action": action}
+
     binding = review_admission.bound_author_admission(task_dir)
     pair = binding.get("pair") if isinstance(binding, dict) else {}
     last_round = status.get("last_round")
@@ -302,6 +311,23 @@ def completion_ready(
             gate="task_contract",
             owner=ENGINE_OWNED_COMPLETION_GATE,
         )
+
+    try:
+        from .review_progress import latest_snapshot
+    except ImportError:
+        from review_progress import latest_snapshot
+    if latest_snapshot(task_dir) is not None:
+        action = review_admission.standard_review_action(task_dir)
+        if action["action"] == "wait_user":
+            return False, completion_failure(
+                "the author result awaits the user's decision", gate="missing_user_input",
+                owner=USER_OR_EXTERNAL_COMPLETION_GATE,
+            )
+
+        if action["action"] == "stop_invalid_candidate":
+            return False, completion_failure(
+                action["reason"], gate="review_candidate", owner=ENGINE_OWNED_COMPLETION_GATE,
+            )
 
     status = task_status(task_dir)
     if status != "completed" and not (

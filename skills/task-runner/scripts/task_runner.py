@@ -547,6 +547,16 @@ Role: independent reviewer.
   reader can follow blocks the review even when the tests are green.
 - Record concrete findings in `{task_dir / 'findings.md'}` and end that file with
   exactly one line: `Verdict: approved` or `Verdict: rework`.
+- A question awaiting the user's decision is not a fixable author defect. Review
+  the available result; preserve the author's blocked/missing_user_input outcome
+  and never replace completion-answer.txt.
+- Publish review-findings.json before the canonical verdict: schema_version 1,
+  integer round equal to the next reviews/rounds.jsonl round, matching decision,
+  and findings as objects with non-empty id (up to 32 characters) and summary
+  (up to 240). Rework requires 1–20 findings; approval has none. For a finding
+  requiring new proof, name its exact task-relative evidence paths in an optional
+  evidence array (inside evidence/ or live-evidence/). Changed bytes at those
+  paths are the only evidence-only basis for another review of that finding.
 - Treat the subject and target repository as read-only. Writes are limited to this
   review task's own artifacts.
 """
@@ -568,6 +578,11 @@ While working:
   unjustified layer, and entry documentation that still matches the code. Apply
   current practice and judgement; no pattern catalogue, required directory tree,
   or line budget is prescribed here.
+- During author rework, evidence-only progress must name a concrete prior finding
+  id: add task-relative proof paths to that finding's `evidence` array in the
+  existing review-findings.json, preserving its verdict/round/id/summary. The
+  actual structured proof file must change; a new reference to unchanged bytes
+  does not qualify. Do not publish a verdict on your own work.
 - Keep `{trace_md}` updated with concise chronological notes.
 - Keep `{status_json}` updated with `state`, `current_step`, and `updated_at`.
 - When an author or rework run has safely finished its own work and records
@@ -2369,6 +2384,26 @@ def cmd_start(args: argparse.Namespace) -> None:
             **dev_pipeline_options(args),
         }
 
+    if args.workflow == "standard" and review_kind == "technical":
+        next_action = review_admission.standard_review_action(task_dir)
+        if next_action["action"] in {
+            "rework", "wait_user", "stop_no_progress", "stop_review_infrastructure", "stop_invalid_candidate"
+        }:
+            ownership_lock.close()
+            raise SystemExit("Automatic review stopped: " + json.dumps(next_action, sort_keys=True))
+        if committing:
+            try:
+                from . import review_progress
+            except ImportError:
+                import review_progress
+            candidate = review_progress.snapshot(
+                task_dir, review_admission.author_target_repositories(task_dir), include_evidence=True)
+            candidate["attempt"] = review_record["admission_id"]
+            task_phases.record_phase(task_dir, task_phases.REVIEW, cause={
+                "source": "task-runner", "workflow": "standard", "runner": args.runner,
+                "review_candidate": candidate,
+            })
+
     if committing:
         runner_prompt_path(task_dir).write_text(prompt, encoding="utf-8")
         if workflow_meta is not None:
@@ -2872,25 +2907,29 @@ def record_standard_review_round(task_dir: Path, runner: str) -> dict | None:
     )
     if work_class != review_admission.REVIEW:
         return None
-    verdict = published_review_verdict(task_dir)
-    if verdict is None:
-        # The completion gate already refuses a review that published no single
-        # verdict. Recording an unreadable round would put a decision nobody made
-        # into the ledger the next round is measured against.
-        return None
     meta = read_json(runner_meta_path(task_dir))
-    run_key = (
-        meta.get("write_scope_run_id")
-        or meta.get("child_started_at")
-        or admission.get("evaluated_at")
-        or utc_now()
-    )
-    entry = review_admission.record_review_round(
-        task_dir,
-        event_id=f"standard-review:{run_key}",
-        decision={"decision": verdict},
-        review_provider=runner,
-    )
+    run_key = admission.get("admission_id") or (
+        meta.get("write_scope_run_id") or meta.get("child_started_at")
+        or admission.get("evaluated_at") or utc_now())
+    event_id = f"standard-review:{run_key}"
+    for entry in review_admission.review_rounds(task_dir):
+        if entry.get("event_id") == event_id:
+            return entry
+    verdict = published_review_verdict(task_dir)
+    try:
+        decision = review_admission.standard_review_decision(task_dir, verdict)
+        entry = review_admission.record_review_round(
+            task_dir, event_id=event_id, decision=decision,
+            review_provider=runner, review_attempt=run_key,
+        )
+    except ValueError as exc:
+        obligation = review_admission.record_infrastructure_obligation(
+            task_dir, event_id=event_id, source="standard-review:protocol",
+            reason=str(exc), reference=runner,
+        )
+        append_trace(task_dir, "Independent review did not finish: " + str(exc)
+                     + " " + obligation["statement"])
+        return None
     append_trace(
         task_dir,
         f"Recorded review round {entry['round']} from the {runner} reviewer's "
@@ -3036,6 +3075,7 @@ def finalize_child_lifecycle(
             review_round
             and review_round.get("decision") == "approved"
             and not scope_cleanup_refused
+            and review_admission.standard_review_action(task_dir)["action"] != "wait_user"
         ):
             ready, reason = completion_ready(
                 task_dir, workflow=workflow, defer_task_status=True

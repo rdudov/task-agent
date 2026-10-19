@@ -16,11 +16,8 @@ from unittest import mock
 def _load(name: str):
     scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
     sys.path.insert(0, str(scripts_dir))
-    spec = importlib.util.spec_from_file_location(f"{name}_module", scripts_dir / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return __import__(name)
+
 
 
 review_admission = _load("review_admission")
@@ -158,12 +155,11 @@ class PairingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = Path(tmp) / "001-statement"
             task_dir.mkdir()
-            pair = review_admission.resolve_review_launch_pair(
-                task_dir,
-                reviewer_runner="claude",
-                access_grant=READ_ONLY_GRANT,
-                expected_author_runner="codex",
-            )
+            with mock.patch.object(review_admission, "reviewer_available", return_value=True):
+                pair = review_admission.resolve_review_launch_pair(
+                    task_dir, reviewer_runner="claude", access_grant=READ_ONLY_GRANT,
+                    expected_author_runner="codex",
+                )
         self.assertTrue(pair["bound"])
         self.assertEqual(pair["author_family"], "Codex")
         self.assertEqual(pair["reviewer_family"], "Claude")
@@ -1945,7 +1941,7 @@ class IndependentReviewStatusTests(unittest.TestCase):
         return review_admission.record_review_round(
             task_dir,
             event_id=f"event-{decision}-{provider}-{len(review_admission.review_rounds(task_dir))}",
-            decision={"decision": decision},
+            decision={"decision": decision, "findings": [{"id": "F1"}] if decision == "rework" else []},
             review_provider=provider,
         )
 
@@ -2146,7 +2142,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             review_admission.record_review_round(
                 task,
                 event_id="round-rework",
-                decision={"decision": "rework"},
+                decision={"decision": "rework", "findings": [{"id": "F1", "summary": "Fix result"}]},
                 review_provider="codex",
             )
             blocker = task_completion.independent_review_blocker(task)
@@ -2160,7 +2156,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             review_admission.record_review_round(
                 task,
                 event_id="round-rework",
-                decision={"decision": "rework"},
+                decision={"decision": "rework", "findings": [{"id": "F1", "summary": "Fix result"}]},
                 review_provider="codex",
             )
             task_phases.record_phase(
@@ -2232,6 +2228,10 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
                 "# Findings\n\nThe live evidence is missing.\n\nVerdict: rework\n",
                 encoding="utf-8",
             )
+            (task / "review-findings.json").write_text(json.dumps({
+                "schema_version": 1, "round": 1, "decision": "rework",
+                "findings": [{"id": "F1", "summary": "The live evidence is missing"}],
+            }))
             entry = task_runner.record_standard_review_round(task, "codex")
             rework_ready, rework_reason = task_completion.completion_ready(
                 task, workflow="standard"
@@ -2245,6 +2245,10 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             task_runner.write_json(
                 task_runner.runner_meta_path(task), {"child_started_at": "second-run"}
             )
+            (task / "review-findings.json").unlink()
+            admission = review_admission.recorded_admission(task)
+            admission["admission_id"] = "second-review-run"
+            task_runner.write_json(task / review_admission.ADMISSION_RECORD, admission)
             task_runner.record_standard_review_round(task, "codex")
             ready, _ = task_completion.completion_ready(task, workflow="standard")
         self.assertEqual(entry["decision"], "rework")
@@ -2647,7 +2651,7 @@ class AcceptanceIsBoundToTheReviewTests(unittest.TestCase):
             review_admission.record_review_round(
                 task,
                 event_id="round-rework",
-                decision={"decision": "rework"},
+                decision={"decision": "rework", "findings": [{"id": "F1", "summary": "Fix result"}]},
                 review_provider="codex",
             )
             task_runner.write_json(

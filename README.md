@@ -332,3 +332,11 @@ Task Agent is released under the [MIT License](./LICENSE).
 ## Local State
 
 `tasks/` and `data/` are durable local artifacts. This template tracks only skeleton and example files; real task history and reusable data should be backed up by your own local backup flow. The task index under `.state/` is rebuilt from that history and needs no backup of its own.
+
+Standard file tasks can finish an attempt with useful files and a question while
+waiting for the user. The engine preserves that wait across independent review
+and refuses another automatic review of unchanged work without observable new
+input. Invalid/empty rework is a review infrastructure defect, not a round or an
+author correction. A delivery adapter hands over the current result with an
+explicit warning if independent review did not finish. Genuine corrections still
+have no round limit; see [task execution](docs/task-execution.md).

@@ -172,6 +172,8 @@ def state(task_dir: Path) -> dict[str, Any]:
             for result in write_admission.outstanding_write_results(task_dir)
         ],
     }
+    document["review"]["next_action"] = review_admission.standard_review_action(
+        task_dir, document["review"])
     progress = structured_progress(task_dir)
     if progress:
         document["progress"] = progress

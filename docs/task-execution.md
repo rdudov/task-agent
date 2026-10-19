@@ -358,9 +358,10 @@ predicate, and closes `status.json` and the phase without a separate bookkeeping
 run.
 
 Rounds are appended to `reviews/rounds.jsonl` without any ceiling, and the
-bindings to `reviews/admissions.jsonl`. An unapproved round refuses acceptance
-and authorizes the next round; nothing counts down, in this project or in the
-dev-pipeline revision it pins.
+bindings to `reviews/admissions.jsonl`. A validated rework refuses acceptance
+and authorizes a correction. Another standard review requires observable new
+basis; user waits and unchanged work stop automatic cycling. Nothing counts
+down, in this project or in the dev-pipeline revision it pins.
 
 These remaining records are deliberately narrow: admissions preserve the
 author/reviewer promise across phases, rounds preserve the latest decision, and
@@ -626,3 +627,35 @@ When the wrong change exists only in local, unpushed git history, prefer removin
 If the child changes task lifecycle, task artifact structure, skill discovery or execution, agent orchestration, restore behavior, or resume behavior, it should update relevant project docs in the same source change.
 
 If the child or parent caused a material mistake during the task, the final artifacts should include the corrective action and the prevention change, or a user-facing choice when prevention requires a larger design decision.
+
+### Ending an unchanged standard review cycle
+
+An unapproved decision is not by itself permission to restart the author.
+The public `state` answer carries the admission owner's `review.next_action`.
+The technical standard launch retains an observable candidate and author outcome
+in the existing review phase cause before starting the reviewer. File identity
+uses the same installed manifest validator as the deliverables checker CLI;
+registered names and SHA-256 bytes are canonicalized, while unsafe/missing files
+refuse comparison. Repository identity reuses Git write-state fingerprints, so
+an empty manifest cannot hide a real code change.
+
+A valid rework can send the task to its author. Before reviewing that author's
+next result, the engine requires changed delivery bytes, a new authoritative
+user-input generation, changed requirements/contract, or changed evidence at a
+path bound to a concrete previous finding. It does not count rounds down.
+If the saved outcome is blocked/missing_user_input and inputs/result are unchanged,
+the task waits for the user. The reviewer can approve the available portion, but
+that does not erase the wait or complete the task.
+
+Standard `review-findings.json` is validated before append, even with no
+transport budget. A missing, empty, stale or malformed rework is a review protocol
+defect, creates zero accepted rounds and authorizes zero author returns. Its
+separate infrastructure task is allocated by the existing obligation owner.
+Delivery keeps current files and the author's completion-answer.txt and explicitly
+warns when independent review did not finish. The ordinary continuation remains
+under the same task number. See the task-runner skill for exact schemas/actions.
+
+The failure this prevents was an unconditional transition from an unsatisfied
+round to author work, combined with a standard round that discarded findings
+and transport validation conditional on a numeric budget. Validation now belongs
+to round admission, and semantic progress belongs to the engine's public state.

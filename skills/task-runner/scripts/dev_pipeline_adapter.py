@@ -677,13 +677,21 @@ class TaskArtifactProjector:
                 decision = candidate
         if not decision and isinstance(payload.get("decision"), str):
             decision = {"decision": payload["decision"]}
-        entry = review_admission.record_review_round(
-            self.task_dir,
-            event_id=event["event_id"],
-            decision=decision,
-            review_provider=payload.get("review_provider"),
-            recorded_at=event["timestamp"],
-        )
+        try:
+            entry = review_admission.record_review_round(
+                self.task_dir,
+                event_id=event["event_id"],
+                decision=decision,
+                review_provider=payload.get("review_provider"),
+                recorded_at=event["timestamp"],
+            )
+        except ValueError as exc:
+            obligation = review_admission.record_infrastructure_obligation(
+                self.task_dir, event_id=event["event_id"],
+                source="dev-pipeline:review_protocol", reason=str(exc),
+                reference=payload.get("review_provider"), recorded_at=event["timestamp"],
+            )
+            return obligation["statement"]
         return entry.get("warning")
 
     def record_review_obligation(self, event: dict) -> str | None:

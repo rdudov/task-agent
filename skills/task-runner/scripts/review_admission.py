@@ -57,9 +57,9 @@ What this module deliberately does not have is a limit. Review and rework are
 phases of one task (`task_phases`), and `record_review_round` counts rounds
 without ever capping them: the round number is for telling the user that the
 same demonstrated finding came back, not for deciding when to stop fixing it.
-An unapproved round therefore blocks acceptance and nothing else -- the next
-round is always allowed, and it is the approval, never the count, that ends the
-loop.
+A validated rework permits a correction, but another review needs observable
+progress. A user wait or unchanged candidate ends automatic cycling without
+introducing a numeric budget; neither outcome claims approval.
 """
 
 from __future__ import annotations
@@ -1488,6 +1488,132 @@ def repeat_warning(repeated: Iterable[str], round_number: int) -> str:
     )
 
 
+def validate_review_decision(decision: Any) -> list:
+    """Validate the common decision payload before any accepted round append.
+
+    Dev-pipeline owns a different envelope and finding vocabulary from file
+    tasks. Only their common decision/findings invariant belongs here.
+    """
+    if not isinstance(decision, dict):
+        raise ValueError("review decision must be an object")
+    outcome = round_decision(decision)
+    if outcome == "unreadable":
+        raise ValueError("review decision has no supported verdict")
+    findings = decision.get("findings", [])
+    if not isinstance(findings, list):
+        raise ValueError("review findings must be an array")
+    if outcome == "rework" and not findings:
+        raise ValueError("rework review must publish unresolved problems")
+    if outcome == "approved" and findings:
+        raise ValueError("approved review cannot retain unresolved findings")
+    for finding in findings:
+        if isinstance(finding, dict) and "id" in finding and (
+            not isinstance(finding["id"], str) or not finding["id"].strip()
+        ):
+            raise ValueError("review finding id must be non-empty text")
+        if not isinstance(finding, (str, dict)) or finding_identity(finding) == "unnamed":
+            raise ValueError("review finding must have a non-empty identity or description")
+    return findings
+
+
+def standard_review_decision(task_dir: Path, verdict: str | None) -> dict:
+    """File-task publication: current round, matching verdict, real findings.
+
+    All standard rework publications use this owner, independent of transport
+    budgets. An approval without a file remains valid for repository reviews;
+    a present publication is always validated against the verdict.
+    """
+    if verdict not in {"approved", "rework"}:
+        raise ValueError("independent review published no single supported verdict")
+    path = task_dir / "review-findings.json"
+    if verdict == "approved" and not path.exists():
+        return {"decision": verdict, "findings": []}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("independent review published no readable problem list") from exc
+    if (path.is_symlink() or not isinstance(value, dict)
+            or type(value.get("schema_version")) is not int or value["schema_version"] != 1):
+        raise ValueError("independent review problem list has the wrong schema")
+    if type(value.get("round")) is not int or value["round"] != len(_rounds(task_dir)) + 1:
+        raise ValueError("independent review problem list is not for the current round")
+    if value.get("decision") != verdict:
+        raise ValueError("independent review problem list disagrees with its verdict")
+    if "findings" not in value:
+        raise ValueError("standard review publication has no findings array")
+    findings = validate_review_decision(value)
+    if len(findings) > 20:
+        raise ValueError("standard rework review must publish one to twenty unresolved problems")
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise ValueError("standard review finding must be an object")
+        for field, limit in (("id", 32), ("summary", 240)):
+            text = finding.get(field)
+            if not isinstance(text, str) or not text.strip() or len(text) > limit:
+                raise ValueError(f"standard review finding has an invalid {field}")
+    if len({item["id"].strip() for item in findings}) != len(findings):
+        raise ValueError("standard review finding ids must be unique")
+    return value
+
+
+def standard_review_action(task_dir: Path, review: dict | None = None) -> dict:
+    """Choose a standard task's next action from durable, observable inputs.
+
+    This is deliberately separate from acceptance: a waiting file task can
+    hand over useful work without claiming that independent review approved it.
+    """
+    try:
+        from . import review_progress, task_phases
+    except ImportError:
+        import review_progress
+        import task_phases
+    review = review if review is not None else independent_review_status(
+        task_dir, author_phases=task_phases.author_work_entries(task_dir))
+    phases = task_phases.read_phases(task_dir)
+    before = review_progress.latest_snapshot(task_dir, phases)
+    try:
+        repositories = list(before.get("repositories", {})) if before else author_target_repositories(task_dir)
+        current = review_progress.snapshot(task_dir, repositories)
+        last = review.get("last_round", {})
+        changed = review_progress.changes(task_dir, before, current, last) if before else []
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        return {"action": "stop_invalid_candidate", "reason": str(exc), "waiting_for_user": False}
+    # An author outcome belongs to the input that produced it. A continuation
+    # invalidates the saved wait; its newly finished author can establish a new one.
+    review_index = phases.get("review_candidate_index")
+    author_index = phases.get("author_phase_index")
+    author_since = (type(author_index) is int and type(review_index) is int
+                    and author_index > review_index)
+    author = current["author"]
+    if before and not author_since and before.get("user_input") == current.get("user_input") and not changed:
+        author = before.get("author", author)
+    waiting = author.get("status") == "blocked" and author.get("status_detail") == "missing_user_input"
+    result = {"waiting_for_user": waiting, "changed_basis": changed,
+              "unresolved_findings": last.get("findings", []) if round_decision(last) == "rework" else []}
+    # Protocol failures are not rounds and can never send work to its author.
+    obligations = infrastructure_obligations(task_dir)
+    attempt = before.get("attempt") if before else None
+    protocol = next((item for item in reversed(obligations)
+                     if item.get("source") == "standard-review:protocol"
+                     and item.get("event_id") == f"standard-review:{attempt}"), None)
+    if protocol and not changed:
+        return {**result, "action": "stop_review_infrastructure", "reason": protocol["reason"],
+                "infrastructure_obligation": protocol}
+    if before and waiting and not changed and last.get("review_attempt") == attempt:
+        return {**result, "action": "wait_user"}
+    if not review.get("required") or review.get("satisfied"):
+        return {**result, "action": "wait_user" if waiting else "none"}
+    if not before or changed:
+        return {**result, "action": "review"}
+    if author_since:
+        return {**result, "action": "stop_no_progress"}
+    # Only a validated rework for this exact snapshot authorizes another author.
+    if round_decision(last) == "rework" and last.get("review_attempt") == attempt:
+        return {**result, "action": "rework"}
+    return {**result, "action": "stop_review_infrastructure",
+            "reason": "independent review did not establish a current decision"}
+
+
 def record_review_round(
     task_dir: Path,
     *,
@@ -1495,6 +1621,7 @@ def record_review_round(
     decision: dict[str, Any] | None,
     review_provider: str | None = None,
     recorded_at: str | None = None,
+    review_attempt: str | None = None,
 ) -> dict[str, Any]:
     """Append one review round and report findings this task has already seen.
 
@@ -1510,8 +1637,7 @@ def record_review_round(
     for entry in existing:
         if entry.get("event_id") == event_id:
             return entry
-    decision = decision if isinstance(decision, dict) else {}
-    findings = decision.get("findings")
+    findings = validate_review_decision(decision)
     identities: list[str] = []
     if isinstance(findings, list):
         for finding in findings:
@@ -1531,9 +1657,17 @@ def record_review_round(
         "reviewer_family": family_of(review_provider),
         "decision": str(decision.get("decision", "")) or None,
         "finding_ids": identities,
+        "findings": findings,
+        "review_attempt": review_attempt,
         "repeated_finding_ids": repeated,
     }
     entry["warning"] = repeat_warning(repeated, entry["round"]) if repeated else None
+    if review_attempt is not None:
+        try:
+            from .review_progress import finding_evidence
+        except ImportError:
+            from review_progress import finding_evidence
+        entry["finding_evidence"] = finding_evidence(task_dir, findings)
     _append_jsonl(task_dir / ROUNDS_LEDGER, entry)
     return entry
 
@@ -1642,15 +1776,28 @@ def independent_review_status(
         "decision": last.get("decision"),
         "reviewer_family": last.get("reviewer_family") or family_of(last.get("review_provider")),
         "recorded_at": last.get("recorded_at"),
+        "findings": last.get("findings", []),
+        "finding_ids": last.get("finding_ids", []),
+        "finding_evidence": last.get("finding_evidence", {}),
+        "review_attempt": last.get("review_attempt"),
     }
+    try:
+        from .review_progress import latest_snapshot
+    except ImportError:
+        from review_progress import latest_snapshot
+    current_candidate = latest_snapshot(task_dir)
+    if current_candidate and last.get("review_attempt") != current_candidate.get("attempt"):
+        status["satisfied"] = False
+        status["reason"] = "the current standard review attempt has no accepted decision"
+        return status
     outcome = round_decision(last)
     last_family = status["last_round"]["reviewer_family"]
     if outcome != "approved":
         status["satisfied"] = False
         status["reason"] = (
             f"review round {last.get('round')} by {last_family} did not approve "
-            f"(decision {last.get('decision')!r}); the task returns to its author "
-            "for rework and another round, of which there is no limit"
+            f"(decision {last.get('decision')!r}); useful corrections have no limit; "
+            "the standard next-action owner distinguishes correction, user wait and no progress"
         )
         return status
     if (
