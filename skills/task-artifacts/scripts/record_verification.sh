@@ -22,7 +22,7 @@ task_dir="$1"
 gate_id="$2"
 evidence="$3"
 result="${4:-OK}"
-result="${result^^}"
+result="$(printf %s "$result" | tr "[:lower:]" "[:upper:]")"
 
 # Validated rather than accepted as free text: an unrecognised word would be
 # read by the gate as a refusal, which is a confusing way to learn about a typo.

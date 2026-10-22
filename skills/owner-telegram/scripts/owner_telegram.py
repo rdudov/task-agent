@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Send to, or read, the owner's Telegram dialog through the relay host.
+"""Message the owner and read the owner's Telegram account through the relay host.
 
 Nothing here talks to Telegram. Sends run the relay's own bot transport with the
-relay's own bot runtime file; reads run the relay's own user-account history
-reader. Files are copied to a scratch directory on the relay and removed after.
+relay's own bot runtime file; reads (dialogs, history, search) run the relay's own
+user-account readers on the owner's personal session. Files are copied to a scratch directory on the relay and removed after.
 """
 from __future__ import annotations
 
@@ -58,9 +58,15 @@ def main() -> None:
     send_file = sub.add_parser("send-file", help="Send one file to the owner.")
     send_file.add_argument("file", type=Path)
     send_file.add_argument("--caption")
-    read = sub.add_parser("read", help="Print recent messages of the owner dialog.")
+    read = sub.add_parser("read", help="Print recent messages of one dialog of the owner's account.")
     read.add_argument("--limit", type=int, default=20)
-    read.add_argument("--dialog", help="Dialog title or username; default from config.")
+    read.add_argument("--dialog", help="Dialog title or username; default: the bot dialog from config.")
+    dialogs = sub.add_parser("dialogs", help="List dialogs of the owner's account.")
+    dialogs.add_argument("--limit", type=int, default=30)
+    search = sub.add_parser("search", help="Search messages in the owner's account.")
+    search.add_argument("query")
+    search.add_argument("--dialog", help="Restrict to one dialog title or username.")
+    search.add_argument("--limit", type=int, default=20)
     args = parser.parse_args()
     config = load_config()
     env = ("--env-file", config["bot_env_file"])
@@ -83,9 +89,17 @@ def main() -> None:
         finally:
             ssh(config, f"rm -rf {shlex.quote(remote)}")
     else:
-        print(relay(config, "recent_messages.py", "--session", config["telegram_session"],
-                    "--dialog", args.dialog or config["telegram_dialog"],
-                    "--limit", str(args.limit)))
+        session = ("--session", config["telegram_session"])
+        limit = ("--limit", str(args.limit))
+        if args.action == "dialogs":
+            print(relay(config, "list_dialogs.py", *session, *limit))
+        elif args.action == "search":
+            dialog = ("--dialog", args.dialog) if args.dialog else ()
+            print(relay(config, "search_messages.py", *session, "--query", args.query,
+                        *dialog, *limit))
+        else:
+            print(relay(config, "recent_messages.py", *session,
+                        "--dialog", args.dialog or config["telegram_dialog"], *limit))
 
 
 if __name__ == "__main__":
