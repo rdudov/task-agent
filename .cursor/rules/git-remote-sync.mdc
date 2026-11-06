@@ -21,7 +21,7 @@ Do not start new feature work from a stale local base branch when the remote is 
 2. Run the pre-push leak check:
 
    ```bash
-   .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote <remote>
+   .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote <remote> --repo <repository>
    ```
 
 3. Review the outgoing diff.

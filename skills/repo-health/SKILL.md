@@ -54,7 +54,12 @@ Run before pushing source changes to a configured remote:
 
 ```bash
 .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote origin
+.venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote origin --repo /path/to/other/repo
 ```
+
+The checked repository is the one containing the current directory, or the one
+named by `--repo`; pushes from other repositories use the same check. Private
+markers always come from this checkout's local state described below.
 
 The check scans outgoing files for local task/data/state artifacts, environment files, private keys, and common token formats. It is a guardrail, not a complete security scanner; still review the outgoing diff before pushing.
 

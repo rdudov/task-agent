@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -135,3 +138,57 @@ def test_only_local_heads_and_selected_remote_refs_are_allowed(tmp_path: Path) -
             "refs/remotes/companion/task-708",
             "refs/replace/private-object",
         ]
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _other_repo_with_outgoing(tmp_path: Path, name: str, text: str) -> Path:
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", str(remote))
+    repo = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(remote), str(repo))
+    for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+        _git(repo, "config", key, value)
+    (repo / "README.md").write_text("base\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "push", "-q", "origin", "HEAD")
+    (repo / name).write_text(text)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", "outgoing")
+    return repo
+
+
+def _run(cwd: Path, *args: str, markers: Path) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "TASK_AGENT_PRIVATE_HISTORY_MARKERS": str(markers)}
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--remote", "origin", *args],
+        cwd=cwd, env=env, capture_output=True, text=True,
+    )
+
+
+def test_checks_the_repository_of_the_current_directory_or_repo(tmp_path: Path) -> None:
+    markers = tmp_path / "markers"
+    markers.write_text("Secret Project\n")
+    leaking = _other_repo_with_outgoing(tmp_path, "notes.md", "about Secret Project\n")
+
+    from_cwd = _run(leaking, markers=markers)
+    assert from_cwd.returncode == 1
+    assert "notes.md: possible leak (private task/project history)" in from_cwd.stderr
+    assert str(leaking) in from_cwd.stderr
+
+    from_flag = _run(tmp_path, "--repo", str(leaking), markers=markers)
+    assert from_flag.returncode == 1
+    assert "notes.md: possible leak" in from_flag.stderr
+
+
+def test_clean_outgoing_commit_in_another_repository_passes(tmp_path: Path) -> None:
+    markers = tmp_path / "markers"
+    markers.write_text("Secret Project\n")
+    clean = _other_repo_with_outgoing(tmp_path, "notes.md", "ordinary text\n")
+
+    result = _run(clean, markers=markers)
+    assert result.returncode == 0, result.stderr
+    assert "scanned 1 file(s)" in result.stdout

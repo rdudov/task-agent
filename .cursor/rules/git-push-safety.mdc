@@ -5,14 +5,17 @@ alwaysApply: true
 
 # Git Push Safety
 
-Before any `git push` from a repository with task-agent tooling available:
+Before any `git push` from any repository, while task-agent tooling is available:
 
 1. Identify the target remote with `git remote -v`.
 2. Run:
 
    ```bash
-   .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote <remote>
+   .venv/bin/python skills/repo-health/scripts/check_pre_push.py --remote <remote> --repo <repository>
    ```
+
+   The check inspects the repository containing the current directory, or the
+   one named by `--repo`, so a push from another repository is checked too.
 
 3. Review outgoing commits and diff for local artifacts, secrets, private paths, or unintended generated files.
 4. Do not push if the check fails; fix the diff or record the blocker in the task artifacts.

@@ -58,6 +58,12 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def target_root(repo: str | None) -> Path:
+    """Return the repository being pushed: --repo, else the current directory's."""
+    start = Path(repo).expanduser() if repo else Path.cwd()
+    return Path(run_git(["rev-parse", "--show-toplevel"], start).strip())
+
+
 def run_git(args: list[str], cwd: Path) -> str:
     proc = subprocess.run(
         ["git", *args],
@@ -242,6 +248,10 @@ def main() -> int:
     parser.add_argument("--remote", default="origin", help="Remote name to inspect.")
     parser.add_argument("--base", help="Base ref to diff against, such as origin/main.")
     parser.add_argument(
+        "--repo",
+        help="Repository to check. Defaults to the repository containing the current directory.",
+    )
+    parser.add_argument(
         "--allow-local-artifacts",
         action="store_true",
         help="Allow tasks/, data/, and .state/ paths when intentionally publishing a template artifact change.",
@@ -253,19 +263,22 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    root = repo_root()
+    # Private markers are deployment-local state of this checkout, whichever
+    # repository is being pushed.
+    markers_root = repo_root()
     try:
+        root = target_root(args.repo)
         url = remote_url(args.remote, root)
         files = outgoing_files(args.remote, root, args.base)
         extra_refs = unexpected_refs(args.remote, root)
-        markers = private_history_markers(root)
+        markers = private_history_markers(markers_root)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     # Announce a disabled private-name check before any result, so an operator
     # never reads "passed" as "the private names were checked and found absent".
-    notice = private_history_notice(markers, root)
+    notice = private_history_notice(markers, markers_root)
     if notice:
         print(notice, file=sys.stderr)
         if args.require_private_history_markers:
@@ -276,7 +289,7 @@ def main() -> int:
             return 1
 
     if not files and not extra_refs:
-        print(f"Pre-push check passed for {args.remote} ({url}): no outgoing files.")
+        print(f"Pre-push check passed for {root} {args.remote} ({url}): no outgoing files.")
         return 0
 
     errors: list[str] = []
@@ -289,13 +302,13 @@ def main() -> int:
         ))
 
     if errors:
-        print(f"Pre-push check FAILED for {args.remote} ({url}):", file=sys.stderr)
+        print(f"Pre-push check FAILED for {root} {args.remote} ({url}):", file=sys.stderr)
         for error in errors:
             print(f"  ERROR: {error}", file=sys.stderr)
         print(f"  Scanned {len(files)} file(s) in outgoing commits.", file=sys.stderr)
         return 1
 
-    print(f"Pre-push check passed for {args.remote} ({url}); scanned {len(files)} file(s).")
+    print(f"Pre-push check passed for {root} {args.remote} ({url}); scanned {len(files)} file(s).")
     return 0
 
 
