@@ -106,6 +106,24 @@ class ProcessIdentityTests(unittest.TestCase):
 class DetachedWatcherTests(unittest.TestCase):
     """The watcher must outlive the process that asked for the run."""
 
+    def test_caller_turn_reaches_actual_detached_launch_and_terminal_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir, environment, stub = self._prepare(tmp)
+            environment["TASK_AGENT_OWNER_TURN"] = "a" * 32
+            self._write_child(stub, "#!/bin/sh\nexit 7\n")
+            started = self._start(task_dir, environment)
+            self.assertEqual(started["owner_turn"], "a" * 32)
+            self.assertTrue(_wait_until(lambda: bool(task_runner.read_json(
+                task_dir / ".runner/runner.json").get("finished_at"))))
+            import task_engine
+            page = task_engine.facts(task_dir)
+            self.assertEqual(len(page["events"]), 1)
+            fact = page["events"][0]["fact"]
+            self.assertEqual(fact["owner_turn"], "a" * 32)
+            self.assertEqual(fact["role"], "author")
+            self.assertTrue(fact["child_started_at"])
+            self.assertIn("terminal-runs.jsonl#bytes=", page["events"][0]["source"])
+
     def _prepare(self, tmp: str) -> tuple[Path, dict, Path]:
         """Put a real, scriptable executable named `claude` first on PATH.
 

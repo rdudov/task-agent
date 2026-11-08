@@ -16,12 +16,64 @@ MAX_LINE = 2_000_000
 PAGE_SIZE = 32
 
 
+def owner_turn() -> str | None:
+    """Optional caller correlation; not authorization to launch or accept work."""
+    value = os.environ.get("TASK_AGENT_OWNER_TURN", "")
+    return value if len(value) == 32 and all(c in "0123456789abcdef" for c in value) else None
+
+
 def run_identity(meta: dict) -> str | None:
     if not meta.get("started_at") or meta.get("dry_run"):
         return None
     return str(meta.get("run_id") or hashlib.sha256(json.dumps(
         [meta.get("task_dir"), meta["started_at"], meta.get("runner"),
          meta.get("workflow")], sort_keys=True).encode()).hexdigest())
+
+
+def current_fact(task_dir: Path, meta: dict) -> dict | None:
+    """Project a recorded end, or proven loss of both supervisors, honestly.
+
+    No exit status or death time can be recovered from a missing process.
+    Unknown identity/visibility is not negative liveness evidence.
+    """
+    identity = run_identity(meta)
+    if not identity:
+        return None
+    record = {"schema_version": 1, "event_id": identity, "run_id": identity, "kind": "run_terminal",
+              **{key: meta.get(key) for key in (
+                  "started_at", "finished_at", "runner", "workflow", "outcome",
+                  "exit_code", "review_kind", "child_started_at", "owner_turn")},
+              "role": meta.get("review_admission", {}).get("access_profile", {}).get("role")}
+    record["grants_write"] = meta.get("review_admission", {}).get("access_profile", {}).get("grants_write")
+    if meta.get("finished_at") and meta.get("outcome"):
+        return record
+    try:
+        from . import task_runner, task_contract
+    except ImportError:
+        import task_runner, task_contract
+    if (not meta.get("child_started_at") or not task_runner.process_identity_available()
+            or not task_runner.runner_pid_namespace_visible(meta)):
+        return None
+    for pid_key, identity_key in (("pid", "process_identity"),
+                                  ("watcher_pid", "watcher_process_identity")):
+        if (not isinstance(meta.get(pid_key), int) or not meta.get(identity_key)
+                or task_runner.process_is_recorded_instance(meta[pid_key], meta[identity_key])[0]):
+            return None
+        if task_runner.process_identity(meta[pid_key]) is None and task_runner.pid_is_running(meta[pid_key]):
+            return None  # inaccessible identity is not proof that the run died
+    record.update(event_id=identity + ":supervision_lost", kind="run_supervision_lost",
+                  outcome="supervision_lost", finished_at=None, exit_code=None,
+                  liveness={key: meta[key] for key in
+                            ("pid", "process_identity", "watcher_pid", "watcher_process_identity")})
+    # This is primary, unfinalized reviewer evidence, not a round or acceptance.
+    if (meta.get("workflow") == "standard" and meta.get("review_kind") == "technical"
+            and record["role"] == "reviewer"):
+        verdict = task_contract.published_review_verdict(task_dir)
+        if verdict:
+            record["published_verdict"] = verdict
+            record["verdict_source"] = str(task_dir / "findings.md")
+            record["verdict_sha256"] = hashlib.sha256((task_dir / "findings.md").read_bytes()).hexdigest()
+    return record
 
 
 def retain_terminal(task_dir: Path, meta: dict) -> None:
@@ -31,13 +83,10 @@ def retain_terminal(task_dir: Path, meta: dict) -> None:
     Repeated publication reads only the bounded last record. fsync precedes
     replacement, so a crash cannot erase the terminal fact it supersedes.
     """
-    identity = run_identity(meta)
-    if not identity or not meta.get("finished_at") or not meta.get("outcome"):
+    record = current_fact(task_dir, meta)
+    if record is None:
         return
-    record = {"schema_version": 1, "event_id": identity, "kind": "run_terminal",
-              **{key: meta.get(key) for key in (
-                  "started_at", "finished_at", "runner", "workflow", "outcome",
-                  "exit_code", "review_kind", "child_started_at")}}
+    identity = record["event_id"]
     encoded = (json.dumps(record, sort_keys=True) + "\n").encode()
     if len(encoded) > 8192:
         raise ValueError("terminal fact exceeds 8192 bytes")
@@ -160,21 +209,46 @@ def facts(task_dir: Path, cursors: dict | None = None, *, baseline: bool = False
     pages = {key: read_page(task_dir / name, cursors.get(key), baseline=baseline)
              for key, name in streams.items()}
     path = task_dir / ".runner/runner.json"
-    meta = json.loads(path.read_text()) if path.exists() else {}
+    raw = path.read_bytes() if path.exists() else b"{}"
+    meta = json.loads(raw)
+    current = current_fact(task_dir, meta)
     known = cursors.get("legacy_terminal")
+    direct = set(cursors.get("direct_pending", []))
+    seen = cursors.get("current_seen", known)
     if baseline:
-        known = run_identity(meta) if meta.get("finished_at") else None
-    fields = ("event_id", "kind", "round", "decision", "recorded_at", "review_attempt",
+        known = current["event_id"] if current else None
+        seen = known
+    archived = {row["id"] for row in pages["runs"]["events"]}
+    fields = ("event_id", "run_id", "kind", "round", "decision", "recorded_at", "review_attempt",
               "review_provider", "started_at", "finished_at", "runner", "workflow",
-              "outcome", "exit_code", "review_kind", "child_started_at", "source")
+              "outcome", "exit_code", "review_kind", "child_started_at", "source",
+              "owner_turn", "role", "grants_write", "liveness", "published_verdict", "verdict_source", "verdict_sha256")
     events = [{**row, "stream": key,
                "fact": {field: row["fact"][field] for field in fields if field in row["fact"]}}
               for key, page in pages.items()
               for row in page["events"]
-              if (key != "runs" or row["id"] != known)
+              if (key != "runs" or (row["id"] != known and row["id"] not in direct))
               and (key != "admissions" or row["fact"].get("decision") == "refused")]
+    if (not baseline and current and current["event_id"] not in {known, seen}
+            and current["event_id"] not in direct and current["event_id"] not in archived
+            and (not pages["runs"]["more"] or not pages["runs"]["events"])):
+        # Older running watchers do not know the archive. Read their current
+        # terminal too, without changing their metadata or manufacturing a round.
+        events.append({"id": current["event_id"], "stream": "runs", "fact": current,
+                       "source": str(path), "sha256": hashlib.sha256(raw).hexdigest()})
+        direct.add(current["event_id"])
+    if current and (baseline or current["event_id"] in archived or current["event_id"] in direct):
+        seen = current["event_id"]
+    direct.difference_update(archived)
+    run = {"id": run_identity(meta), "child_started_at": meta.get("child_started_at"),
+           "owner_turn": meta.get("owner_turn"),
+           "role": meta.get("review_admission", {}).get("access_profile", {}).get("role"),
+           "grants_write": meta.get("review_admission", {}).get("access_profile", {}).get("grants_write"),
+           "review_kind": meta.get("review_kind")}
     return {"schema_version": 1, "events": events, "run_id": run_identity(meta),
             "run_started": bool(meta.get("child_started_at")),
+            "run": run,
             "cursors": {**{key: page["cursor"] for key, page in pages.items()},
-                        "legacy_terminal": known},
+                        "legacy_terminal": known, "current_seen": seen,
+                        "direct_pending": sorted(direct)},
             "more": any(page["more"] for page in pages.values())}

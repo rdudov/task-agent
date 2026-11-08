@@ -2440,6 +2440,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     )
     meta = {
         "run_id": uuid.uuid4().hex,
+        "owner_turn": run_facts.owner_turn(),
         "runner": args.runner,
         "runner_resolution": runner_resolution,
         "workflow": args.workflow,

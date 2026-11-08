@@ -61,7 +61,11 @@ carry primary byte ranges/SHA256 and `more`; observations and failed wakes do
 not acknowledge work. Canonical review ledgers stay under task-owned `reviews/`,
 outside the replaceable runner record. Retention, legacy enablement and changed
 ledger recovery are documented in `docs/task-execution.md` under “Durable run and
-review facts”. This archive creates no queue, admission policy or scheduler.
+review facts”. It also covers pre-upgrade current terminals and proven loss of
+both identity-bound processes, without inventing an exit code or accepting a
+published verdict as a round. `TASK_AGENT_OWNER_TURN` optionally correlates a
+caller's explicit action receipt with the authoritative started run/role; it is
+not authorization. This archive creates no queue, admission policy or scheduler.
 
 An application that already supervises the entire worker service or container
 may use `start --foreground` and `review --foreground`. These forms keep the

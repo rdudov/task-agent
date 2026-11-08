@@ -214,6 +214,9 @@ reads bounded pages of durable run ends, review rounds and review refusals. Pyth
 callers use `task_engine.facts(task_dir, cursors, baseline=False)`. Save the returned
 `cursors` only after handling the events; a process need not have been live at
 either observation. Each event carries a primary file/byte range and SHA256.
+The reader includes terminals written by pre-upgrade watchers and proven loss of
+both supervisors without inventing exit status. Optional `TASK_AGENT_OWNER_TURN`
+is preserved with admitted role for callers that check event-specific actions.
 See [the fact retention contract](docs/task-execution.md#durable-run-and-review-facts).
 
 **One goal, one number.** A user goal keeps a single task directory for its whole

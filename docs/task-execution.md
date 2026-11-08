@@ -381,6 +381,27 @@ Repeated terminal publication is idempotent under a file lock and reads only a
 bounded tail. The archive is append-only lifecycle evidence, not a queue or
 another admission/acceptance owner. The engine does not rotate it.
 
+The read-only public reader also projects an unarchived terminal from current
+runner metadata: a watcher already running at installation still uses its old
+writer. Its identity is checkpointed until the archive catches it, so later
+pre-replacement retention does not replay it. No reader rewrites runner.json.
+If both recorded child and watcher identities are absent in the same visible
+PID namespace, the lifecycle projects `run_supervision_lost`. Missing identities,
+foreign namespaces, inaccessible processes and one surviving process are not
+proof of loss. This fact has null finish time/exit code: absence proves neither.
+Before replacement the runner retains this same observation in its archive.
+For a lost standard technical reviewer, the existing canonical verdict parser
+may expose published_verdict with its source path/SHA as unfinalized evidence;
+this neither invents a review round nor grants acceptance. The product owner
+must check that source and resolve the actual next step.
+
+A caller may set `TASK_AGENT_OWNER_TURN` to a 32-character lowercase hex
+correlation value. The launcher records it in current and retained facts along
+with admitted role/write access. The public result's `run` describes the current
+launch; retained events expose the same fields for short replaced launches.
+Correlation is evidence for event-specific application receipts, not launch
+permission or an automatic acknowledgment. It does not change admission.
+
 Downstream readers call the public `task_engine.facts` surface. It composes that
 archive with `reviews/rounds.jsonl`, `reviews/infrastructure-obligations.jsonl`
 and refused records in `reviews/admissions.jsonl`. A refusal is not fabricated
