@@ -192,7 +192,14 @@ def record_phase(
     record = read_phases(task_dir)
     history = [item for item in record.get("history", []) if isinstance(item, dict)]
     timestamp = entered_at or utc_now()
-    if record.get("phase") != phase:
+    # A recovered launch stays in review but owns a new attempt snapshot.
+    # Ordinary repeated phase observations still append nothing.
+    candidate = cause.get("review_candidate") if isinstance(cause, dict) else None
+    previous = (history[-1].get("cause", {}).get("review_candidate") if history else None)
+    new_attempt = (phase == REVIEW and isinstance(candidate, dict) and candidate.get("attempt")
+                   and (not isinstance(previous, dict)
+                        or candidate["attempt"] != previous.get("attempt")))
+    if record.get("phase") != phase or new_attempt:
         entry: dict[str, Any] = {"phase": phase, "entered_at": timestamp}
         if cause:
             entry["cause"] = cause

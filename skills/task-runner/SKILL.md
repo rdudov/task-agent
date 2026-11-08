@@ -1254,3 +1254,28 @@ a task that still needs a user decision. Delivery-enabled adapters hand over the
 current registered files and completion-answer.txt, preserving receipt-based
 idempotence. If independent review failed, the handover explicitly says that it
 did not finish, including when the author is waiting for the user.
+
+### Explicit recovery after a pre-model technical-review failure
+
+`review TASK --recover-pre-model-failure PROOF_JSON` uses the same bound reviewer,
+read-only target set and fresh process. It is an operator-attested recovery, not
+an automatic retry or a verdict. Use only after the separate infrastructure task
+establishes that no review session started and the failed preflight now succeeds.
+An exit code alone proves neither fact. Keep the model/effort installation policy.
+
+The proof is a version-1 JSON object with `attempt` (the failed admission id),
+integer nonzero `exit_code`, `infrastructure_task` (absolute separate task directory),
+`operator` (who verified the observations), `review_session_started: false`,
+nonempty `model_call_evidence` (concrete observation/source), and
+`recovery_probe: {"command": "...", "exit_code": 0}`. Keep the source observations
+in that infrastructure task and record why its operator can attest them.
+The engine checks the unchanged candidate, matching failed terminal runner record,
+absence of a substantive round/publication/protocol failure for the attempt, and
+existence of the separate task. It does not independently verify external probe
+claims. The proof and its SHA-256 are retained in the next review candidate cause.
+
+`--dry-run` validates without consuming the proof or starting a process. A real
+retry appends a new attempt snapshot even while the phase remains review; the old
+failure and every accepted round remain. Reusing proof naming the earlier attempt
+then refuses. Normal review/author/no-progress actions are unchanged. Publication
+failures, model-started reviews and author rework cannot use this recovery.

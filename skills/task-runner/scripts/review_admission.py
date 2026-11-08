@@ -1614,6 +1614,68 @@ def standard_review_action(task_dir: Path, review: dict | None = None) -> dict:
             "reason": "independent review did not establish a current decision"}
 
 
+def pre_model_review_recovery(task_dir: Path, proof_path: Path) -> dict:
+    """Validate an operator-attested recovery; never infer no-model from an exit code.
+
+    The operator owns the external preflight observation and recovery probe.
+    Admission owns binding it to this terminal attempt and unchanged candidate.
+    The next phase retains the proof; no history is reset or round invented.
+    """
+    try:
+        from . import review_progress
+        from .task_contract import published_review_verdict
+    except ImportError:
+        import review_progress
+        from task_contract import published_review_verdict
+    if proof_path.is_symlink() or not proof_path.is_file():
+        raise ValueError("recovery proof must be a regular non-symlink file")
+    raw = proof_path.read_bytes()
+    proof = json.loads(raw)
+    before = review_progress.latest_snapshot(task_dir)
+    if not isinstance(proof, dict) or type(proof.get("schema_version")) is not int or proof["schema_version"] != 1:
+        raise ValueError("invalid pre-model recovery proof schema")
+    attempt = before.get("attempt") if before else None
+    if not attempt or proof.get("attempt") != attempt:
+        raise ValueError("recovery proof does not name the current failed attempt")
+    action = standard_review_action(task_dir)
+    if action["action"] != "stop_review_infrastructure" or action["changed_basis"]:
+        raise ValueError("recovery requires an unchanged candidate stopped on review infrastructure")
+    if (task_dir / "review-findings.json").exists() or published_review_verdict(task_dir) is not None:
+        raise ValueError("a reviewer publication cannot use pre-model recovery")
+    if any(item.get("review_attempt") == attempt for item in review_rounds(task_dir)):
+        raise ValueError("a substantive review cannot use pre-model recovery")
+    if any(item.get("event_id") == f"standard-review:{attempt}"
+           for item in infrastructure_obligations(task_dir)):
+        raise ValueError("a review publication protocol failure cannot use pre-model recovery")
+    meta = _read_json(task_dir / ".runner/runner.json")
+    admission = meta.get("review_admission", {})
+    if (not isinstance(admission, dict) or admission.get("admission_id") != attempt
+            or meta.get("workflow") != "standard" or meta.get("review_kind") != "technical"
+            or meta.get("outcome") not in {"failed", "recovered_failed", "recovered_blocked"}
+            or not meta.get("finished_at")
+            or type(meta.get("exit_code")) is not int or meta["exit_code"] == 0
+            or type(proof.get("exit_code")) is not int
+            or proof["exit_code"] != meta["exit_code"]):
+        raise ValueError("recovery requires the matching nonzero terminal reviewer record")
+    infrastructure_task = proof.get("infrastructure_task")
+    if not isinstance(infrastructure_task, str) or not infrastructure_task.strip():
+        raise ValueError("recovery must name its separate infrastructure task")
+    infrastructure_path = Path(infrastructure_task).expanduser().resolve()
+    if infrastructure_path == task_dir.resolve() or not (infrastructure_path / "task.md").is_file():
+        raise ValueError("recovery requires an existing separate infrastructure task")
+    probe = proof.get("recovery_probe")
+    if (proof.get("review_session_started") is not False
+            or not isinstance(proof.get("model_call_evidence"), str)
+            or not proof["model_call_evidence"].strip()
+            or not isinstance(probe, dict) or type(probe.get("exit_code")) is not int
+            or probe["exit_code"] != 0
+            or not isinstance(probe.get("command"), str) or not probe["command"].strip()
+            or not isinstance(proof.get("operator"), str) or not proof["operator"].strip()):
+        raise ValueError("recovery needs operator-attested pre-model failure and successful recovery probe")
+    return {"proof": proof, "sha256": hashlib.sha256(raw).hexdigest(),
+            "path": str(proof_path.resolve()), "failed_attempt": attempt}
+
+
 def record_review_round(
     task_dir: Path,
     *,

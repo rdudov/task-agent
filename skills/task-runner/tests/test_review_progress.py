@@ -392,3 +392,116 @@ elif mode == "stale":
     else:
         assert review.standard_review_action(task)["action"] == "stop_review_infrastructure"
     assert len(review.review_rounds(task)) == (2 if output == "approved" else 1)
+
+
+def recovery_fixture(tmp_path, failed=True):
+    task = setup_task(tmp_path)
+    task_runner.require_review_verdict_contract(task)
+    if failed:
+        begin_review(task)
+        put(task, ".runner/runner.json", {
+            "workflow": "standard", "review_kind": "technical", "outcome": "failed",
+            "finished_at": "2026-11-08T02:18:04Z", "exit_code": 78,
+            "review_admission": {"admission_id": "attempt-1"}})
+    infrastructure = tmp_path / "tasks" / "002-review-infrastructure"
+    infrastructure.mkdir()
+    put(infrastructure, "task.md", "# Restore pre-model review launch")
+    proof = {"schema_version": 1, "attempt": "attempt-1", "exit_code": 78,
+             "infrastructure_task": str(infrastructure), "operator": "test operator",
+             "review_session_started": False, "model_call_evidence": "wrapper refused before exec",
+             "recovery_probe": {"command": "codex login status", "exit_code": 0}}
+    path = infrastructure / "recovery.json"
+    put(infrastructure, "recovery.json", proof)
+    return task, path, proof
+
+
+def test_pre_model_recovery_preserves_candidate_and_is_attempt_bound(tmp_path):
+    task, path, proof = recovery_fixture(tmp_path)
+    before = {str(p.relative_to(task)): p.read_bytes() for p in task.rglob("*") if p.is_file()}
+    assert review.standard_review_action(task)["action"] == "stop_review_infrastructure"
+    recovery = review.pre_model_review_recovery(task, path)
+    assert recovery["failed_attempt"] == "attempt-1"
+    assert review.review_rounds(task) == []
+    assert before == {str(p.relative_to(task)): p.read_bytes() for p in task.rglob("*") if p.is_file()}
+    begin_review(task, "attempt-2")
+    with pytest.raises(ValueError, match="current failed attempt"):
+        review.pre_model_review_recovery(task, path)
+
+
+@pytest.mark.parametrize("change", ["candidate", "round", "protocol", "exit", "attempt", "running",
+                                      "model", "probe", "infrastructure", "operator"])
+def test_pre_model_recovery_refuses_unsafe_basis(tmp_path, change):
+    task, path, proof = recovery_fixture(tmp_path)
+    if change == "candidate":
+        put(task, "deliverables/result.png", "changed")
+    elif change == "round":
+        publication(task)
+        task_runner.record_standard_review_round(task, "codex")
+    elif change == "protocol":
+        publication(task, [])
+        task_runner.record_standard_review_round(task, "codex")
+    elif change == "running":
+        meta = json.loads((task / ".runner/runner.json").read_text())
+        meta.pop("finished_at")
+        put(task, ".runner/runner.json", meta)
+    else:
+        key, value = {"exit": ("exit_code", 0), "attempt": ("attempt", "wrong"),
+                      "model": ("review_session_started", True),
+                      "probe": ("recovery_probe", {"command": "probe", "exit_code": 1}),
+                      "infrastructure": ("infrastructure_task", str(task)),
+                      "operator": ("operator", "")}[change]
+        proof[key] = value
+        path.write_text(json.dumps(proof))
+    with pytest.raises(ValueError):
+        review.pre_model_review_recovery(task, path)
+
+
+def test_pre_model_recovery_real_review_command(tmp_path):
+    """Real CLI and process launch; synthetic preflight/model, no live provider call."""
+    import subprocess
+    task, path, proof = recovery_fixture(tmp_path, failed=False)
+    binary = tmp_path / "bin" / "codex"
+    binary.parent.mkdir()
+    binary.write_text("#!" + sys.executable + "\n" + '''
+import os,json,sys
+from pathlib import Path
+task = Path(os.environ["REVIEW_TEST_TASK"])
+assert "--model" in sys.argv and "gpt-6-astra" in sys.argv
+assert "--sandbox" in sys.argv
+if not (task / "preflight-restored").exists():
+    raise SystemExit(78)
+(task / "reviewer-started").write_text("fresh process")
+(task / "findings.md").write_text("Verdict: approved\\n")
+(task / "status.json").write_text('{"state":"completed"}')
+''')
+    binary.chmod(0o755)
+    env = {**os.environ, "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
+           "TASK_AGENT_ROOT": str(tmp_path), "TASKS_INDEX_ROOT": str(tmp_path),
+           "REVIEW_TEST_TASK": str(task)}
+    command = [sys.executable, str(Path(task_runner.__file__)), "review", str(task),
+               "--foreground", "--memory-limit", "none", "--model", "gpt-6-astra"]
+    first = subprocess.run(command, env=env, capture_output=True, text=True)
+    meta = json.loads((task / ".runner/runner.json").read_text())
+    assert meta["exit_code"] == 78, first.stdout + first.stderr
+    assert not (task / "reviewer-started").exists()
+    assert review.review_rounds(task) == []
+    proof["attempt"] = meta["review_admission"]["admission_id"]
+    path.write_text(json.dumps(proof))
+    put(task, "preflight-restored", "operator restored preflight")
+    refused = subprocess.run(command + ["--dry-run"], env=env, capture_output=True, text=True)
+    assert refused.returncode != 0
+    assert "stop_review_infrastructure" in refused.stdout + refused.stderr
+    before = (task / "phases.json").read_bytes()
+    recovered = command + ["--recover-pre-model-failure", str(path)]
+    dry = subprocess.run(recovered + ["--dry-run"], env=env, capture_output=True, text=True)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert (task / "phases.json").read_bytes() == before
+    assert not (task / "reviewer-started").exists()
+    launched = subprocess.run(recovered, env=env, capture_output=True, text=True)
+    assert (task / "reviewer-started").exists(), launched.stdout + launched.stderr
+    candidate = review_progress.latest_snapshot(task)
+    assert candidate["pre_model_recovery"]["proof"] == proof
+    assert len(review.review_rounds(task)) == 1
+    assert review.review_rounds(task)[0]["decision"] == "approved"
+    assert candidate["pre_model_recovery"]["failed_attempt"] == proof["attempt"]
+    assert json.loads((task / ".runner/runner.json").read_text())["access_grant"]["sandbox_mode"] == "read-only"

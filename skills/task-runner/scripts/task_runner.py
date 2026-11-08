@@ -2389,7 +2389,15 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     if args.workflow == "standard" and review_kind == "technical":
         next_action = review_admission.standard_review_action(task_dir)
-        if next_action["action"] in {
+        recovery = None
+        recovery_path = getattr(args, "recover_pre_model_failure", None)
+        if recovery_path:
+            try:
+                recovery = review_admission.pre_model_review_recovery(task_dir, Path(recovery_path))
+            except (OSError, ValueError) as exc:
+                ownership_lock.close()
+                raise SystemExit(f"Pre-model review recovery refused: {exc}") from None
+        if recovery is None and next_action["action"] in {
             "rework", "wait_user", "stop_no_progress", "stop_review_infrastructure", "stop_invalid_candidate"
         }:
             ownership_lock.close()
@@ -2402,6 +2410,8 @@ def cmd_start(args: argparse.Namespace) -> None:
             candidate = review_progress.snapshot(
                 task_dir, review_admission.author_target_repositories(task_dir), include_evidence=True)
             candidate["attempt"] = review_record["admission_id"]
+            if recovery is not None:
+                candidate["pre_model_recovery"] = recovery
             task_phases.record_phase(task_dir, task_phases.REVIEW, cause={
                 "source": "task-runner", "workflow": "standard", "runner": args.runner,
                 "review_candidate": candidate,
@@ -4086,6 +4096,10 @@ def parse_args() -> argparse.Namespace:
     )
     review_parser.add_argument("task_dir", help="Task directory path.")
     review_parser.add_argument("--model", help="Optional reviewer model override.")
+    review_parser.add_argument(
+        "--recover-pre-model-failure", metavar="PROOF_JSON",
+        help="Explicit operator-attested retry of a terminal pre-model failure; preserves candidate and history.",
+    )
     review_parser.add_argument("--application", help="Versioned installation adapter.")
     review_parser.add_argument("--destination", help="Opaque delivery destination.")
     review_parser.add_argument("--memory-limit")

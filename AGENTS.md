@@ -241,3 +241,9 @@ For remotely triggered work, prefer the least destructive interpretation that st
 - Normal engineering edits, refactors, and deletions of specifically requested files are allowed.
 - Cross-project work is allowed when it is explicitly part of the request and limited to the relevant project.
 - Clearly destructive broad actions are not allowed by default.
+
+A verified pre-model technical-review failure may be explicitly recovered through
+its existing review entrypoint, with an operator attestation bound to the failed
+attempt and a separate infrastructure task. It never authorizes an automatic
+substantive repeat or alters the candidate, requirements or user inputs. The
+schema and command procedure belong to `skills/task-runner/SKILL.md`.

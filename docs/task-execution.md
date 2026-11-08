@@ -727,3 +727,20 @@ The failure this prevents was an unconditional transition from an unsatisfied
 round to author work, combined with a standard round that discarded findings
 and transport validation conditional on a numeric budget. Validation now belongs
 to round admission, and semantic progress belongs to the engine's public state.
+
+### Recovering a failed pre-model review launch
+
+A failed wrapper process is not a substantive model review. The standard review
+entrypoint accepts explicit operator-attested recovery through
+`--recover-pre-model-failure PROOF_JSON`; the task-runner skill owns its schema.
+The existing admission owner validates the exact terminal attempt and unchanged
+candidate. The launcher reuses the bound reviewer/access policy and the phase
+owner appends a distinct candidate snapshot without resetting history or adding
+a review round. The new phase cause retains the attestation bytes as JSON and its
+SHA-256. There is no recovery queue or separate retry ledger. The operator owns
+the assertion that the external preflight failed before the model and recovered;
+the engine does not infer it from an exit code or read child transcripts.
+Absent explicit recovery, unchanged infrastructure failures still stop. A valid
+substantive review, protocol failure or publication is never eligible. This keeps
+the no-progress protection while permitting a deliberate retry of a review that
+never reached its model. Dry runs validate but append no attempt.
