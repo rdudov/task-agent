@@ -32,6 +32,9 @@ It creates or updates:
 - `status.json`
 - `.runner/prompt.txt`
 - `.runner/runner.json`
+- `.runner/terminal-runs.jsonl`: permanent task-owned lifecycle evidence for all
+  access modes, including read-only runs; replacement of runner.json retains the
+  prior terminal identity/end before it can disappear
 - `.runner/runner.log`
 - `.runner/review-admission.json` for the current launch,
   `.runner/review-admission-commitment.json` while a committed binding is waiting
@@ -48,6 +51,17 @@ as a comma-separated path list, never as a Python `Path` or list
 representation; a repository-less author prompt omits that line.
 
 The dev-pipeline workflow also creates `dev-pipeline/`.
+
+For downstream run/review news use `scripts/task_engine.py facts TASK` (Python:
+`task_engine.facts(task_dir, cursors, baseline=False)`), not internal runner
+helpers or child transcripts. Establish the first boundary with `--baseline`;
+pass the returned `cursors` as `--cursors JSON` on subsequent reads and persist
+them in the caller's existing checkpoint only after handling the events. Pages
+carry primary byte ranges/SHA256 and `more`; observations and failed wakes do
+not acknowledge work. Canonical review ledgers stay under task-owned `reviews/`,
+outside the replaceable runner record. Retention, legacy enablement and changed
+ledger recovery are documented in `docs/task-execution.md` under “Durable run and
+review facts”. This archive creates no queue, admission policy or scheduler.
 
 An application that already supervises the entire worker service or container
 may use `start --foreground` and `review --foreground`. These forms keep the
