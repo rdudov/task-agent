@@ -19,6 +19,8 @@ correct the last it wrote.
     task_engine.py phases <task>     the phase this task is in and how it got there
     task_engine.py actuality <task>  observed freshness alone
     task_engine.py admission <task> --repo R   whether R may be written now
+    task_engine.py facts <task> [--baseline] [--cursors JSON]
+                                     bounded durable run/review news
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import review_admission, task_phases, write_admission
+    from . import review_admission, run_facts, task_phases, write_admission
     from .task_completion import completion_ready, task_reference, task_status
     from .task_contract import contract_gate_status, load_task_contract
     from .task_runner import (
@@ -45,6 +47,7 @@ try:
     )
 except ImportError:
     import review_admission
+    import run_facts
     import task_phases
     import write_admission
     from task_completion import completion_ready, task_reference, task_status
@@ -66,6 +69,15 @@ except ImportError:
 # an installation that knows its own cadence sets it.
 STALE_AFTER_SECONDS_ENV = "TASK_AGENT_ACTUALITY_STALE_SECONDS"
 DEFAULT_STALE_AFTER_SECONDS = 900
+
+
+def facts(task_dir: Path, cursors: dict | None = None, *, baseline: bool = False) -> dict:
+    """Incremental primary run/review facts, independent of attention/status.
+
+    Persist returned cursors only after handling the events. baseline=True is
+    first enablement: establish the boundary without replaying old history.
+    """
+    return run_facts.facts(task_dir, cursors, baseline=baseline)
 
 # Files whose modification time means somebody actually did something to this
 # task. `.runner/` metadata is deliberately excluded: the supervisor touches it
@@ -216,11 +228,15 @@ def main(argv: list[str] | None = None) -> int:
         ("phases", "Print the phase this task is in and how it got there."),
         ("actuality", "Print observed freshness for a task."),
         ("admission", "Print whether this task may write a Git repository now."),
+        ("facts", "Read incremental durable run/review facts."),
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument("task_dir")
         if name == "admission":
             sub.add_argument("--repo", required=True)
+        if name == "facts":
+            sub.add_argument("--cursors", default="{}", help="Previously handled JSON cursors.")
+            sub.add_argument("--baseline", action="store_true")
 
     args = parser.parse_args(argv)
     task_dir = resolve_task_dir(args.task_dir)
@@ -233,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = phases(task_dir)
     elif args.command == "actuality":
         payload = actuality(task_dir)
+    elif args.command == "facts":
+        payload = facts(task_dir, json.loads(args.cursors), baseline=args.baseline)
     else:
         repository = Path(args.repo).expanduser()
         if not repository.is_dir():

@@ -208,6 +208,14 @@ This is the public surface. A product layer, a transport adapter or another
 installation asks here instead of importing internals, so nothing downstream
 breaks when a helper is renamed.
 
+`task_engine.py facts TASK --baseline` establishes an initial observation boundary
+without replaying history. Subsequent `facts TASK --cursors '<returned JSON>'`
+reads bounded pages of durable run ends, review rounds and review refusals. Python
+callers use `task_engine.facts(task_dir, cursors, baseline=False)`. Save the returned
+`cursors` only after handling the events; a process need not have been live at
+either observation. Each event carries a primary file/byte range and SHA256.
+See [the fact retention contract](docs/task-execution.md#durable-run-and-review-facts).
+
 **One goal, one number.** A user goal keeps a single task directory for its whole
 life. Review is a phase of that task, and so is the rework a review asks for —
 `implementation → review → rework → review → completed` is the history of one

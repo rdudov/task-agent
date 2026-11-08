@@ -62,7 +62,7 @@ try:  # package install
         published_review_verdict,
         require_review_verdict_contract,
     )
-    from . import product_review, review_admission, task_phases, task_workspace, write_admission
+    from . import product_review, review_admission, run_facts, task_phases, task_workspace, write_admission
 except ImportError:  # direct repository script
     from application_adapter import (
         APPLICATION_API_VERSION,
@@ -109,6 +109,7 @@ except ImportError:  # direct repository script
     )
     import product_review
     import review_admission
+    import run_facts
     import task_phases
     import task_workspace
     import write_admission
@@ -245,6 +246,8 @@ def read_json(path: Path) -> dict:
 
 
 def write_json(path: Path, payload: dict) -> None:
+    if path.name == "runner.json" and path.parent.name == ".runner":
+        run_facts.retain_terminal(path.parent.parent, payload)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -2436,6 +2439,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         application_launch.get("standard_session", {}).get("command_arguments", []),
     )
     meta = {
+        "run_id": uuid.uuid4().hex,
         "runner": args.runner,
         "runner_resolution": runner_resolution,
         "workflow": args.workflow,
@@ -2473,6 +2477,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     write_admission.preserve_terminal_scope_evidence(
         task_dir, read_json(runner_meta_path(task_dir))
     )
+    run_facts.retain_terminal(task_dir, read_json(runner_meta_path(task_dir)))
 
     if getattr(args, "foreground", False):
         # Application-managed workers already have a durable outer supervisor.

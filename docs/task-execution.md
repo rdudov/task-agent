@@ -368,6 +368,44 @@ author/reviewer promise across phases, rounds preserve the latest decision, and
 phase history detects author work after approval. The launcher owns all three;
 an installation adds transport and resource policy, not another pairing record.
 
+### Durable run and review facts
+
+The current `.runner/runner.json` is replaceable. The runner retains each run's
+first terminal identity/start/end/outcome in `.runner/terminal-runs.jsonl` before
+publishing that terminal metadata, and also retains a pre-upgrade terminal before
+the next real start replaces it. All access modes, launch failures, stops and
+recovered supervision use the same publication path. Dry runs retain nothing.
+An explicit run UUID distinguishes launches with the same clock reading; older
+metadata derives identity from its original task/start/runner/workflow fields.
+Repeated terminal publication is idempotent under a file lock and reads only a
+bounded tail. The archive is append-only lifecycle evidence, not a queue or
+another admission/acceptance owner. The engine does not rotate it.
+
+Downstream readers call the public `task_engine.facts` surface. It composes that
+archive with `reviews/rounds.jsonl`, `reviews/infrastructure-obligations.jsonl`
+and refused records in `reviews/admissions.jsonl`. A refusal is not fabricated
+as a substantive review verdict. Canonical reviews live outside `.runner/`;
+replacing runner metadata does not rotate them. No child transcript is read.
+Returned events are compact projections with exact primary byte ranges and raw
+line SHA256; findings and full refusal prose stay at their primary source.
+
+Each stream has a byte cursor and content anchor, independent of mtime, round
+number, list length and PID liveness. Normal reads inspect at most 32 complete
+lines per stream (2 MB maximum per primary line); oversized or malformed facts
+refuse visibly. `more` leaves the remainder for later pages. An incomplete append
+does not advance the cursor. A missing previously observed ledger refuses.
+Replacement/truncation recovery alone scans for the last event identity in a
+copied prefix; an entirely new generation starts at its beginning. Operators
+must preserve unconsumed old generations: no reader can reconstruct deleted facts.
+Routine engine writes append and require no history scan.
+
+First enablement uses `baseline=True`, seeking bounded tails without historical
+replay. It also remembers an existing terminal identity so the next legacy
+pre-replacement retention cannot create an old false event. A run still active
+at enablement produces news when it finishes. Callers own handled cursors in their
+existing checkpoint and must not commit a proposed cursor merely because the
+fact was observed, the model was unavailable, or a response said nothing.
+
 A binding reaches that ledger only from a launch that started an author. A
 launch refused before its child — by the application launch policy, by a watcher
 that could not be spawned, or by a watcher that refused before its own child —
