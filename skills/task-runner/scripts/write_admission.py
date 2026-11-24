@@ -213,17 +213,20 @@ def repository_locks(repositories: list[Path]):
 
 
 def _append(task_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from .review_sources import fingerprint
+        from .review_admission import update_source_index
+    except ImportError:
+        from review_sources import fingerprint
+        from review_admission import update_source_index
     path = ledger_path(task_dir)
+    origin = fingerprint(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
-    try:
-        from .review_admission import update_source_index
-    except ImportError:
-        from review_admission import update_source_index
-    update_source_index(task_dir)
+    update_source_index(task_dir, log_origin=('scopes', origin))
     return record
 
 

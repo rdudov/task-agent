@@ -1649,6 +1649,8 @@ class ReviewCommandTests(unittest.TestCase):
 
     def test_review_command_accepts_an_explicit_repository_less_author(self) -> None:
         admission = {
+            "decision": "admitted",
+            "classification": {"work_class": "material"},
             "pair": {"reviewer_runner": "claude"},
             "access_profile": {
                 "role": "author",
@@ -1657,11 +1659,12 @@ class ReviewCommandTests(unittest.TestCase):
                 "grants_write": False,
             },
         }
-        with mock.patch.object(
-            task_runner.review_admission, "bound_author_admission", return_value=admission
-        ), mock.patch.object(task_runner, "cmd_start") as start:
-            args = argparse.Namespace(task_dir="/tmp/task")
-            task_runner.cmd_review(args)
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            review_admission._write_json(task_dir / review_admission.ADMISSION_RECORD, admission)
+            with mock.patch.object(task_runner, "cmd_start") as start:
+                args = argparse.Namespace(task_dir=str(task_dir))
+                task_runner.cmd_review(args)
 
         start.assert_called_once_with(args)
         self.assertEqual(args.repo, [])
@@ -1669,6 +1672,8 @@ class ReviewCommandTests(unittest.TestCase):
 
     def test_review_command_accepts_a_read_only_author_with_an_exact_target(self) -> None:
         admission = {
+            "decision": "admitted",
+            "classification": {"work_class": "material"},
             "pair": {"reviewer_runner": "claude"},
             "access_profile": {
                 "role": "author",
@@ -1677,11 +1682,12 @@ class ReviewCommandTests(unittest.TestCase):
                 "grants_write": False,
             },
         }
-        with mock.patch.object(
-            task_runner.review_admission, "bound_author_admission", return_value=admission
-        ), mock.patch.object(task_runner, "cmd_start") as start:
-            args = argparse.Namespace(task_dir="/tmp/task")
-            task_runner.cmd_review(args)
+        with tempfile.TemporaryDirectory() as raw:
+            task_dir = Path(raw)
+            review_admission._write_json(task_dir / review_admission.ADMISSION_RECORD, admission)
+            with mock.patch.object(task_runner, "cmd_start") as start:
+                args = argparse.Namespace(task_dir=str(task_dir))
+                task_runner.cmd_review(args)
 
         start.assert_called_once_with(args)
         self.assertEqual(args.repo, ["/srv/target-repo"])

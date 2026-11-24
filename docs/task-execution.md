@@ -120,12 +120,18 @@ an open/changed scope, a rework or an undecided later source review keeps the
 repository obligatory. Absent proof stays obligatory even when the path is gone.
 Selection uses existing admissions, phase snapshots, rounds and write records;
 it neither changes them nor treats source retirement as a changed candidate.
-New snapshots capture admission/write-ledger byte positions, and a committed
-admission captures the position of the review rounds already recorded. These
-owner positions establish ordering; equal UTC timestamps neither block a valid
-later author nor excuse a later grant or scope (including an unchanged close).
-The completion approval check also refuses an author admitted after that round.
-Older snapshots without positions retain sources when their order is ambiguous.
+New snapshots capture the canonical SHA256 identities of each source's latest
+grant and scope owner records. A committed author admission captures the exact
+decision identities retained by the projection (including the latest round).
+Retirement requires the readable latest source records to match that snapshot
+and its approval to have been captured by the later author. Equal UTC timestamps
+neither block a valid later author nor excuse a later grant or unchanged close.
+Restoring a shorter ledger cannot make a new scope borrow an old byte position:
+reconstruction computes identities from the actual records again. The completion
+approval check also refuses an approval already captured by the current author.
+Earlier positional-only snapshots cannot prove release. Snapshots predating
+positional proof keep the existing conservative legacy handling; ambiguous order
+retains the source. Historical snapshots are never rewritten to add proof.
 
 The existing current admission record carries `source_review_index`, a
 rebuildable projection owned by admission and reduced in `review_sources.py`.
@@ -133,14 +139,19 @@ Admission, round, scope and phase writers advance it after their original
 records are durable. It keeps the latest grant, source candidate and relevant
 review per repository, the current author and unresolved scopes; closed scope
 history and irrelevant rounds/admissions are not copied. Selection costs the
-number of source obligations, with no traversal of accumulated history. Ledger
+number of source obligations, including a valid empty set, with no traversal of
+accumulated history or fallback admission scan. The reducer also handles legacy
+single-record bindings. Ledger
 writers fold only appended bytes. The phase writer supplies its already-read
 record and the reducer visits only appended entries; existing phase history
 serialization is unchanged. No new authoritative journal or coordinator exists.
 
-The index binds cursors to file identity, size and modification version. A
-missing cache, replaced/truncated ledger, external phase change or revoked
-pending admission reconstructs through the same reducer from original records.
+The index binds cursors to file identity, size and modification version. Only a
+log writer supplying the matching fingerprint it observed before its durable
+append may advance that cursor incrementally. Unexplained growth can be a
+restored and regrown history, so observers reconstruct it too. A missing cache,
+replaced/truncated ledger, external phase change or revoked pending admission
+reconstructs through the same reducer from original records.
 An interrupted append leaves an incomplete tail for retry, and an interrupted
 index update leaves a stale cursor whose next observation folds the missing
 records. Recovery costs history once at the next real write and is then

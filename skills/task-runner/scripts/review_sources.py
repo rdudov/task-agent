@@ -6,6 +6,7 @@ inputs require replay. No history, round limit or acceptance lives here.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -25,6 +26,27 @@ def fingerprint(path: Path) -> list[int] | None:
 def position(path: Path) -> int:
     value = fingerprint(path)
     return value[2] if value else 0
+
+
+def record_identity(entry: dict) -> str:
+    """Identity of an original owner record, independent of its file position."""
+    return hashlib.sha256(json.dumps(entry, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def snapshot_basis(task_dir: Path, repositories: list[str]) -> dict:
+    index = read(task_dir)
+    return {'version': 2, 'sources': {
+        repository: {key: index['sources'].get(repository, {}).get(key)
+                     for key in ('grant_identity', 'scope_identity')}
+        for repository in repositories}}
+
+
+def decision_basis(task_dir: Path) -> list[str]:
+    index = read(task_dir)
+    identities = {entry['record_identity'] for entry in index['rounds'].values()}
+    if index.get('last_round_identity'):
+        identities.add(index['last_round_identity'])
+    return sorted(identities)
 
 
 def _tail(path: Path, offset: int, size: int) -> tuple[list[tuple[int, dict]], int]:
@@ -57,11 +79,14 @@ def _author(index: dict, end: int, entry: dict) -> None:
             source = index['sources'].setdefault(repository, {})
             source.setdefault('first_grant', end)
             source['grant'] = end
+            source['grant_identity'] = record_identity(entry)
             source['grant_time'] = entry.get('evaluated_at')
 
 
 def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
-         phase_origin: list[int] | None = None, _current: dict | None = None) -> dict:
+         phase_origin: list[int] | None = None,
+         log_origin: tuple[str, list[int] | None] | None = None,
+         _current: dict | None = None) -> dict:
     # Local imports keep the append owners independent at import time.
     try:
         from . import review_admission as admission, task_phases, write_admission
@@ -76,15 +101,19 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
         saved = {}
     signatures = {name: fingerprint(task_dir / path) for name, path in logs.items()}
     phase_signature = fingerprint(task_dir / task_phases.PHASES_FILE)
-    valid = (saved.get('version') == 1
+    valid = (saved.get('version') == 2
              and all(isinstance(saved.get(k), dict) for k in ('sources', 'reviews', 'rounds', 'cursors'))
              and type(saved.get('phase_count')) is int)
     cursors = saved.get('cursors', {}) if valid else {}
     for name, signature in signatures.items():
         prior = cursors.get(name, {}).get('fingerprint')
-        if signature != prior and (not signature or not prior or signature[:2] != prior[:2]
-                                  or signature[2] <= prior[2]):
-            valid = False
+        if signature != prior:
+            # Size growth alone cannot distinguish append from a restored and
+            # regrown history. Only the writer that observed this exact cursor
+            # before its durable append may advance it without reconstruction.
+            if (log_origin != (name, prior) or not signature
+                    or prior and (signature[:2] != prior[:2] or signature[2] <= prior[2])):
+                valid = False
     # A phase writer supplies its already-read append-only record. A changed
     # phase file without that writer is recovery, not permission to trust an
     # old projection (including an externally restored same-length history).
@@ -93,7 +122,7 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
         valid = False
     if valid and phases is not None and len(phases.get('history', [])) < saved.get('phase_count', 0):
         valid = False
-    index = saved if valid else {'version': 1, 'sources': {}, 'reviews': {}, 'rounds': {},
+    index = saved if valid else {'version': 2, 'sources': {}, 'reviews': {}, 'rounds': {},
                                  'cursors': {}, 'phase_count': 0}
     deltas = {}
     for name, path in logs.items():
@@ -111,7 +140,8 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
         # Revocation is rare and may restore an arbitrarily old binding. Replay
         # it once through the same reducer instead of retaining an author stack.
         current.pop(KEY, None)
-        return read(task_dir, persist=persist, phases=phases, phase_origin=phase_origin, _current=current)
+        return read(task_dir, persist=persist, phases=phases, phase_origin=phase_origin,
+                    log_origin=log_origin, _current=current)
     commitment = admission.admission_commitment(task_dir)
     pending_id = commitment.get('admission_id') if commitment else None
     pending = index.pop('pending', None)
@@ -139,6 +169,7 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
         source = index['sources'].setdefault(repository, {})
         scopes = source.setdefault('unclosed', {})
         source['scope_end'] = end
+        source['scope_identity'] = record_identity(entry)
         if (kind == write_admission.OPENED or not entry.get('closed_at')
                 or entry.get('resolution') in write_admission.SYNTHETIC_RESOLUTIONS):
             scopes[run] = True
@@ -150,9 +181,11 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
             source['latest_close_time'] = max(source.get('latest_close_time', ''),
                                               str(entry.get('closed_at') or ''))
     for end, entry in deltas['rounds']:
+        identity = record_identity(entry)
+        index['last_round_identity'] = identity
         attempt = entry.get('review_attempt')
         if attempt:
-            index['rounds'][attempt] = {**entry, 'ledger_end': end}
+            index['rounds'][attempt] = {**entry, 'ledger_end': end, 'record_identity': identity}
     if phase_signature != index.get('phase_fingerprint'):
         record = phases if phases is not None else task_phases.read_phases(task_dir)
         history = record.get('history', [])
@@ -176,4 +209,3 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
     if persist:
         admission._write_json(task_dir / admission.ADMISSION_RECORD, {**current, KEY: index})
     return index
-

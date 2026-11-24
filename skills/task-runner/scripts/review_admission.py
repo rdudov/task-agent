@@ -238,6 +238,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _append_jsonl(path: Path, entry: dict[str, Any]) -> None:
+    try:
+        from .review_sources import fingerprint
+    except ImportError:
+        from review_sources import fingerprint
+    origin = fingerprint(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
@@ -245,7 +250,7 @@ def _append_jsonl(path: Path, entry: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
     if path.name in {"admissions.jsonl", "rounds.jsonl"}:
-        update_source_index(path.parent.parent)
+        update_source_index(path.parent.parent, log_origin=(path.stem, origin))
 
 
 def family_of(runner: str | None) -> str:
@@ -660,10 +665,12 @@ def author_target_repositories(task_dir: Path, *, include_reviewed: bool = False
         state = candidate.get("state", {})
         baseline = state.get("preexisting_tracked_dirty_baseline", {})
         basis = candidate.get("basis")
-        if isinstance(basis, dict) and type(author.get("source_review_rounds")) is int:
-            ordered = (decision.get("ledger_end", 0) <= author["source_review_rounds"]
-                       and source.get("grant", 0) <= basis.get("admissions", -1)
-                       and source.get("scope_end", 0) <= basis.get("scopes", -1))
+        if isinstance(basis, dict):
+            reviewed = basis.get("sources", {}).get(repository, {})
+            ordered = (basis.get("version") == 2
+                       and decision.get("record_identity") in author.get("source_review_decisions", [])
+                       and all(source.get(key) and source[key] == reviewed.get(key)
+                               for key in ("grant_identity", "scope_identity")))
         else:
             # Older records lack captured cross-ledger positions. Only strict,
             # unambiguous old evidence is usable; clock ties retain the source.
@@ -685,14 +692,12 @@ def author_target_repositories(task_dir: Path, *, include_reviewed: bool = False
                     and state.get("untracked_entries_digest") == write_admission.state_digest({"entries": []}))
         if not accepted:
             targets.append(repository)
-    if not index["sources"]:
-        binding = bound_author_admission(task_dir)
-        return list(binding.get("access_profile", {}).get("target_repositories", [])) if binding else []
     return targets
 
 
 def update_source_index(task_dir: Path, *, phases: dict | None = None,
-                        phase_origin: list[int] | None = None) -> None:
+                        phase_origin: list[int] | None = None,
+                        log_origin: tuple[str, list[int] | None] | None = None) -> None:
     """Advance the admission owner's rebuildable projection at a real write."""
     if not (task_dir / ADMISSION_RECORD).exists():
         return
@@ -700,7 +705,8 @@ def update_source_index(task_dir: Path, *, phases: dict | None = None,
         from . import review_sources
     except ImportError:
         import review_sources
-    review_sources.read(task_dir, persist=True, phases=phases, phase_origin=phase_origin)
+    review_sources.read(task_dir, persist=True, phases=phases, phase_origin=phase_origin,
+                        log_origin=log_origin)
 
 
 def resolve_review_launch_pair(
@@ -1348,10 +1354,10 @@ def commit_admission(
     nothing.
     """
     try:
-        from .review_sources import position
+        from .review_sources import decision_basis
     except ImportError:
-        from review_sources import position
-    record["source_review_rounds"] = position(task_dir / ROUNDS_LEDGER)
+        from review_sources import decision_basis
+    record["source_review_decisions"] = decision_basis(task_dir)
     path = task_dir / ADMISSION_RECORD
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -1943,11 +1949,14 @@ def independent_review_status(
         )
         return status
     try:
-        from .review_sources import position
+        from .review_sources import position, record_identity
     except ImportError:
-        from review_sources import position
+        from review_sources import position, record_identity
     admitted_rounds = binding.get("source_review_rounds")
-    if type(admitted_rounds) is int and admitted_rounds >= position(task_dir / ROUNDS_LEDGER):
+    admitted_decisions = binding.get("source_review_decisions")
+    if (isinstance(admitted_decisions, list) and record_identity(last) in admitted_decisions
+            or admitted_decisions is None and type(admitted_rounds) is int
+            and admitted_rounds >= position(task_dir / ROUNDS_LEDGER)):
         status["satisfied"] = False
         status["reason"] = "the current author was admitted after the recorded approval; its work needs review"
         return status

@@ -247,7 +247,7 @@ def test_narrower_author_keeps_unreviewed_earlier_target(source_stage, tmp_path,
 
 def same_second_continuation(task, monkeypatch, repositories=()):
     # The approval and this strictly later owner operation have identical UTC
-    # strings. Ordering must come from the captured ledger positions.
+    # strings. Ordering must come from the captured owner record identities.
     stamp = review.review_rounds(task)[0]['recorded_at']
     monkeypatch.setattr(review, 'utc_now', lambda: stamp)
     admit(task, repositories)
@@ -487,3 +487,125 @@ def test_legacy_missing_grant_time_cannot_release_source(source_stage, monkeypat
     cleanup(task, repository)
     continuation(task, monkeypatch)
     assert review.author_target_repositories(task) == [str(repository)]
+
+
+@pytest.mark.parametrize('ledger_name', ['scopes', 'admissions'])
+@pytest.mark.parametrize('without_index', [False, True])
+def test_restored_history_then_new_source_cannot_borrow_old_positions(
+        source_stage, tmp_path, monkeypatch, ledger_name, without_index):
+    import review_sources
+    task, repository, _ = source_stage
+    ledger = task / review_sources.LOGS[ledger_name]
+    backup = ledger.read_bytes()
+    stamp = review.review_rounds(task)[0]['recorded_at']
+    monkeypatch.setattr(review, 'utc_now', lambda: stamp)
+    monkeypatch.setattr(write_admission, 'utc_now', lambda: stamp)
+    for number in range(3):
+        admit(task, [repository])
+        run = f'before-second-review-{number}'
+        write_admission.open_write_scope(task, repository, run)
+        write_admission.close_write_scope(task, run, repository=repository)
+    admitted = admit(task, [repository], reviewer=True)
+    candidate = review_progress.snapshot(task, [str(repository)])
+    candidate['attempt'] = admitted['admission_id']
+    task_phases.record_phase(task, 'review', cause={'review_candidate': candidate}, entered_at=stamp)
+    put(task, 'findings.md', 'Verdict: approved\n')
+    put(task, 'review-findings.json', {'schema_version': 1, 'round': 2,
+                                    'decision': 'approved', 'findings': []})
+    task_runner.record_standard_review_round(task, 'codex')
+    original_rounds = (task / review.ROUNDS_LEDGER).read_bytes()
+    original_history = task_phases.read_phases(task)['history']
+    ledger.write_bytes(backup)
+    review.update_source_index(task)
+    if ledger_name == 'scopes':
+        write_admission.open_write_scope(task, repository, 'later-unreviewed')
+        write_admission.close_write_scope(task, 'later-unreviewed', repository=repository)
+    else:
+        admit(task, [repository])
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    if without_index:
+        record = task / review.ADMISSION_RECORD
+        value = json.loads(record.read_text())
+        value.pop(review_sources.KEY)
+        put(task, review.ADMISSION_RECORD, value)
+    assert review.author_target_repositories(task) == [str(repository)]
+    assert review.standard_review_action(task)['action'] == 'stop_invalid_candidate'
+    command, env = cli(tmp_path, task)
+    # A fresh process must make the same conservative decision from the owners.
+    result = subprocess.run(command + ['--dry-run'], env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert str(repository) in result.stderr and 'does not exist' in result.stderr
+    assert (task / review.ROUNDS_LEDGER).read_bytes() == original_rounds
+    assert task_phases.read_phases(task)['history'][:len(original_history)] == original_history
+
+
+@pytest.mark.parametrize('count', [0, 20000])
+@pytest.mark.parametrize('legacy_single_record', [False, True])
+def test_empty_source_projection_never_reads_warm_history(tmp_path, monkeypatch, count,
+                                                       legacy_single_record):
+    import review_sources
+    task = tmp_path / 'tasks/001-result'
+    task.mkdir(parents=True)
+    put(task, 'task.md', '---\nid: 1\nstatus: blocked\n---\n# Result\n')
+    admit(task, [])
+    ledger = task / review.ADMISSIONS_LEDGER
+    if legacy_single_record:
+        ledger.unlink()
+        value = json.loads((task / review.ADMISSION_RECORD).read_text())
+        value.pop(review_sources.KEY)
+        put(task, review.ADMISSION_RECORD, value)
+    else:
+        with ledger.open('a') as handle:
+            handle.write((json.dumps({'decision': 'exempt'}) + '\n') * count)
+    review.update_source_index(task)
+    assert review_sources.read(task)['sources'] == {}
+    history = {task / relative for relative in review_sources.LOGS.values()}
+    history.add(task / task_phases.PHASES_FILE)
+    original_open = Path.open
+    def observe(path, *args, **kwargs):
+        assert path not in history, f'Warm selection opened history: {path}'
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', observe)
+    for _ in range(3):
+        assert review.author_target_repositories(task) == []
+        assert review.author_target_repositories(task, include_reviewed=True) == []
+
+
+def test_positional_only_snapshot_cannot_supply_history_identity(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    phases = task_phases.read_phases(task)
+    phases['history'][1]['cause']['review_candidate']['source_basis'] = {
+        'admissions': (task / review.ADMISSIONS_LEDGER).stat().st_size,
+        'scopes': write_admission.ledger_path(task).stat().st_size}
+    task_phases._write_json(task_phases.phases_path(task), phases)
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+def test_restored_regrown_history_cannot_hide_an_unreviewed_open_scope(source_stage, monkeypatch):
+    task, repository, canonical = source_stage
+    ledger = write_admission.ledger_path(task)
+    backup = ledger.read_bytes()
+    # Warm the projection after unrelated real owner records, then restore the
+    # earlier ledger and simulate interrupted projection updates during regrowth.
+    for number in range(3):
+        run = f'before-restore-{number}'
+        write_admission.open_write_scope(task, canonical, run)
+        write_admission.close_write_scope(task, run, repository=canonical)
+    prior_size = ledger.stat().st_size
+    ledger.write_bytes(backup)
+    original = review.update_source_index
+    monkeypatch.setattr(review, 'update_source_index', lambda *a, **k: None)
+    write_admission.open_write_scope(task, repository, 'unreviewed-after-restore')
+    for number in range(6):
+        run = f'after-restore-{number}'
+        write_admission.open_write_scope(task, canonical, run)
+        write_admission.close_write_scope(task, run, repository=canonical)
+    assert ledger.stat().st_size > prior_size
+    monkeypatch.setattr(review, 'update_source_index', original)
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    assert str(repository) in review.author_target_repositories(task)
+    assert review.standard_review_action(task)['action'] == 'stop_invalid_candidate'
