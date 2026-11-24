@@ -141,8 +141,12 @@ review per repository, the current author and unresolved scopes; closed scope
 history and irrelevant rounds/admissions are not copied. Selection costs the
 number of source obligations, including a valid empty set, with no traversal of
 accumulated history or fallback admission scan. The reducer also handles legacy
-single-record bindings. Ledger
-writers fold only appended bytes. The phase writer supplies its already-read
+single-record bindings. When reconstruction recovers no author, it asks
+`bound_author_admission` for the existing current binding, including that owner's
+pending/annulled exclusions. An empty or non-author ledger cannot suppress a
+still-bound source. Projection version 3 invalidates older caches that could
+omit it; this fallback runs only during reconstruction, never a valid warm read.
+Ledger writers fold only appended bytes. The phase writer supplies its already-read
 record and the reducer visits only appended entries; existing phase history
 serialization is unchanged. No new authoritative journal or coordinator exists.
 

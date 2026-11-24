@@ -140,6 +140,10 @@ and legacy single-record bindings, without fallback admission/history reads;
 writers fold appended records only against their matching observed pre-append
 fingerprint. Unexplained growth, replaced/truncated inputs, missing cache or an
 interrupted update recover from original records through the same reducer. The
+rebuild asks `bound_author_admission` for the existing current binding when no
+author was recovered, preserving its pending/annulled exclusions even with an
+empty or non-author ledger. Projection version 3 invalidates older incomplete
+caches. This owner fallback is recovery-only; warm reads never scan history. The
 next real owner write persists recovery; read-only observations and dry-run
 never do. No extra journal, manual reset or history limit is introduced.
 

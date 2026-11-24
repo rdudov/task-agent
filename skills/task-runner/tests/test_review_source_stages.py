@@ -609,3 +609,98 @@ def test_restored_regrown_history_cannot_hide_an_unreviewed_open_scope(source_st
     same_second_continuation(task, monkeypatch)
     assert str(repository) in review.author_target_repositories(task)
     assert review.standard_review_action(task)['action'] == 'stop_invalid_candidate'
+
+
+@pytest.mark.parametrize('ledger_state', ['absent', 'empty', 'non_author'])
+@pytest.mark.parametrize('projection', ['recovered', 'index_free', 'previous_version'])
+@pytest.mark.parametrize('source_state', ['missing', 'dirty'])
+def test_restored_admissions_retain_current_bound_source(
+        tmp_path, ledger_state, projection, source_state):
+    import review_sources
+    task = tmp_path / 'tasks/001-result'
+    task.mkdir(parents=True)
+    put(task, 'task.md', '---\nid: 1\nstatus: blocked\n---\n# Result\n')
+    put(task, 'plan.md', '# Plan\n')
+    put(task, 'task_contract.json', {'version': 1})
+    put(task, 'status.json', {'state': 'blocked'})
+    put(task, 'deliverables/manifest.json', {'deliverables': ['report.md']})
+    put(task, 'deliverables/report.md', 'Current file\n')
+    repository = tmp_path / 'source'
+    repository.mkdir()
+    git(repository, 'init', '-b', 'main')
+    git(repository, 'config', 'user.name', 'Fixture')
+    git(repository, 'config', 'user.email', 'fixture@example.invalid')
+    put(repository, 'source.py', 'size = 1\n')
+    git(repository, 'add', '.')
+    git(repository, 'commit', '-m', 'Current source')
+    current = admit(task, [repository])
+    task_phases.record_phase(task, 'implementation')
+    write_admission.open_write_scope(task, repository, 'current-source')
+    write_admission.close_write_scope(task, 'current-source', repository=repository)
+    ledger = task / review.ADMISSIONS_LEDGER
+    if ledger_state == 'absent':
+        ledger.unlink()
+    elif ledger_state == 'empty':
+        ledger.write_bytes(b'')
+    else:
+        ledger.write_text(json.dumps({'decision': 'exempt'}) + '\n')
+    review.update_source_index(task)
+    record = task / review.ADMISSION_RECORD
+    value = json.loads(record.read_text())
+    if projection == 'index_free':
+        value.pop(review_sources.KEY)
+    elif projection == 'previous_version':
+        # Reconstruct the incomplete cache left by the previously installed
+        # reducer. New code must invalidate it even with unchanged inputs.
+        index = value[review_sources.KEY]
+        index['version'] = 2
+        index.pop('author', None)
+        for source in index['sources'].values():
+            for key in ('first_grant', 'grant', 'grant_identity', 'grant_time', 'candidate'):
+                source.pop(key, None)
+    record.write_text(json.dumps(value))
+    assert review.bound_author_admission(task)['admission_id'] == current['admission_id']
+    if source_state == 'missing':
+        repository.rename(tmp_path / 'preserved-current-source')
+    else:
+        put(repository, 'source.py', 'unreviewed = True\n')
+    history = {p: (task / p).read_bytes() for p in [task_phases.PHASES_FILE]}
+    if (task / review.ROUNDS_LEDGER).exists():
+        history[review.ROUNDS_LEDGER] = (task / review.ROUNDS_LEDGER).read_bytes()
+    if ledger.exists():
+        history[review.ADMISSIONS_LEDGER] = ledger.read_bytes()
+    # The canonical CLI is a fresh process; index_free must rebuild there.
+    command, env = cli(tmp_path, task)
+    result = subprocess.run(command + ['--dry-run'], env=env, text=True, capture_output=True)
+    if source_state == 'missing':
+        assert result.returncode != 0, result.stdout
+        assert str(repository) in result.stderr and 'does not exist' in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        grant = json.loads(result.stdout)['access_grant']
+        assert grant['granted_directories'] == [str(repository)]
+        assert grant['grants_write'] is False
+    assert review.author_target_repositories(task) == [str(repository)]
+    assert {p: (task / p).read_bytes() for p in history} == history
+    assert not (task / 'fresh-reviewer').exists()
+
+
+@pytest.mark.parametrize('pending', [False, True])
+def test_recovery_fallback_does_not_bind_withdrawn_or_pending_author(tmp_path, pending):
+    task = tmp_path / 'tasks/001-result'
+    task.mkdir(parents=True)
+    put(task, 'task.md', '---\nid: 1\nstatus: blocked\n---\n# Result\n')
+    admitted = admit(task, [tmp_path / 'never-started-source'])
+    ledger = task / review.ADMISSIONS_LEDGER
+    if pending:
+        put(task, review.ADMISSION_COMMITMENT, {'admission_id': admitted['admission_id']})
+        ledger.write_bytes(b'')
+    else:
+        ledger.write_text(json.dumps({'kind': review.ANNULLED_ADMISSION,
+                                     'annuls': admitted['admission_id']}) + '\n')
+    review.update_source_index(task)
+    assert review.bound_author_admission(task) is None
+    assert review.author_target_repositories(task) == []
+    # A persisted warm rebuild must not revive that excluded fallback.
+    review.update_source_index(task)
+    assert review.author_target_repositories(task) == []

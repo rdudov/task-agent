@@ -101,7 +101,7 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
         saved = {}
     signatures = {name: fingerprint(task_dir / path) for name, path in logs.items()}
     phase_signature = fingerprint(task_dir / task_phases.PHASES_FILE)
-    valid = (saved.get('version') == 2
+    valid = (saved.get('version') == 3
              and all(isinstance(saved.get(k), dict) for k in ('sources', 'reviews', 'rounds', 'cursors'))
              and type(saved.get('phase_count')) is int)
     cursors = saved.get('cursors', {}) if valid else {}
@@ -122,7 +122,7 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
         valid = False
     if valid and phases is not None and len(phases.get('history', [])) < saved.get('phase_count', 0):
         valid = False
-    index = saved if valid else {'version': 2, 'sources': {}, 'reviews': {}, 'rounds': {},
+    index = saved if valid else {'version': 3, 'sources': {}, 'reviews': {}, 'rounds': {},
                                  'cursors': {}, 'phase_count': 0}
     deltas = {}
     for name, path in logs.items():
@@ -203,9 +203,12 @@ def read(task_dir: Path, *, persist: bool = False, phases: dict | None = None,
     attempts.add(index.get('review_head'))
     index['reviews'] = {k: v for k, v in index['reviews'].items() if k in attempts}
     index['rounds'] = {k: v for k, v in index['rounds'].items() if k in attempts}
-    # A legacy single-record binding is still handled by the admission owner.
-    if not index.get('author') and not signatures['admissions']:
-        _author(index, 0, {k: v for k, v in current.items() if k != KEY})
+    # Reconstruction must agree with the binding owner even if a restored
+    # ledger exists but has no author. Warm empty projections need no replay.
+    if not valid and not index.get('author'):
+        binding = admission.bound_author_admission(task_dir)
+        if binding is not None:
+            _author(index, 0, {k: v for k, v in binding.items() if k != KEY})
     if persist:
         admission._write_json(task_dir / admission.ADMISSION_RECORD, {**current, KEY: index})
     return index
