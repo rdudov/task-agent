@@ -100,7 +100,7 @@ Codex/Claude access root or additive Cursor Agent workspace root, performs an
 exclusive random-file create/delete probe for every worktree and Git-metadata
 directory, and records the exact target set in the
 existing author admission. `task_runner.py review TASK` accepts no repository
-or sandbox choice; it loads that bound set and exposes candidate code
+or sandbox choice; it loads the active author target set and exposes candidate code
 read-only, while the task notebook remains writable and Bash/network remain
 available for evidence-producing live checks. Missing,
 invalid, duplicate, non-root, or unwritable worktree/Git-metadata targets, and
@@ -111,7 +111,21 @@ profiles have no structural target source, so review refuses with an instruction
 to relaunch the author or rework through the current runner rather than guessing
 from historical runner metadata. A repository-less author binding is valid: its
 reviewer receives an empty candidate set and retains the writable task notebook
-plus live-check tools. Cursor retains
+plus live-check tools. A later author can narrow that set only for previously
+reviewed source: the latest snapshot naming each retired repository must have
+an approved round from its admitted bound read-only reviewer, all its write
+scopes must be closed before that snapshot, and the final closed fingerprint
+must equal the reviewed clean state. A later admission targeting that source,
+an open/changed scope, a rework or an undecided later source review keeps the
+repository obligatory. Absent proof stays obligatory even when the path is gone.
+Selection uses existing admissions, phase snapshots, rounds and write records;
+it neither changes them nor treats source retirement as a changed candidate.
+New file bytes still require their own fresh bound review. Workspace publication
+and cleanup ask the same owner for the full historical set; retiring a source
+review does not discharge those independent obligations. This discharges only
+source-review obligations, not completion, live installation acceptance or
+future product work.
+Cursor retains
 task-agent as its primary workspace. In the dev-pipeline workflow the same paths
 are the core owner's target repositories.
 

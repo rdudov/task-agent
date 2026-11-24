@@ -355,7 +355,7 @@ def _author_targets(task_dir: Path, runner_meta: dict[str, Any]) -> list[Path]:
     except ImportError:  # Standalone source-module execution in repository tests.
         import review_admission  # type: ignore[no-redef]
 
-    raw_targets = review_admission.author_target_repositories(task_dir)
+    raw_targets = review_admission.author_target_repositories(task_dir, include_reviewed=True)
     if not raw_targets:
         raw_targets = runner_meta.get("access_grant", {}).get(
             "granted_directories", []

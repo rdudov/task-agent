@@ -105,7 +105,12 @@ Files the user explicitly requested are a separate, user-facing class of output.
   without an exact target fail before child spawn. An explicit repository-less
   author binding remains reviewable with an empty candidate set and the writable
   task notebook; a read-only author may retain exact targets for the reviewer to
-  reuse read-only. Admissions created before role-owned access profiles must be
+  reuse read-only. A later author stage also retains unresolved earlier targets.
+  Earlier source may leave that set only when its latest bound read-only review
+  approved the exact clean closed write state and the later author excludes it.
+  Missing paths or a narrower grant alone never release source obligations;
+  retiring reviewed source alone is not progress and does not approve new files.
+  Admissions created before role-owned access profiles must be
   relaunched through the current runner rather than reconstructing targets from
   historical metadata.
   Repeatable `--repo` still names one exact

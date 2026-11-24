@@ -112,6 +112,20 @@ the reviewer never reconstructs targets from historical runner metadata. A
 repository-less author binding remains reviewable with an empty candidate set;
 the reviewer still writes only its task notebook.
 
+A continuation may exclude source already approved by its bound reviewer. The
+admission owner keeps earlier unresolved targets alongside the latest author's
+set. It retires a target only after a later author admission excludes it and
+the latest source snapshot has a matching approved bound read-only round, all
+source write scopes closed before that snapshot, and the exact final clean
+fingerprint. A missing path, a narrower grant, or an approval of different bytes
+does not suffice. New targets and later unreviewed scopes remain mandatory.
+`review` and candidate comparison/snapshot use that one selection. Workspace
+publication and cleanup request the full historical set: a source approval
+releases only its review obligation. History stays unchanged, retirement alone
+is not progress, and new documents need fresh review. No model, assurance or live-acceptance
+policy changes, and no manual ledger reset or recreation of removed copies is
+needed.
+
 The generic `start` command retains explicit access modes for read-only lookup,
 installation-specific operation, and dev-pipeline integration:
 

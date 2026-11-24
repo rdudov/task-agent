@@ -616,16 +616,21 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
     return None
 
 
-def author_target_repositories(task_dir: Path) -> list[str]:
-    """Every exact repository admitted for an author of this task number.
+def author_target_repositories(task_dir: Path, *, include_reviewed: bool = False) -> list[str]:
+    """Current author targets plus earlier source still owed a review.
 
-    Rework may legitimately use a narrower or empty target set, while cleanup
-    after final review still owns worktrees created by an earlier author run.
-    The append-only ledger therefore contributes every non-withdrawn material
-    author target in stable order. Tasks predating the ledger fall back to the
-    current bound author admission.
+    A narrower grant alone releases nothing. Exact closed source accepted by a
+    bound review can leave the set when a later author no longer targets it.
+    Historical admissions, scopes and review snapshots remain untouched. The
+    workspace owner requests include_reviewed for its independent publication
+    and cleanup obligations; a source review is not completion acceptance.
     """
+    try:
+        from . import task_phases
+    except ImportError:
+        import task_phases
     entries = admissions(task_dir)
+    phases = task_phases.phase_history(task_dir)
     withdrawn = {
         entry.get("annuls")
         for entry in entries
@@ -635,6 +640,7 @@ def author_target_repositories(task_dir: Path) -> list[str]:
     if outstanding:
         withdrawn.add(outstanding.get("admission_id"))
     targets: list[str] = []
+    last_target_admission: dict[str, str] = {}
     for entry in entries:
         if entry.get("kind") == ANNULLED_ADMISSION:
             continue
@@ -653,14 +659,88 @@ def author_target_repositories(task_dir: Path) -> list[str]:
         if not isinstance(raw, list):
             continue
         for value in raw:
-            if isinstance(value, str) and value not in targets:
-                targets.append(value)
+            if isinstance(value, str):
+                last_target_admission[value] = str(entry.get("evaluated_at", ""))
+                if value not in targets:
+                    targets.append(value)
+    # Older snapshots may be the only surviving source identity. Missing
+    # admission evidence must retain that obligation, not erase it.
+    for phase in phases:
+        for repository in phase.get("cause", {}).get("review_candidate", {}).get("repositories", {}):
+            if repository not in targets:
+                targets.append(repository)
     if targets or entries:
-        return targets
+        if include_reviewed:
+            return targets
+        retired = _reviewed_source_repositories(task_dir, entries, last_target_admission, phases)
+        return [target for target in targets if target not in retired]
     admission = bound_author_admission(task_dir)
     profile = admission.get("access_profile") if admission else {}
     raw = profile.get("target_repositories") if isinstance(profile, dict) else []
     return [value for value in raw if isinstance(value, str)] if isinstance(raw, list) else []
+
+
+def _reviewed_source_repositories(
+    task_dir: Path, entries: list[dict], last_target_admission: dict[str, str], phases: list[dict]
+) -> set[str]:
+    """Read accepted source stages, never infer acceptance from a missing path."""
+    try:
+        from . import write_admission
+    except ImportError:
+        import write_admission
+    author = bound_author_admission(task_dir)
+    if not author:
+        return set()
+    current = author.get("access_profile", {}).get("target_repositories", [])
+    admitted_at = str(author.get("evaluated_at", ""))
+    reviews = {entry.get("admission_id"): entry for entry in entries
+               if entry.get("decision") == "admitted_review"}
+    decisions = {item.get("review_attempt"): item for item in _rounds(task_dir)
+                 if item.get("review_attempt")}
+    scopes: dict[str, dict[str, dict]] = {}
+    latest_results: dict[str, dict] = {}
+    for item in write_admission.read_ledger(task_dir):
+        if item.get("record") in {write_admission.OPENED, write_admission.CLOSED}:
+            repository = item.get("before", {}).get("repository")
+            if isinstance(repository, str) and isinstance(item.get("run_id"), str):
+                scopes.setdefault(repository, {})[item["run_id"]] = item
+                if item["record"] == write_admission.CLOSED:
+                    latest_results[repository] = item
+    retired: set[str] = set()
+    seen: set[str] = set()
+    for phase in reversed(phases):
+        candidate = phase.get("cause", {}).get("review_candidate", {})
+        states = candidate.get("repositories", {})
+        unseen = {p: state for p, state in states.items() if p not in seen}
+        seen.update(states)
+        attempt = candidate.get("attempt")
+        decision, admission = decisions.get(attempt), reviews.get(attempt)
+        if not decision or round_decision(decision) != "approved" or not admission:
+            continue
+        profile, pair = admission.get("access_profile", {}), admission.get("pair", {})
+        if (profile.get("role") != "reviewer" or profile.get("grants_write") is not False
+                or profile.get("sandbox_mode") != "read-only" or pair.get("outcome") != "bound"
+                or pair.get("reviewer_family") != decision.get("reviewer_family")
+                or not str(decision.get("recorded_at", "")) < admitted_at):
+            continue
+        for repository, state in unseen.items():
+            records = list(scopes.get(repository, {}).values())
+            if (repository in current or repository not in profile.get("target_repositories", [])
+                    or not last_target_admission.get(repository)
+                    or last_target_admission[repository] > str(phase.get("entered_at", ""))
+                    or not records or any(item.get("record") != write_admission.CLOSED
+                        or item.get("resolution") in write_admission.SYNTHETIC_RESOLUTIONS
+                        or not item.get("closed_at")
+                        or item["closed_at"] > str(phase.get("entered_at", "")) for item in records)):
+                continue
+            latest = latest_results[repository]
+            baseline = state.get("preexisting_tracked_dirty_baseline", {})
+            if (latest.get("after") == state and baseline.get("entries") == []
+                    and baseline.get("staged_paths") == []
+                    and baseline.get("visibility_flags") == []
+                    and state.get("untracked_entries_digest") == write_admission.state_digest({"entries": []})):
+                retired.add(repository)
+    return retired
 
 
 def resolve_review_launch_pair(
@@ -1572,10 +1652,14 @@ def standard_review_action(task_dir: Path, review: dict | None = None) -> dict:
     phases = task_phases.read_phases(task_dir)
     before = review_progress.latest_snapshot(task_dir, phases)
     try:
-        repositories = list(before.get("repositories", {})) if before else author_target_repositories(task_dir)
+        repositories = author_target_repositories(task_dir)
         current = review_progress.snapshot(task_dir, repositories)
         last = review.get("last_round", {})
-        changed = review_progress.changes(task_dir, before, current, last) if before else []
+        # Retiring accepted source is not new work. Compare active obligations
+        # without rewriting the historical review's exact source snapshot.
+        comparison = {**before, "repositories": {p: state for p, state in before.get("repositories", {}).items()
+                                                 if p in repositories}} if before else None
+        changed = review_progress.changes(task_dir, comparison, current, last) if comparison else []
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         return {"action": "stop_invalid_candidate", "reason": str(exc), "waiting_for_user": False}
     # An author outcome belongs to the input that produced it. A continuation

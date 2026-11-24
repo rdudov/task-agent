@@ -2749,7 +2749,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     args.require_review_verdict = True
     args.reviewer_runner = None
     args.sandbox_mode = "read-only"
-    args.repo = list(targets)
+    args.repo = review_admission.author_target_repositories(task_dir)
     args.operation = "start"
     args.review_kind = getattr(args, "review_kind", None) or "technical"
     cmd_start(args)
