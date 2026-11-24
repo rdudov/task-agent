@@ -194,10 +194,21 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
+    if path.name == "review-admission.json" and "source_review_index" not in payload:
+        prior = _read_json(path).get("source_review_index")
+        if prior:
+            payload = {**payload, "source_review_index": prior}
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -232,6 +243,9 @@ def _append_jsonl(path: Path, entry: dict[str, Any]) -> None:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+    if path.name in {"admissions.jsonl", "rounds.jsonl"}:
+        update_source_index(path.parent.parent)
 
 
 def family_of(runner: str | None) -> str:
@@ -617,130 +631,76 @@ def bound_author_admission(task_dir: Path) -> dict[str, Any] | None:
 
 
 def author_target_repositories(task_dir: Path, *, include_reviewed: bool = False) -> list[str]:
-    """Current author targets plus earlier source still owed a review.
+    """Current grants and unresolved source, projected by the existing writers.
 
-    A narrower grant alone releases nothing. Exact closed source accepted by a
-    bound review can leave the set when a later author no longer targets it.
-    Historical admissions, scopes and review snapshots remain untouched. The
-    workspace owner requests include_reviewed for its independent publication
-    and cleanup obligations; a source review is not completion acceptance.
+    Source review never releases workspace publication/cleanup ownership.
     """
     try:
-        from . import task_phases
+        from . import review_sources, write_admission
     except ImportError:
-        import task_phases
-    entries = admissions(task_dir)
-    phases = task_phases.phase_history(task_dir)
-    withdrawn = {
-        entry.get("annuls")
-        for entry in entries
-        if entry.get("kind") == ANNULLED_ADMISSION and entry.get("annuls")
-    }
-    outstanding = admission_commitment(task_dir)
-    if outstanding:
-        withdrawn.add(outstanding.get("admission_id"))
-    targets: list[str] = []
-    last_target_admission: dict[str, str] = {}
-    for entry in entries:
-        if entry.get("kind") == ANNULLED_ADMISSION:
-            continue
-        if entry.get("admission_id") in withdrawn:
-            continue
-        classification = entry.get("classification")
-        work_class = (
-            classification.get("work_class")
-            if isinstance(classification, dict)
-            else None
-        )
-        if work_class != MATERIAL or entry.get("decision") != "admitted":
-            continue
-        profile = entry.get("access_profile")
-        raw = profile.get("target_repositories") if isinstance(profile, dict) else []
-        if not isinstance(raw, list):
-            continue
-        for value in raw:
-            if isinstance(value, str):
-                last_target_admission[value] = str(entry.get("evaluated_at", ""))
-                if value not in targets:
-                    targets.append(value)
-    # Older snapshots may be the only surviving source identity. Missing
-    # admission evidence must retain that obligation, not erase it.
-    for phase in phases:
-        for repository in phase.get("cause", {}).get("review_candidate", {}).get("repositories", {}):
-            if repository not in targets:
-                targets.append(repository)
-    if targets or entries:
-        if include_reviewed:
-            return targets
-        retired = _reviewed_source_repositories(task_dir, entries, last_target_admission, phases)
-        return [target for target in targets if target not in retired]
-    admission = bound_author_admission(task_dir)
-    profile = admission.get("access_profile") if admission else {}
-    raw = profile.get("target_repositories") if isinstance(profile, dict) else []
-    return [value for value in raw if isinstance(value, str)] if isinstance(raw, list) else []
-
-
-def _reviewed_source_repositories(
-    task_dir: Path, entries: list[dict], last_target_admission: dict[str, str], phases: list[dict]
-) -> set[str]:
-    """Read accepted source stages, never infer acceptance from a missing path."""
-    try:
-        from . import write_admission
-    except ImportError:
+        import review_sources
         import write_admission
-    author = bound_author_admission(task_dir)
-    if not author:
-        return set()
+    index = review_sources.read(task_dir)
+    author = index.get("author", {})
     current = author.get("access_profile", {}).get("target_repositories", [])
-    admitted_at = str(author.get("evaluated_at", ""))
-    reviews = {entry.get("admission_id"): entry for entry in entries
-               if entry.get("decision") == "admitted_review"}
-    decisions = {item.get("review_attempt"): item for item in _rounds(task_dir)
-                 if item.get("review_attempt")}
-    scopes: dict[str, dict[str, dict]] = {}
-    latest_results: dict[str, dict] = {}
-    for item in write_admission.read_ledger(task_dir):
-        if item.get("record") in {write_admission.OPENED, write_admission.CLOSED}:
-            repository = item.get("before", {}).get("repository")
-            if isinstance(repository, str) and isinstance(item.get("run_id"), str):
-                scopes.setdefault(repository, {})[item["run_id"]] = item
-                if item["record"] == write_admission.CLOSED:
-                    latest_results[repository] = item
-    retired: set[str] = set()
-    seen: set[str] = set()
-    for phase in reversed(phases):
-        candidate = phase.get("cause", {}).get("review_candidate", {})
-        states = candidate.get("repositories", {})
-        unseen = {p: state for p, state in states.items() if p not in seen}
-        seen.update(states)
+    targets = []
+    ordered_sources = sorted(index["sources"].items(), key=lambda item:
+                             (0, item[1]["first_grant"]) if "first_grant" in item[1]
+                             else (1, item[1].get("first_snapshot", [0, 0])))
+    for repository, source in ordered_sources:
+        if "grant" not in source and "candidate" not in source:
+            continue
+        if include_reviewed or repository in current:
+            targets.append(repository)
+            continue
+        candidate = source.get("candidate", {})
         attempt = candidate.get("attempt")
-        decision, admission = decisions.get(attempt), reviews.get(attempt)
-        if not decision or round_decision(decision) != "approved" or not admission:
-            continue
+        admission, decision = index["reviews"].get(attempt, {}), index["rounds"].get(attempt, {})
         profile, pair = admission.get("access_profile", {}), admission.get("pair", {})
-        if (profile.get("role") != "reviewer" or profile.get("grants_write") is not False
-                or profile.get("sandbox_mode") != "read-only" or pair.get("outcome") != "bound"
-                or pair.get("reviewer_family") != decision.get("reviewer_family")
-                or not str(decision.get("recorded_at", "")) < admitted_at):
-            continue
-        for repository, state in unseen.items():
-            records = list(scopes.get(repository, {}).values())
-            if (repository in current or repository not in profile.get("target_repositories", [])
-                    or not last_target_admission.get(repository)
-                    or last_target_admission[repository] > str(phase.get("entered_at", ""))
-                    or not records or any(item.get("record") != write_admission.CLOSED
-                        or item.get("resolution") in write_admission.SYNTHETIC_RESOLUTIONS
-                        or not item.get("closed_at")
-                        or item["closed_at"] > str(phase.get("entered_at", "")) for item in records)):
-                continue
-            latest = latest_results[repository]
-            baseline = state.get("preexisting_tracked_dirty_baseline", {})
-            if (latest.get("after") == state and baseline.get("entries") == []
-                    and baseline.get("staged_paths") == []
+        state = candidate.get("state", {})
+        baseline = state.get("preexisting_tracked_dirty_baseline", {})
+        basis = candidate.get("basis")
+        if isinstance(basis, dict) and type(author.get("source_review_rounds")) is int:
+            ordered = (decision.get("ledger_end", 0) <= author["source_review_rounds"]
+                       and source.get("grant", 0) <= basis.get("admissions", -1)
+                       and source.get("scope_end", 0) <= basis.get("scopes", -1))
+        else:
+            # Older records lack captured cross-ledger positions. Only strict,
+            # unambiguous old evidence is usable; clock ties retain the source.
+            ordered = (str(decision.get("recorded_at", "")) < str(author.get("evaluated_at", ""))
+                       and source.get("grant", 0) <= admission.get("ledger_end", -1)
+                       and source.get("grant_time")
+                       and str(source.get("grant_time") or "") < str(candidate.get("entered_at", ""))
+                       and source.get("latest_close_time", "") < str(candidate.get("entered_at", "")))
+        accepted = (ordered and source.get("grant") and source.get("scope_end")
+                    and not source.get("unclosed") and source.get("closed_at")
+                    and round_decision(decision) == "approved"
+                    and profile.get("role") == "reviewer" and profile.get("grants_write") is False
+                    and profile.get("sandbox_mode") == "read-only" and pair.get("outcome") == "bound"
+                    and pair.get("reviewer_family") == decision.get("reviewer_family")
+                    and repository in profile.get("target_repositories", [])
+                    and source.get("after") == state
+                    and baseline.get("entries") == [] and baseline.get("staged_paths") == []
                     and baseline.get("visibility_flags") == []
-                    and state.get("untracked_entries_digest") == write_admission.state_digest({"entries": []})):
-                retired.add(repository)
-    return retired
+                    and state.get("untracked_entries_digest") == write_admission.state_digest({"entries": []}))
+        if not accepted:
+            targets.append(repository)
+    if not index["sources"]:
+        binding = bound_author_admission(task_dir)
+        return list(binding.get("access_profile", {}).get("target_repositories", [])) if binding else []
+    return targets
+
+
+def update_source_index(task_dir: Path, *, phases: dict | None = None,
+                        phase_origin: list[int] | None = None) -> None:
+    """Advance the admission owner's rebuildable projection at a real write."""
+    if not (task_dir / ADMISSION_RECORD).exists():
+        return
+    try:
+        from . import review_sources
+    except ImportError:
+        import review_sources
+    review_sources.read(task_dir, persist=True, phases=phases, phase_origin=phase_origin)
 
 
 def resolve_review_launch_pair(
@@ -1387,6 +1347,11 @@ def commit_admission(
     binding it made -- so a launch nobody is left to withdraw still binds
     nothing.
     """
+    try:
+        from .review_sources import position
+    except ImportError:
+        from review_sources import position
+    record["source_review_rounds"] = position(task_dir / ROUNDS_LEDGER)
     path = task_dir / ADMISSION_RECORD
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -1453,6 +1418,7 @@ def confirm_admission(
     if commitment is None:
         return None
     (task_dir / ADMISSION_COMMITMENT).unlink(missing_ok=True)
+    update_source_index(task_dir)
     return commitment
 
 
@@ -1504,6 +1470,7 @@ def annul_admission(
     # that dies part way through a withdrawal leaves the same answer the
     # withdrawal was going to give.
     (task_dir / ADMISSION_COMMITMENT).unlink(missing_ok=True)
+    update_source_index(task_dir)
     return entry
 
 
@@ -1974,6 +1941,15 @@ def independent_review_status(
             f"{last.get('round')} by {last_family}; a third family's approval is "
             "not the review this work was admitted with"
         )
+        return status
+    try:
+        from .review_sources import position
+    except ImportError:
+        from review_sources import position
+    admitted_rounds = binding.get("source_review_rounds")
+    if type(admitted_rounds) is int and admitted_rounds >= position(task_dir / ROUNDS_LEDGER):
+        status["satisfied"] = False
+        status["reason"] = "the current author was admitted after the recorded approval; its work needs review"
         return status
     approved_at = str(last.get("recorded_at", ""))
     later = [

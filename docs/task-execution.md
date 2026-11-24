@@ -120,6 +120,34 @@ an open/changed scope, a rework or an undecided later source review keeps the
 repository obligatory. Absent proof stays obligatory even when the path is gone.
 Selection uses existing admissions, phase snapshots, rounds and write records;
 it neither changes them nor treats source retirement as a changed candidate.
+New snapshots capture admission/write-ledger byte positions, and a committed
+admission captures the position of the review rounds already recorded. These
+owner positions establish ordering; equal UTC timestamps neither block a valid
+later author nor excuse a later grant or scope (including an unchanged close).
+The completion approval check also refuses an author admitted after that round.
+Older snapshots without positions retain sources when their order is ambiguous.
+
+The existing current admission record carries `source_review_index`, a
+rebuildable projection owned by admission and reduced in `review_sources.py`.
+Admission, round, scope and phase writers advance it after their original
+records are durable. It keeps the latest grant, source candidate and relevant
+review per repository, the current author and unresolved scopes; closed scope
+history and irrelevant rounds/admissions are not copied. Selection costs the
+number of source obligations, with no traversal of accumulated history. Ledger
+writers fold only appended bytes. The phase writer supplies its already-read
+record and the reducer visits only appended entries; existing phase history
+serialization is unchanged. No new authoritative journal or coordinator exists.
+
+The index binds cursors to file identity, size and modification version. A
+missing cache, replaced/truncated ledger, external phase change or revoked
+pending admission reconstructs through the same reducer from original records.
+An interrupted append leaves an incomplete tail for retry, and an interrupted
+index update leaves a stale cursor whose next observation folds the missing
+records. Recovery costs history once at the next real write and is then
+persisted atomically in the existing record; observers/dry-runs never persist.
+A legacy or damaged cache observed repeatedly without any real write therefore
+repeats read-only recovery, rather than mutating a task during a dry-run.
+Historical evidence and publication obligations remain authoritative.
 New file bytes still require their own fresh bound review. Workspace publication
 and cleanup ask the same owner for the full historical set; retiring a source
 review does not discharge those independent obligations. This discharges only

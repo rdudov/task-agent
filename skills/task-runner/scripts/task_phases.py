@@ -189,6 +189,11 @@ def record_phase(
     """
     if phase not in PHASES:
         raise ValueError(f"Unknown task phase: {phase}")
+    try:
+        from .review_sources import fingerprint
+    except ImportError:
+        from review_sources import fingerprint
+    phase_origin = fingerprint(phases_path(task_dir))
     record = read_phases(task_dir)
     history = [item for item in record.get("history", []) if isinstance(item, dict)]
     timestamp = entered_at or utc_now()
@@ -223,6 +228,11 @@ def record_phase(
         "updated_at": timestamp,
     }
     _write_json(phases_path(task_dir), payload)
+    try:
+        from .review_admission import update_source_index
+    except ImportError:
+        from review_admission import update_source_index
+    update_source_index(task_dir, phases=payload, phase_origin=phase_origin)
     return payload
 
 

@@ -110,6 +110,10 @@ Files the user explicitly requested are a separate, user-facing class of output.
   approved the exact clean closed write state and the later author excludes it.
   Missing paths or a narrower grant alone never release source obligations;
   retiring reviewed source alone is not progress and does not approve new files.
+  Cross-ledger positions captured by the snapshot/admission owners establish
+  stage order even when timestamps tie. The admission owner maintains a compact
+  rebuildable source index in its current record; ordinary selection reads no
+  accumulated ledger or phase history. Original ledgers remain authoritative.
   Admissions created before role-owned access profiles must be
   relaunched through the current runner rather than reconstructing targets from
   historical metadata.

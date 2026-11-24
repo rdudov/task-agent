@@ -106,7 +106,12 @@ def snapshot(task_dir: Path, repositories: list[str], *, include_evidence: bool 
                     evidence.update(paths)
         except (OSError, ValueError):
             pass  # Publication protocol validation owns malformed output.
+    try:
+        from .review_sources import LOGS, position
+    except ImportError:
+        from review_sources import LOGS, position
     return {
+        "source_basis": {name: position(task_dir / LOGS[name]) for name in ("admissions", "scopes")},
         "evidence": evidence,
         "files": files,
         "repositories": {p: write_admission.git_write_state(Path(p)) for p in repositories},

@@ -243,3 +243,247 @@ def test_narrower_author_keeps_unreviewed_earlier_target(source_stage, tmp_path,
     refused = subprocess.run(command + ['--dry-run'], env=env, text=True, capture_output=True)
     assert refused.returncode != 0
     assert review.author_target_repositories(task) == [str(pending)]
+
+
+def same_second_continuation(task, monkeypatch, repositories=()):
+    # The approval and this strictly later owner operation have identical UTC
+    # strings. Ordering must come from the captured ledger positions.
+    stamp = review.review_rounds(task)[0]['recorded_at']
+    monkeypatch.setattr(review, 'utc_now', lambda: stamp)
+    admit(task, repositories)
+    task_phases.record_phase(task, 'rework', entered_at=stamp)
+    put(task, 'deliverables/report.md', 'Changed same-second continuation\n')
+
+
+def test_equal_second_accepted_stage_gets_canonical_review(source_stage, tmp_path, monkeypatch):
+    task, repository, _ = source_stage
+    history = (task / 'reviews/rounds.jsonl').read_bytes()
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    command, env = cli(tmp_path, task)
+    before = {p: p.read_bytes() for p in task.rglob('*') if p.is_file()}
+    result = subprocess.run(command + ['--dry-run'], env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert review.author_target_repositories(task) == []
+    assert review.standard_review_action(task)['action'] == 'review'
+    assert before == {p: p.read_bytes() for p in before}
+    assert (task / 'reviews/rounds.jsonl').read_bytes() == history
+
+
+@pytest.mark.parametrize('later', ['grant', 'open_scope', 'closed_unchanged_scope', 'closed_changed_scope'])
+def test_equal_second_later_source_is_never_retired(source_stage, monkeypatch, later):
+    task, repository, _ = source_stage
+    stamp = review.review_rounds(task)[0]['recorded_at']
+    monkeypatch.setattr(review, 'utc_now', lambda: stamp)
+    monkeypatch.setattr(write_admission, 'utc_now', lambda: stamp)
+    if later == 'grant':
+        admit(task, [repository])
+    else:
+        write_admission.open_write_scope(task, repository, 'later-run')
+        if later == 'closed_changed_scope':
+            put(repository, 'source.py', 'size = 9\n')
+            git(repository, 'add', '.')
+            git(repository, 'commit', '-m', 'Unreviewed later source')
+        if later != 'open_scope':
+            write_admission.close_write_scope(task, 'later-run', repository=repository)
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    assert review.author_target_repositories(task) == [str(repository)]
+    assert review.standard_review_action(task)['action'] == 'stop_invalid_candidate'
+
+
+@pytest.mark.parametrize('after_snapshot', ['none', 'closed_scope', 'grant'])
+def test_same_second_source_before_snapshot_is_accepted(source_stage, monkeypatch, after_snapshot):
+    task, repository, _ = source_stage
+    # A later source scope is closed before the next snapshot at the exact same
+    # clock value. The new bound snapshot must be the acceptance basis.
+    stamp = review.review_rounds(task)[0]['recorded_at']
+    monkeypatch.setattr(review, 'utc_now', lambda: stamp)
+    monkeypatch.setattr(write_admission, 'utc_now', lambda: stamp)
+    admit(task, [repository])
+    write_admission.open_write_scope(task, repository, 'second-source')
+    write_admission.close_write_scope(task, 'second-source', repository=repository)
+    admitted = admit(task, [repository], reviewer=True)
+    candidate = review_progress.snapshot(task, [str(repository)])
+    candidate['attempt'] = admitted['admission_id']
+    task_phases.record_phase(task, 'review', cause={'review_candidate': candidate}, entered_at=stamp)
+    put(task, 'findings.md', 'Verdict: approved\n')
+    put(task, 'review-findings.json', {'schema_version': 1, 'round': 2, 'decision': 'approved', 'findings': []})
+    task_runner.record_standard_review_round(task, 'codex')
+    if after_snapshot == 'closed_scope':
+        write_admission.open_write_scope(task, repository, 'after-snapshot')
+        write_admission.close_write_scope(task, 'after-snapshot', repository=repository)
+    elif after_snapshot == 'grant':
+        admit(task, [repository])
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    expected = [] if after_snapshot == 'none' else [str(repository)]
+    assert review.author_target_repositories(task) == expected
+
+
+def test_index_survives_process_restart_and_rebuild(source_stage, monkeypatch):
+    import review_sources
+    task, repository, _ = source_stage
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    command = [sys.executable, '-c',
+               'import review_admission as r,sys,json; from pathlib import Path; '
+               'print(json.dumps(r.author_target_repositories(Path(sys.argv[1]))))', str(task)]
+    env = {**os.environ, 'PYTHONPATH': str(Path(review.__file__).parent)}
+    assert subprocess.check_output(command, env=env, text=True).strip() == '[]'
+    record = task / review.ADMISSION_RECORD
+    value = json.loads(record.read_text())
+    value.pop(review_sources.KEY)
+    record.write_text(json.dumps(value))
+    # A read-only reconstruction changes no bytes and uses the same decisions.
+    old = record.read_bytes()
+    assert review.author_target_repositories(task) == []
+    assert record.read_bytes() == old
+    review.update_source_index(task)
+    assert review_sources.KEY in json.loads(record.read_text())
+    assert subprocess.check_output(command, env=env, text=True).strip() == '[]'
+    # Replacement invalidates the saved cursor, even if lengths stay equal.
+    ledger = task / review.ROUNDS_LEDGER
+    restored = ledger.with_suffix('.restored')
+    restored.write_bytes(ledger.read_bytes())
+    restored.replace(ledger)
+    assert review.author_target_repositories(task) == []
+    review.update_source_index(task)
+    assert review.author_target_repositories(task) == []
+
+
+def test_index_replays_interrupted_scope_write(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    same_second_continuation(task, monkeypatch)
+    original = review.update_source_index
+    monkeypatch.setattr(review, 'update_source_index', lambda *a, **k: None)
+    write_admission.open_write_scope(task, repository, 'interrupted')
+    monkeypatch.setattr(review, 'update_source_index', original)
+    assert review.author_target_repositories(task) == [str(repository)]
+    review.update_source_index(task)
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+@pytest.mark.parametrize('count', [0, 200, 20000])
+def test_selection_work_does_not_grow_with_irrelevant_history(source_stage, monkeypatch, count):
+    import review_sources
+    task, repository, _ = source_stage
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    # Grow the owners' append-only histories. A single recovery at a real write
+    # rebuilds the index; subsequent selection must not touch any ledger/history.
+    for name, path in review_sources.LOGS.items():
+        record = {'decision': 'exempt'} if name == 'admissions' else {'record': 'irrelevant'}
+        with (task / path).open('a') as handle:
+            handle.write((json.dumps(record) + '\n') * count)
+    phases = task_phases.read_phases(task)
+    phases['history'].extend([{'phase': 'blocked', 'entered_at': 'unused'}] * count)
+    task_phases._write_json(task_phases.phases_path(task), phases)
+    review.update_source_index(task)
+    def forbidden(*a, **k):
+        raise AssertionError('Warm selection read accumulated history')
+    monkeypatch.setattr(review_sources, '_tail', forbidden)
+    monkeypatch.setattr(task_phases, 'read_phases', forbidden)
+    for _ in range(3):
+        assert review.author_target_repositories(task) == []
+        assert review.author_target_repositories(task, include_reviewed=True) == [str(repository)]
+    # A real appended unresolved grant is immediately visible. Only its delta
+    # needs folding; prior history is not an admissible shortcut to acceptance.
+    monkeypatch.undo()
+    admit(task, [repository])
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+
+def test_phase_restoration_before_next_writer_invalidates_old_index(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    assert review.author_target_repositories(task) == []
+    restored = task_phases.read_phases(task)
+    for entry in restored['history']:
+        entry.get('cause', {}).pop('review_candidate', None)
+    restored['review_candidate_index'] = None
+    task_phases._write_json(task_phases.phases_path(task), restored)
+    task_phases.record_phase(task, 'blocked')
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+def test_truncated_scope_ledger_cannot_reuse_old_source_acceptance(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    assert review.author_target_repositories(task) == []
+    # A restore retaining only the open record has an unresolved obligation.
+    ledger = write_admission.ledger_path(task)
+    ledger.write_bytes(ledger.read_bytes().splitlines(keepends=True)[0])
+    assert review.author_target_repositories(task) == [str(repository)]
+    review.update_source_index(task)
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+def test_incomplete_scope_tail_is_retried(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    cleanup(task, repository)
+    same_second_continuation(task, monkeypatch)
+    ledger = write_admission.ledger_path(task)
+    line = json.dumps({'record': write_admission.OPENED, 'run_id': 'pending-tail',
+                       'before': {'repository': str(repository)}}).encode()
+    with ledger.open('ab') as handle:
+        handle.write(line[:len(line)//2])
+    review.update_source_index(task)
+    with ledger.open('ab') as handle:
+        handle.write(line[len(line)//2:] + b'\n')
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+def test_pending_and_annulled_author_do_not_release_prior_source(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    first = review.bound_author_admission(task)
+    record = review.admit_launch(task, workflow='standard', author_runner='codex',
+        access_grant={'sandbox_mode': 'workspace-write', 'grants_write': False,
+                      'target_repositories': [], 'granted_directories': []},
+        contract={'gate_status': 'gated'}, which=lambda _: '/test/provider',
+        assurance={'schema_version': '1.0', 'strategy': 'isolated_same_provider',
+                   'owner_provider': 'codex', 'review_provider': 'codex',
+                   'providers': {'codex': {'executable': 'codex'}}})
+    receipt = review.commit_admission(task, record)
+    assert review.author_target_repositories(task) == [str(repository)]
+    review.annul_admission(task, receipt, reason='No child started')
+    assert review.bound_author_admission(task)['admission_id'] == first['admission_id']
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+
+def test_missing_close_evidence_stays_unresolved_after_later_valid_close(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    state = write_admission.git_write_state(repository)
+    write_admission._append(task, {'record': write_admission.CLOSED, 'run_id': 'incomplete-close',
+                                  'before': state, 'after': state})
+    write_admission.open_write_scope(task, repository, 'valid-close')
+    write_admission.close_write_scope(task, 'valid-close', repository=repository)
+    admission = admit(task, [repository], reviewer=True)
+    candidate = review_progress.snapshot(task, [str(repository)])
+    candidate['attempt'] = admission['admission_id']
+    task_phases.record_phase(task, 'review', cause={'review_candidate': candidate})
+    put(task, 'findings.md', 'Verdict: approved\n')
+    put(task, 'review-findings.json', {'schema_version': 1, 'round': 2, 'decision': 'approved', 'findings': []})
+    task_runner.record_standard_review_round(task, 'codex')
+    cleanup(task, repository)
+    continuation(task, monkeypatch)
+    assert review.author_target_repositories(task) == [str(repository)]
+
+
+
+def test_legacy_missing_grant_time_cannot_release_source(source_stage, monkeypatch):
+    task, repository, _ = source_stage
+    phases = task_phases.read_phases(task)
+    phases['history'][1]['cause']['review_candidate'].pop('source_basis')
+    task_phases._write_json(task_phases.phases_path(task), phases)
+    ledger = task / review.ADMISSIONS_LEDGER
+    entries = [json.loads(line) for line in ledger.read_text().splitlines()]
+    entries[0].pop('evaluated_at')
+    ledger.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+    cleanup(task, repository)
+    continuation(task, monkeypatch)
+    assert review.author_target_repositories(task) == [str(repository)]

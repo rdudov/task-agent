@@ -126,6 +126,18 @@ is not progress, and new documents need fresh review. No model, assurance or liv
 policy changes, and no manual ledger reset or recreation of removed copies is
 needed.
 
+Snapshots record admission/write-ledger positions; a committed author records
+which review rounds already existed. These positions establish same-second
+stage order and retain later unresolved source even when Git bytes are equal.
+Old snapshots without positions use only unambiguous older proof. The current
+admission record's rebuildable `source_review_index` is advanced by the existing
+admission/round/phase/write owners, with latest source state and unresolved
+scopes only. Warm selection reads that compact state, not accumulated history;
+writers fold appended records. Replaced/truncated inputs, missing cache or an
+interrupted update recover from original records through the same reducer. The
+next real owner write persists recovery; read-only observations and dry-run
+never do. No extra journal, manual reset or history limit is introduced.
+
 The generic `start` command retains explicit access modes for read-only lookup,
 installation-specific operation, and dev-pipeline integration:
 
